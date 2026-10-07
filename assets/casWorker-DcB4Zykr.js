@@ -15,14 +15,20 @@ import sympy
 from mathlab.checks import (
     check_antiderivative,
     check_derivative,
+    check_with_constants,
     numeric_function,
     plot_value,
+    test_values,
     undefined_where_function_is_defined,
 )
 from mathlab.derivative_steps import derivative_with_steps
-from mathlab.expressions import X, Y, InputError, parse_function, to_latex, with_absolute_value_logs
+from mathlab.expressions import X, Y, InputError, to_latex, with_absolute_value_logs
 from mathlab.integral_steps import MAX_STEP_COUNT, explain_integral, find_integral_rule, rule_count
+from mathlab.integral_strategies import integrate_with_one_angle
+from mathlab.latex_input import latex_to_text
+from mathlab.progress import listen, report
 from mathlab.multivariable import parse_point, partial_derivatives
+from mathlab.parsing import constants_in, parse_function
 
 GRAPH_X_MIN = -10.0
 GRAPH_X_MAX = 10.0
@@ -46,27 +52,33 @@ def graph_x_values():
 
 
 def solution(operation, function, equation_latex, result, check, steps, steps_note):
+    constants = constants_in(function, (X,))
+    # With constants like a and b there is no single curve to draw.
+    graph = None
+    if not constants:
+        graph = {
+            "x": graph_x_values(),
+            "input": sample_for_graph(function),
+            "result": sample_for_graph(result),
+        }
     return {
         "ok": True,
         "operation": operation,
         "equationLatex": equation_latex,
         "resultLatex": to_latex(result),
         "resultText": str(result),
+        "constants": [to_latex(constant) for constant in constants],
         "check": check,
         "steps": steps,
         "stepsNote": steps_note,
-        "graph": {
-            "x": graph_x_values(),
-            "input": sample_for_graph(function),
-            "result": sample_for_graph(result),
-        },
+        "graph": graph,
     }
 
 
 def differentiate(function):
     derivative, steps, steps_note = derivative_with_steps(function)
     equation = rf"\\frac{{d}}{{dx}}\\left[{to_latex(function)}\\right] = {to_latex(derivative)}"
-    check = check_derivative(function, derivative)
+    check = check_with_constants(check_derivative, function, derivative)
     return solution("differentiate", function, equation, derivative, check, steps, steps_note)
 
 
@@ -75,12 +87,13 @@ def with_absolute_values_if_needed(function, antiderivative):
 
     Returns the antiderivative to show and whether absolute values were added.
     """
-    if not antiderivative.has(sympy.log) or not undefined_where_function_is_defined(
-        function, antiderivative
-    ):
+    if not antiderivative.has(sympy.log):
+        return antiderivative, False
+    values = test_values(constants_in(function, (X,)))
+    if not undefined_where_function_is_defined(function.subs(values), antiderivative.subs(values)):
         return antiderivative, False
     candidate = with_absolute_value_logs(antiderivative)
-    if check_antiderivative(function, candidate)["status"] == "verified":
+    if check_with_constants(check_antiderivative, function, candidate)["status"] == "verified":
         return candidate, True
     return antiderivative, False
 
@@ -91,11 +104,14 @@ def integral_solution(function, antiderivative, check, steps, steps_note):
 
 
 def integrate(function):
+    """Try strategies from the most explainable to the most powerful, reporting
+    each one, since hard integrals can take minutes."""
+    report("Trying the textbook rules (substitution, parts, partial fractions)…")
     found = find_integral_rule(function, X)
     if found is not None:
         rule, antiderivative = found
         antiderivative, absolute_logs = with_absolute_values_if_needed(function, antiderivative)
-        check = check_antiderivative(function, antiderivative)
+        check = check_with_constants(check_antiderivative, function, antiderivative)
         if check["status"] != "failed":
             if rule_count(rule) > MAX_STEP_COUNT:
                 return integral_solution(
@@ -106,6 +122,15 @@ def integrate(function):
             except Exception:  # Steps are extra: a failure in them must not block the answer.
                 steps, steps_note = [], "Steps couldn't be shown for this integral."
             return integral_solution(function, antiderivative, check, steps, steps_note)
+    report("Rewriting the trig functions in terms of one angle…")
+    rewritten = integrate_with_one_angle(function)
+    if rewritten is not None:
+        antiderivative, steps = rewritten
+        antiderivative, _ = with_absolute_values_if_needed(function, antiderivative)
+        check = check_with_constants(check_antiderivative, function, antiderivative)
+        if check["status"] != "failed":
+            return integral_solution(function, antiderivative, check, steps, None)
+    report("Trying SymPy's general algorithms (Risch, Meijer G). Hard integrals can take minutes…")
     antiderivative = sympy.integrate(function, X)
     if antiderivative.has(sympy.Integral):
         raise InputError(
@@ -116,25 +141,49 @@ def integrate(function):
     return integral_solution(
         function,
         antiderivative,
-        check_antiderivative(function, antiderivative),
+        check_with_constants(check_antiderivative, function, antiderivative),
         [],
         "Steps aren't available: SymPy found this antiderivative with an advanced algorithm "
         "rather than the rules taught in calculus courses.",
     )
 
 
+def expression_text(request):
+    """The request's expression as plain text. The math input box sends LaTeX."""
+    expression = request.get("expression", "")
+    return latex_to_text(expression) if request.get("format") == "latex" else expression
+
+
+def preview(request):
+    """How the input reads as math, shown while the student types."""
+    variables = (X, Y) if request.get("variables") == ["x", "y"] else (X,)
+    function = parse_function(expression_text(request), variables)
+    return {
+        "ok": True,
+        "operation": "preview",
+        "latex": to_latex(function),
+        "constants": [to_latex(constant) for constant in constants_in(function, variables)],
+    }
+
+
 OPERATIONS = {
-    "differentiate": lambda request: differentiate(parse_function(request.get("expression", ""))),
-    "integrate": lambda request: integrate(parse_function(request.get("expression", ""))),
+    "preview": preview,
+    "differentiate": lambda request: differentiate(parse_function(expression_text(request))),
+    "integrate": lambda request: integrate(parse_function(expression_text(request))),
     "partial": lambda request: partial_derivatives(
-        parse_function(request.get("expression", ""), (X, Y)), parse_point(request.get("point"))
+        parse_function(expression_text(request), (X, Y)), parse_point(request.get("point"))
     ),
 }
 
 
-def run_request(request_json):
-    """Entry point from TypeScript. Takes and returns JSON strings."""
+def run_request(request_json, on_progress=None):
+    """Entry point from TypeScript. Takes and returns JSON strings.
+
+    on_progress, if given, is called with short messages about what a long
+    calculation is trying.
+    """
     request = json.loads(request_json)
+    listen(on_progress)
     try:
         operation = OPERATIONS.get(request.get("operation"))
         if operation is None:
@@ -144,15 +193,18 @@ def run_request(request_json):
         response = {"ok": False, "error": str(error)}
     except Exception as error:  # Report any SymPy failure instead of crashing the worker.
         response = {"ok": False, "error": f"SymPy couldn't finish this calculation ({type(error).__name__})."}
+    finally:
+        listen(None)
     return json.dumps(response, allow_nan=False)
 `,"./python/mathlab/checks.py":`"""Independent numerical checks of answers, so a wrong answer is flagged."""
 
+import itertools
 import math
 
 import mpmath
 import sympy
 
-from mathlab.expressions import X, Y
+from mathlab.expressions import X, Y, to_latex
 
 # Points where answers are checked. They avoid 0, integers, and common
 # singularities such as pi/2 so that most functions are defined at most of them.
@@ -163,8 +215,33 @@ MIN_CHECK_POINTS = 3
 CHECK_PRECISION_DIGITS = 30
 CHECK_TOLERANCE = mpmath.mpf("1e-12")
 
+# Values tried for constants like a and b. Checks need numbers, so an answer
+# with constants is checked with these plugged in. They avoid 0 and 1, which
+# can hide mistakes.
+CONSTANT_TEST_VALUES = (1.37, 0.73, 2.19, 1.61, 0.58, 2.83, 1.17, 0.91)
+
 # Expressions larger than this are not passed to sympy.simplify, which can be slow.
 MAX_SIMPLIFY_SIZE = 40
+
+
+def test_values(constants):
+    """Numbers to substitute for constants (in order), for checking answers."""
+    return {
+        constant: sympy.Rational(str(value))
+        for constant, value in zip(constants, itertools.cycle(CONSTANT_TEST_VALUES))
+    }
+
+
+def check_with_constants(check, function, result, variables=(X,)):
+    """Run check(function, result). Checks need numbers, so any constants
+    (like a and b) get test values, and the detail says which."""
+    constants = sorted(function.free_symbols - set(variables), key=str)
+    if not constants:
+        return check(function, result)
+    values = test_values(constants)
+    outcome = check(function.subs(values), result.subs(values))
+    settings = ", ".join(f"\${to_latex(constant)} = {float(value):g}$" for constant, value in values.items())
+    return {**outcome, "detail": f"{outcome['detail']} (Checked with {settings}.)"}
 
 
 def numeric_function(expression, variables=(X,)):
@@ -320,7 +397,7 @@ from dataclasses import dataclass
 
 import sympy
 
-from mathlab.checks import agree_numerically
+from mathlab.checks import agree_numerically, test_values
 from mathlab.expressions import X, factor_latex, power_base_latex, to_latex
 from mathlab.steps import make_step
 
@@ -397,9 +474,10 @@ def derivative_with_steps(function, d=ORDINARY, variables=(X,)):
     answer is used without steps, and steps_note says so.
     """
     sympy_derivative = sympy.diff(function, d.variable)
+    values = test_values(sorted(function.free_symbols - set(variables), key=str))
     try:
         derivative, step = explain_derivative(function, d)
-        explained = agree_numerically(derivative, sympy_derivative, variables)
+        explained = agree_numerically(derivative.subs(values), sympy_derivative.subs(values), variables)
     except Exception:  # Steps are extra: a failure in them must not block the answer.
         explained = False
     if explained:
@@ -642,114 +720,92 @@ def function_rule(function, d):
         [d.of(function), rf"{factor_latex(outer_derivative)} \\cdot {d.of(inner)}", to_latex(derivative)],
         [inner_step],
     )
-`,"./python/mathlab/expressions.py":`"""Reading the student's input and printing math as LaTeX."""
-
-import re
+`,"./python/mathlab/expressions.py":`"""Shared symbols, the input error, and printing math as LaTeX."""
 
 import sympy
-from sympy.parsing.sympy_parser import (
-    convert_xor,
-    implicit_multiplication_application,
-    parse_expr,
-    standard_transformations,
-)
+from sympy.printing.latex import LatexPrinter
 
 X = sympy.Symbol("x", real=True)
 Y = sympy.Symbol("y", real=True)
-
-MAX_INPUT_LENGTH = 200
-
-# parse_expr evaluates its input as Python, so only characters that math needs
-# are allowed. Without quotes, brackets, or underscores, input cannot reach
-# anything in Python except SymPy's math functions.
-ALLOWED_CHARACTERS = re.compile(r"[A-Za-z0-9\\s+\\-*/^().,]*")
-
-# Textbook names that SymPy spells differently. Variables are added per request.
-NAMES = {
-    "e": sympy.E,
-    "pi": sympy.pi,
-    "ln": sympy.log,
-    "arcsin": sympy.asin,
-    "arccos": sympy.acos,
-    "arctan": sympy.atan,
-    "abs": sympy.Abs,
-}
-
-TRANSFORMATIONS = standard_transformations + (
-    implicit_multiplication_application,
-    convert_xor,
-)
-
-# Textbook notation like sin^2(x), which means (sin(x))^2.
-FUNCTION_POWER = re.compile(r"\\b(sin|cos|tan|sec|csc|cot|sinh|cosh|tanh|ln|log)\\^(\\d+)\\s*\\(")
 
 
 class InputError(Exception):
     """The user's input cannot be used; the message says why and what to do."""
 
 
-def find_closing_parenthesis(text, open_index):
-    depth = 0
-    for index in range(open_index, len(text)):
-        if text[index] == "(":
-            depth += 1
-        elif text[index] == ")":
-            depth -= 1
-            if depth == 0:
-                return index
-    return None
+# Functions written the textbook way: sin x, sin(x^2), sin^2 x.
+TEXTBOOK_FUNCTIONS = {
+    "sin": r"\\sin",
+    "cos": r"\\cos",
+    "tan": r"\\tan",
+    "cot": r"\\cot",
+    "sec": r"\\sec",
+    "csc": r"\\csc",
+    "sinh": r"\\sinh",
+    "cosh": r"\\cosh",
+    "tanh": r"\\tanh",
+    "asin": r"\\arcsin",
+    "acos": r"\\arccos",
+    "atan": r"\\arctan",
+    "sech": r"\\operatorname{sech}",
+    "csch": r"\\operatorname{csch}",
+    "coth": r"\\coth",
+    "asec": r"\\operatorname{arcsec}",
+    "acsc": r"\\operatorname{arccsc}",
+    "acot": r"\\operatorname{arccot}",
+    "asinh": r"\\operatorname{arsinh}",
+    "acosh": r"\\operatorname{arcosh}",
+    "atanh": r"\\operatorname{artanh}",
+    "erf": r"\\operatorname{erf}",
+    "sign": r"\\operatorname{sgn}",
+}
+
+# LaTeX that is taller than a line of text, which needs tall parentheses.
+TALL_LATEX = (r"\\frac", r"\\int", r"\\sum", r"\\sqrt")
 
 
-def rewrite_function_powers(text):
-    """Rewrite sin^2(x) as (sin(x))^2, which SymPy can parse."""
-    while match := FUNCTION_POWER.search(text):
-        open_index = match.end() - 1
-        close_index = find_closing_parenthesis(text, open_index)
-        if close_index is None:
-            break  # Unbalanced parentheses; the parser reports the error.
-        name, power = match.group(1), match.group(2)
-        argument = text[open_index : close_index + 1]
-        text = f"{text[: match.start()]}({name}{argument})^{power}{text[close_index + 1 :]}"
-    return text
+class TextbookLatexPrinter(LatexPrinter):
+    """Prints functions as textbooks write them.
 
+    SymPy writes sin(x) as \\\\sin{\\\\left(x \\\\right)}, which shows a gap and
+    oversized parentheses. This prints sin x, sin(x^2), sin^2 x, and ln|x|.
+    """
 
-def parse_function(text, variables=(X,)):
-    """Parse the student's function of the given variables (x, or x and y)."""
-    two_variables = len(variables) == 2
-    example = "x^2 y + sin(x y)" if two_variables else "x^2 sin(x)"
-    text = text.strip()
-    if not text:
-        description = "x and y" if two_variables else "x"
-        raise InputError(f"Type a function of {description}, such as {example}.")
-    if len(text) > MAX_INPUT_LENGTH:
-        raise InputError(f"That expression is too long (the limit is {MAX_INPUT_LENGTH} characters).")
-    if not ALLOWED_CHARACTERS.fullmatch(text):
-        raise InputError("Use only letters, digits, spaces, and + - * / ^ ( ) . ,")
-    try:
-        function = parse_expr(
-            rewrite_function_powers(text),
-            local_dict={**NAMES, **{variable.name: variable for variable in variables}},
-            transformations=TRANSFORMATIONS,
+    def _argument(self, argument):
+        text = self._print(argument)
+        is_simple = isinstance(argument, sympy.Symbol) or (
+            argument.is_Integer and not argument.could_extract_minus_sign()
         )
-    except Exception as error:  # The parser raises many error types for bad syntax.
-        raise InputError("Couldn't read that expression. Check the parentheses and operators.") from error
-    if not isinstance(function, sympy.Expr):
-        raise InputError(f"That isn't a function. Try something like {example}.")
-    other_symbols = function.free_symbols - set(variables)
-    if other_symbols:
-        names = ", ".join(sorted(str(symbol) for symbol in other_symbols))
-        allowed = "only x and y as variables" if two_variables else "x as the only variable"
-        raise InputError(
-            f"Use {allowed} (found {names}). "
-            "For a function such as sine, use parentheses: sin(x)."
-        )
-    if function.has(sympy.zoo, sympy.nan, sympy.oo, -sympy.oo):
-        raise InputError("That expression is undefined, for example because it divides by zero.")
-    return function
+        if is_simple:
+            return f" {text}"
+        if any(tall in text for tall in TALL_LATEX):
+            return rf"\\left({text}\\right)"
+        return f"({text})"
+
+    def _call(self, name, argument, exponent):
+        if exponent is not None:
+            name = f"{name}^{{{exponent}}}"
+        return name + self._argument(argument)
+
+    def _print_Function(self, expr, exp=None):
+        name = TEXTBOOK_FUNCTIONS.get(type(expr).__name__)
+        if name is None or len(expr.args) != 1:
+            return super()._print_Function(expr, exp)
+        return self._call(name, expr.args[0], exp)
+
+    def _print_log(self, expr, exp=None):
+        argument = expr.args[0]
+        if isinstance(argument, sympy.Abs):
+            name = r"\\ln" if exp is None else rf"\\ln^{{{exp}}}"
+            return name + self._print(argument)
+        return self._call(r"\\ln", argument, exp)
+
+
+LATEX_PRINTER = TextbookLatexPrinter({"inv_trig_style": "full"})
 
 
 def to_latex(expression):
-    return sympy.latex(expression, ln_notation=True, inv_trig_style="full")
+    return LATEX_PRINTER.doprint(sympy.sympify(expression))
 
 
 def factor_latex(expression):
@@ -1133,6 +1189,361 @@ EXPLAINERS = {
 for _rule_name in SPECIAL_FUNCTION_RULES:
     if hasattr(manualintegrate, _rule_name):
         EXPLAINERS[getattr(manualintegrate, _rule_name)] = explain_special_function
+`,"./python/mathlab/integral_strategies.py":`"""Extra integration strategies, tried when the textbook rules alone fail.
+
+SymPy's general algorithms can run for many minutes on integrals a student
+could do by hand with the right rewrite. This module does those rewrites:
+
+Trig with one angle. In 7 sin^2(2x+3) / cos^3(2x-3), substitute u = 2x - 3
+(the angle in the denominator), expand sin(u + 6) with the angle-addition
+formula, and write each term with tan and sec. The pieces are then standard
+integrals. This finishes in about a second, while SymPy alone did not finish
+in five minutes.
+"""
+
+import sympy
+from sympy.integrals.manualintegrate import manualintegrate
+
+from mathlab.expressions import X, differential_latex, to_latex
+from mathlab.steps import make_step
+
+U = sympy.Dummy("u", real=True)
+
+
+def trig_angles(function):
+    return {atom.args[0] for atom in function.atoms(sympy.sin, sympy.cos, sympy.tan, sympy.sec, sympy.csc, sympy.cot)}
+
+
+def tan_sec_term(term):
+    """sin(t)^a / cos(t)^b with b >= a becomes tan(t)^a sec(t)^(b - a);
+    any other 1/cos(t)^b becomes sec(t)^b."""
+    powers = term.as_powers_dict()
+    for factor, exponent in powers.items():
+        if isinstance(factor, sympy.cos) and exponent.is_negative:
+            angle = factor.args[0]
+            sine = sympy.sympify(powers.get(sympy.sin(angle), 0))
+            cosine = -exponent
+            if sine.is_nonnegative and sine <= cosine:
+                rest = term / (sympy.sin(angle) ** sine * sympy.cos(angle) ** exponent)
+                return rest * sympy.tan(angle) ** sine * sympy.sec(angle) ** (cosine - sine)
+    return term
+
+
+def with_tan_and_sec(expression):
+    return sympy.Add(*(tan_sec_term(term) for term in sympy.Add.make_args(sympy.expand(expression))))
+
+
+def finish_remaining_integrals(expression):
+    """Do any integrals the textbook rules left undone; each is small by now."""
+    return expression.replace(
+        lambda part: isinstance(part, sympy.Integral),
+        lambda part: sympy.integrate(part.function, *part.limits),
+    )
+
+
+def integrate_with_one_angle(function):
+    """Return (antiderivative, steps), or None if this strategy doesn't apply.
+
+    Applies when the trig functions' angles are linear in x with the same
+    slope, like 2x + 3 and 2x - 3, and some trig function is in a denominator.
+    """
+    angles = trig_angles(function)
+    linear = [angle for angle in angles if angle.is_polynomial(X) and sympy.degree(angle, X) == 1]
+    if not angles or len(linear) != len(angles):
+        return None
+    slopes = {sympy.Poly(angle, X).coeffs()[0] for angle in linear}
+    in_denominator = {
+        power.base.args[0]
+        for power in function.atoms(sympy.Pow)
+        if power.exp.is_negative and isinstance(power.base, (sympy.sin, sympy.cos))
+    }
+    if len(slopes) != 1 or not in_denominator:
+        return None
+    slope = slopes.pop()
+    angle = sorted(in_denominator, key=str)[0]
+    x_in_terms_of_u = sympy.solve(sympy.Eq(angle, U), X)[0]
+    expanded = sympy.expand(sympy.expand_trig(function.subs(X, x_in_terms_of_u) / slope))
+    rewritten = with_tan_and_sec(expanded)
+    in_u = finish_remaining_integrals(manualintegrate(rewritten, U))
+    if in_u.has(sympy.Integral):
+        return None
+    antiderivative = in_u.subs(U, angle)
+    steps = [
+        make_step(
+            "Substitution",
+            rf"Let $u = {to_latex(angle)}$, the angle in the denominator, so "
+            rf"$du = {differential_latex(slope, X)}$. Write every other angle in terms of $u$ "
+            r"and expand it with the angle-addition formulas, such as "
+            r"$\\sin(a + b) = \\sin a \\cos b + \\cos a \\sin b$.",
+            [to_latex(sympy.Integral(function, X)), to_latex(sympy.Integral(expanded, U))],
+        ),
+        make_step(
+            "Rewrite with tan and sec",
+            r"Divide through by the cosines: $\\frac{\\sin u}{\\cos u} = \\tan u$ and "
+            r"$\\frac{1}{\\cos u} = \\sec u$. Each term becomes a standard integral.",
+            [to_latex(sympy.Integral(expanded, U)), to_latex(sympy.Integral(rewritten, U))],
+        ),
+        make_step(
+            "Integrate term by term",
+            r"Use the standard integrals of $\\sec u$, $\\sec u \\tan u$, $\\sec^{2} u$, and "
+            r"$\\tan^{2} u \\sec u$ (by parts), then substitute "
+            rf"$u = {to_latex(angle)}$ back.",
+            [to_latex(sympy.Integral(rewritten, U)), to_latex(in_u), to_latex(antiderivative)],
+        ),
+    ]
+    return antiderivative, steps
+`,"./python/mathlab/latex_input.py":`"""Translate LaTeX from the math input box (MathLive) into text the parser reads.
+
+The box shows real math, so the translation follows how a textbook reads what
+is on screen: sin x cos x is sin(x)·cos(x), sin 2x is sin(2x), sin²x is
+(sin x)², sin⁻¹x is arcsin x, and log₂ x is log base 2 of x. Only known
+commands are translated; anything else is reported, never passed through.
+"""
+
+import re
+
+from mathlab.expressions import InputError
+
+TOKEN = re.compile(r"\\\\[A-Za-z]+|\\\\.|\\d+(?:\\.\\d+)?|\\S")
+
+FUNCTIONS = {
+    **{
+        name: name
+        for name in (
+            "sin cos tan sec csc cot sinh cosh tanh coth arcsin arccos arctan ln log exp"
+        ).split()
+    },
+    "arcsec": "arcsec",
+    "arccsc": "arccsc",
+    "arccot": "arccot",
+}
+
+# Functions whose -1 power means the inverse function: sin⁻¹ x is arcsin x.
+INVERTIBLE = set("sin cos tan sec csc cot sinh cosh tanh".split())
+
+# Functions spelled with \\operatorname{...}.
+OPERATOR_NAMES = {
+    "sech",
+    "csch",
+    "coth",
+    "arcsec",
+    "arccsc",
+    "arccot",
+    "arcsinh",
+    "arccosh",
+    "arctanh",
+    "sgn",
+    "sign",
+    "erf",
+    "floor",
+    "ceil",
+    "abs",
+}
+
+GREEK = {
+    "alpha",
+    "theta",
+    "phi",
+    "varphi",
+    "omega",
+    "lambda",
+    "mu",
+    "sigma",
+    "tau",
+    "rho",
+    "delta",
+    "epsilon",
+    "varepsilon",
+    "psi",
+    "xi",
+    "eta",
+    "kappa",
+    "nu",
+}
+GREEK_SPELLINGS = {"lambda": "lamda", "varphi": "phi", "varepsilon": "epsilon"}
+
+SYMBOLS = {
+    r"\\pi": "pi",
+    r"\\infty": "oo",
+    r"\\cdot": "*",
+    r"\\times": "*",
+    r"\\ast": "*",
+    r"\\div": "/",
+    r"\\exponentialE": "e",
+    r"\\Gamma": "gamma",
+    r"\\lvert": "|",
+    r"\\rvert": "|",
+    r"\\vert": "|",
+    r"\\mid": "|",
+}
+
+SPACING = {r"\\,", r"\\;", r"\\:", r"\\!", r"\\ ", r"\\quad", r"\\qquad"}
+
+# Brackets. \\mleft and \\mright are MathLive's spellings of \\left and \\right.
+LEFT_COMMANDS = {r"\\left", r"\\mleft"}
+RIGHT_COMMANDS = {r"\\right", r"\\mright"}
+OPENING_TOKENS = {"(", "[", *LEFT_COMMANDS}
+CLOSING_TOKENS = {")", "]", *RIGHT_COMMANDS}
+ABSOLUTE_VALUE_BARS = {"|", r"\\vert", r"\\lvert"}
+
+# A function's argument ends at these, so sin x cos x is sin(x)·cos(x).
+ARGUMENT_ENDS = {"+", "-", "=", ",", "/", "}", r"\\cdot", r"\\times", r"\\div", *CLOSING_TOKENS}
+
+
+class LatexReader:
+    def __init__(self, latex):
+        self.tokens = TOKEN.findall(latex)
+        self.position = 0
+
+    def peek(self):
+        return self.tokens[self.position] if self.position < len(self.tokens) else None
+
+    def take(self):
+        token = self.peek()
+        if token is None:
+            raise InputError("The expression seems to be unfinished.")
+        self.position += 1
+        return token
+
+    def skip_spacing(self):
+        while self.peek() in SPACING:
+            self.position += 1
+
+    def read(self, stop=lambda token: False):
+        """Read until stop(token) is true or the input ends; return plain text."""
+        parts = []
+        while True:
+            self.skip_spacing()
+            token = self.peek()
+            if token is None or stop(token):
+                return " ".join(parts)
+            parts.append(self.atom())
+
+    def group(self):
+        """One argument: {...} or a single item, like the 2 in x^2."""
+        self.skip_spacing()
+        if self.peek() == "{":
+            self.take()
+            text = self.read(lambda token: token == "}")
+            self.take()
+            return text
+        return self.atom()
+
+    def delimited(self):
+        """A bracketed group, as text with its brackets.
+
+        Brackets pair up by counting, not by kind. The math box can store
+        7(sin(2x+3))^2 as 7( \\\\sin\\\\left(2x+3) \\\\right)^2 -- the ) typed
+        inside sin's brackets closes them, and sin's \\\\right) closes the
+        first (. Pairing by kind would misread that; counting matches what
+        is on screen.
+        """
+        token = self.take()
+        is_absolute_value = False
+        if token in LEFT_COMMANDS:
+            bracket = self.take()
+            is_absolute_value = bracket in ABSOLUTE_VALUE_BARS
+        parts = []
+        while True:
+            self.skip_spacing()
+            next_token = self.peek()
+            if next_token is None:
+                raise InputError("A bracket is never closed. Add the missing ).")
+            if next_token in CLOSING_TOKENS:
+                self.take()
+                if next_token in RIGHT_COMMANDS:
+                    self.take()  # The bracket's shape, such as ) or |.
+                inner = " ".join(parts)
+                return f"abs({inner})" if is_absolute_value else f"({inner})"
+            parts.append(self.atom())
+
+    def function(self, name):
+        """A function and its argument, following textbook conventions."""
+        self.skip_spacing()
+        power = None
+        base = None
+        if self.peek() == "_" and name == "log":
+            self.take()
+            base = self.group()
+        if self.peek() == "^":
+            self.take()
+            power = self.group()
+        self.skip_spacing()
+        if self.peek() in OPENING_TOKENS:
+            argument = self.delimited()
+        else:
+            argument = f"({self.read(lambda token: token in ARGUMENT_ENDS or self.is_function(token))})"
+            if argument == "()":
+                raise InputError(f"{name} needs something to act on, like {name}(x).")
+        if name in INVERTIBLE and power is not None and power.replace(" ", "") in ("-1", "(-1)"):
+            # sin⁻¹ x means arcsin x, not 1/sin x.
+            name, power = f"arc{name}", None
+        call = f"log({argument}, {base})" if base is not None else f"{name}({argument})"
+        return f"({call})^({power})" if power is not None else call
+
+    def is_function(self, token):
+        if token == r"\\operatorname":
+            return True
+        return token.startswith("\\\\") and token[1:] in FUNCTIONS
+
+    def atom(self):
+        token = self.take()
+        if token in OPENING_TOKENS:
+            self.position -= 1
+            return self.delimited()
+        if token in CLOSING_TOKENS or token == "}":
+            raise InputError("There's an extra closing bracket.")
+        if token == r"\\placeholder":
+            raise InputError("Fill in the empty boxes first.")
+        if token == "{":
+            text = self.read(lambda next_token: next_token == "}")
+            self.take()
+            return f"({text})"
+        if token == "^":
+            return f"^({self.group()})"
+        if token == "_":
+            raise InputError("Subscripts aren't supported here, except in log_b.")
+        if token in (r"\\frac", r"\\dfrac", r"\\tfrac"):
+            numerator = self.group()
+            denominator = self.group()
+            return f"(({numerator})/({denominator}))"
+        if token == r"\\sqrt":
+            if self.peek() == "[":
+                self.take()
+                index = self.read(lambda next_token: next_token == "]")
+                self.take()
+                return f"root({self.group()}, {index})"
+            return f"sqrt({self.group()})"
+        if token == r"\\operatorname":
+            name = self.group().replace(" ", "")
+            if name not in OPERATOR_NAMES:
+                raise InputError(f"I don't know the function {name} yet.")
+            return self.function(name)
+        if token in (r"\\mathrm", r"\\text", r"\\mathit"):
+            text = self.group().replace(" ", "")
+            if text in ("e", "d", "x", "y") or text in FUNCTIONS:
+                return self.function(text) if text in FUNCTIONS else text
+            raise InputError(f'I can\\'t read the text "{text}" here.')
+        if token.startswith("\\\\") and token[1:] in FUNCTIONS:
+            return self.function(FUNCTIONS[token[1:]])
+        if token.startswith("\\\\") and token[1:] in GREEK:
+            return GREEK_SPELLINGS.get(token[1:], token[1:])
+        if token in SYMBOLS:
+            return SYMBOLS[token]
+        if token in SPACING:
+            return ""
+        if token.startswith("\\\\"):
+            raise InputError(f"I can't read {token} yet.")
+        return token
+
+
+def latex_to_text(latex):
+    """Plain text for the parser, from LaTeX typed in the math input box."""
+    reader = LatexReader(latex)
+    text = reader.read()
+    if reader.peek() is not None:
+        raise InputError("Check the brackets: one of them doesn't pair up.")
+    return text
 `,"./python/mathlab/multivariable.py":`"""Functions of two variables: partial derivatives, the gradient, and surface samples."""
 
 import math
@@ -1140,7 +1551,7 @@ import math
 import mpmath
 import sympy
 
-from mathlab.checks import check_partial_derivative, numeric_function, plot_value
+from mathlab.checks import check_partial_derivative, check_with_constants, numeric_function, plot_value
 from mathlab.derivative_steps import Differentiation, derivative_with_steps
 from mathlab.expressions import X, Y, InputError, to_latex
 
@@ -1201,15 +1612,35 @@ def partial_derivative(function, variable):
         "variable": d.name,
         "equationLatex": rf"f_{{{d.name}}} = {d.of(function)} = {to_latex(derivative)}",
         "resultText": str(derivative),
-        "check": check_partial_derivative(function, derivative, variable),
+        "check": check_with_constants(
+            lambda f, result: check_partial_derivative(f, result, variable),
+            function,
+            derivative,
+            VARIABLES,
+        ),
         "steps": steps,
         "stepsNote": steps_note,
+    }
+
+
+def gradient_with_constants(partials, substitutions, at):
+    """The gradient when f has constants like a: exact, with no decimals."""
+    exact = [sympy.simplify(partial.subs(substitutions)) for partial in partials]
+    vector = rf"\\left\\langle {to_latex(exact[0])},\\ {to_latex(exact[1])} \\right\\rangle"
+    length = sympy.simplify(sympy.sqrt(exact[0] ** 2 + exact[1] ** 2))
+    return {
+        "ok": True,
+        "latex": rf"\\nabla f{at} = {vector}",
+        "lengthLatex": rf"\\left\\lVert \\nabla f{at} \\right\\rVert = {to_latex(length)}",
+        "vector": None,
     }
 
 
 def gradient_at(function, partials, point):
     substitutions = dict(zip(VARIABLES, point))
     at = point_latex(point)
+    if function.free_symbols - set(VARIABLES):
+        return gradient_with_constants(partials, substitutions, at)
     components = [exact_real(partial.subs(substitutions)) for partial in partials]
     if exact_real(function.subs(substitutions)) is None or None in components:
         return {
@@ -1273,14 +1704,331 @@ def sample_surface(function, center):
 def partial_derivatives(function, point):
     results = [partial_derivative(function, variable) for variable in VARIABLES]
     partials = [derivative for derivative, _ in results]
+    constants = sorted(function.free_symbols - set(VARIABLES), key=str)
     return {
         "ok": True,
         "operation": "partial",
         "functionLatex": rf"f(x, y) = {to_latex(function)}",
+        "constants": [to_latex(constant) for constant in constants],
         "partials": [details for _, details in results],
         "gradient": gradient_at(function, partials, point),
-        "surface": sample_surface(function, point),
+        # With constants like a there is no single surface to draw.
+        "surface": None if constants else sample_surface(function, point),
     }
+`,"./python/mathlab/parsing.py":`"""Reading the student's input: translate textbook notation, then parse safely.
+
+Students write math many ways: x², √x, |x|, π, 2·x, log_2(x), sin⁻¹... All of
+it is translated to plain text first. Only then is the text checked against a
+short list of safe characters, because SymPy's parse_expr runs its input as
+Python. Letters other than the variables are constants, like a, b, c in
+a x^2 + b x + c.
+"""
+
+import math
+import re
+import string
+
+import sympy
+from sympy.parsing.sympy_parser import (
+    _token_splittable,
+    convert_xor,
+    function_exponentiation,
+    implicit_application,
+    implicit_multiplication,
+    parse_expr,
+    split_symbols_custom,
+    standard_transformations,
+)
+
+from mathlab.expressions import X, InputError
+
+MAX_INPUT_LENGTH = 200
+# Exact numbers with more digits than this are refused; SymPy would take
+# minutes or hours to build them.
+MAX_EXACT_DIGITS = 100_000
+
+# After translation, only these characters may remain. Without quotes,
+# brackets, underscores, or = signs, input cannot reach anything in Python
+# except SymPy's math functions.
+ALLOWED_CHARACTERS = re.compile(r"[A-Za-z0-9\\s+\\-*/^().,!]*")
+
+GREEK_LETTERS = {
+    "α": "alpha",
+    "θ": "theta",
+    "φ": "phi",
+    "ϕ": "phi",
+    "ω": "omega",
+    "λ": "lamda",  # SymPy's spelling, since lambda is a Python keyword.
+    "μ": "mu",
+    "σ": "sigma",
+    "τ": "tau",
+    "ρ": "rho",
+    "δ": "delta",
+    "ε": "epsilon",
+    "ψ": "psi",
+    "ξ": "xi",
+    "η": "eta",
+    "κ": "kappa",
+    "ν": "nu",
+}
+
+# Symbols to plain text. Spaces keep names apart: 2π becomes 2 pi.
+SYMBOL_TRANSLATIONS = {
+    "π": " pi ",
+    "∞": " oo ",
+    "√": " sqrt ",
+    "∛": " cbrt ",
+    "Γ": " gamma ",
+    "·": "*",
+    "⋅": "*",
+    "×": "*",
+    "∗": "*",
+    "÷": "/",
+    "∕": "/",
+    "−": "-",
+    "–": "-",
+    "—": "-",
+    "[": "(",
+    "]": ")",
+    "{": "(",
+    "}": ")",
+    **{letter: f" {name} " for letter, name in GREEK_LETTERS.items()},
+}
+
+SUPERSCRIPTS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺", "0123456789-+")
+SUPERSCRIPT_RUN = re.compile("[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]+")
+
+
+def log_base(base):
+    return lambda argument: sympy.log(argument, base)
+
+
+# Names students use that SymPy spells differently. Everything else, such as
+# sec, sinh, sqrt, cbrt, exp, floor, erf, and gamma, comes from SymPy itself.
+FUNCTION_ALIASES = {
+    "ln": sympy.log,
+    "log10": log_base(10),
+    "log2": log_base(2),
+    "arcsin": sympy.asin,
+    "arccos": sympy.acos,
+    "arctan": sympy.atan,
+    "arcsec": sympy.asec,
+    "arccsc": sympy.acsc,
+    "arccot": sympy.acot,
+    "arcsinh": sympy.asinh,
+    "arccosh": sympy.acosh,
+    "arctanh": sympy.atanh,
+    "abs": sympy.Abs,
+    "sgn": sympy.sign,
+    "ceil": sympy.ceiling,
+}
+
+# Every function name a student might type, for spotting typos like sinx.
+FUNCTION_NAMES = sorted(
+    {
+        *FUNCTION_ALIASES,
+        *"sin cos tan sec csc cot sinh cosh tanh sech csch coth".split(),
+        *"asin acos atan asec acsc acot asinh acosh atanh log exp sqrt cbrt".split(),
+        *"floor ceiling sign erf gamma factorial".split(),
+    },
+    key=len,
+    reverse=True,
+)
+
+# Letters stand for constants (every letter except e, which is Euler's number).
+CONSTANT_NAMES = [letter for letter in string.ascii_letters if letter not in "eE"] + sorted(
+    set(GREEK_LETTERS.values())
+)
+
+NAMES = {
+    "e": sympy.E,
+    "E": sympy.E,
+    "pi": sympy.pi,
+    **FUNCTION_ALIASES,
+    **{name: sympy.Symbol(name, real=True) for name in CONSTANT_NAMES},
+}
+
+
+def splittable(name):
+    """Whether to split a run of letters like xy into x*y. Runs that start with a
+    function name, like sinx, are kept whole so they can be reported as typos."""
+    if any(name.startswith(function) for function in FUNCTION_NAMES):
+        return False
+    return _token_splittable(name)
+
+
+TRANSFORMATIONS = standard_transformations + (
+    split_symbols_custom(splittable),
+    implicit_multiplication,
+    implicit_application,
+    function_exponentiation,
+    convert_xor,
+)
+
+# Textbook notation like sin^2(x), which means (sin(x))^2.
+FUNCTION_POWER = re.compile(r"\\b(sin|cos|tan|sec|csc|cot|sinh|cosh|tanh|ln|log)\\^(\\d+)\\s*\\(")
+# log_2(x) or log_b(x): a logarithm with a base.
+LOG_WITH_BASE = re.compile(r"\\blog_([0-9]+|[A-Za-z])\\s*\\(")
+
+
+def find_closing_parenthesis(text, open_index):
+    depth = 0
+    for index in range(open_index, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def rewrite_function_powers(text):
+    """Rewrite sin^2(x) as (sin(x))^2, which SymPy can parse."""
+    while match := FUNCTION_POWER.search(text):
+        open_index = match.end() - 1
+        close_index = find_closing_parenthesis(text, open_index)
+        if close_index is None:
+            break  # Unbalanced parentheses; the parser reports the error.
+        name, power = match.group(1), match.group(2)
+        argument = text[open_index : close_index + 1]
+        text = f"{text[: match.start()]}({name}{argument})^{power}{text[close_index + 1 :]}"
+    return text
+
+
+def rewrite_log_bases(text):
+    """Rewrite log_2(x) as log(x, 2)."""
+    while match := LOG_WITH_BASE.search(text):
+        open_index = match.end() - 1
+        close_index = find_closing_parenthesis(text, open_index)
+        if close_index is None:
+            break
+        argument = text[open_index + 1 : close_index]
+        text = f"{text[: match.start()]}log({argument}, {match.group(1)}){text[close_index + 1 :]}"
+    return text
+
+
+def rewrite_absolute_bars(text):
+    """Rewrite |x| as abs(x). A bar opens a new absolute value at the start, after
+    an operator or another bar; otherwise it closes the innermost one."""
+    result = []
+    depth = 0
+    for index, character in enumerate(text):
+        if character != "|":
+            result.append(character)
+            continue
+        previous = text[:index].rstrip()[-1:]
+        if depth == 0 or previous in ("", "(", "+", "-", "*", "/", "^", ",", "|"):
+            result.append("abs(")
+            depth += 1
+        else:
+            result.append(")")
+            depth -= 1
+    if depth != 0:
+        raise InputError("The absolute value bars | | don't pair up.")
+    return "".join(result)
+
+
+# √ or ∛ directly before one number or letter applies to just that, as in
+# √x · sin(x). Before a parenthesis it applies to the whole parenthesis.
+ROOT_OF_ONE_SYMBOL = re.compile(r"([√∛])\\s*(\\d+(?:\\.\\d+)?|[A-Za-zπα-ω])")
+
+
+def translate_notation(text):
+    """Turn textbook notation into text the parser reads."""
+    text = ROOT_OF_ONE_SYMBOL.sub(lambda match: f"{match.group(1)}({match.group(2)})", text)
+    for symbol, replacement in SYMBOL_TRANSLATIONS.items():
+        text = text.replace(symbol, replacement)
+    text = SUPERSCRIPT_RUN.sub(lambda run: f"^({run.group().translate(SUPERSCRIPTS)})", text)
+    text = rewrite_absolute_bars(text)
+    text = rewrite_log_bases(text)
+    return rewrite_function_powers(text)
+
+
+def has_enormous_number(expression):
+    """True if computing expression exactly would build a gigantic number, like
+    9^9^9^9, which would freeze SymPy. expression must be unevaluated."""
+    if any(has_enormous_number(argument) for argument in expression.args):
+        return True
+    if not isinstance(expression, sympy.Pow) or expression.free_symbols:
+        return False
+    base, exponent = expression.args
+    try:
+        # Inner powers were checked above, so these are safe to approximate.
+        base_size = abs(float(base.evalf(15)))
+        exponent_size = abs(float(exponent.evalf(15)))
+    except (TypeError, ValueError):  # Not a real number, such as a complex power.
+        return False
+    if base_size in (0.0, 1.0):
+        return False
+    digits = exponent_size * abs(math.log10(base_size))
+    return digits > MAX_EXACT_DIGITS
+
+
+def typo_suggestion(name):
+    """For a run of letters like sinx, suggest sin(x)."""
+    for function in FUNCTION_NAMES:
+        if name.startswith(function) and len(name) > len(function):
+            return f" Did you mean {function}({name[len(function):]})?"
+    return " Use one letter per constant, or put * between letters."
+
+
+def parse_function(text, variables=(X,)):
+    """Parse the student's function. Letters other than the variables are constants."""
+    two_variables = len(variables) == 2
+    example = "x^2 y + sin(x y)" if two_variables else "x^2 sin(x)"
+    text = text.strip()
+    if not text:
+        description = "x and y" if two_variables else "x"
+        raise InputError(f"Type a function of {description}, such as {example}.")
+    if len(text) > MAX_INPUT_LENGTH:
+        raise InputError(f"That expression is too long (the limit is {MAX_INPUT_LENGTH} characters).")
+    text = translate_notation(text)
+    unknown_characters = sorted({character for character in text if not ALLOWED_CHARACTERS.fullmatch(character)})
+    if unknown_characters:
+        raise InputError(f"These characters can't be used here: {' '.join(unknown_characters)}")
+    local_names = {**NAMES, **{variable.name: variable for variable in variables}}
+    try:
+        # Read it first without computing anything, to catch enormous numbers.
+        unevaluated = parse_expr(text, local_dict=local_names, transformations=TRANSFORMATIONS, evaluate=False)
+        if has_enormous_number(unevaluated):
+            raise InputError("That contains a number too large to compute exactly, such as 9^9^9.")
+        function = parse_expr(text, local_dict=local_names, transformations=TRANSFORMATIONS)
+    except InputError:
+        raise
+    except Exception as error:  # The parser raises many error types for bad syntax.
+        raise InputError("Couldn't read that expression. Check the parentheses and operators.") from error
+    if not isinstance(function, sympy.Expr):
+        raise InputError(f"That isn't a function. Try something like {example}.")
+    for symbol in function.free_symbols:
+        if symbol.name not in local_names:
+            raise InputError(f"I don't know \\"{symbol.name}\\".{typo_suggestion(symbol.name)}")
+    if function.has(sympy.zoo, sympy.nan, sympy.oo, -sympy.oo):
+        raise InputError("That expression is undefined, for example because it divides by zero.")
+    return function
+
+
+def constants_in(function, variables):
+    """The letters in function other than its variables, sorted by name."""
+    return sorted(function.free_symbols - set(variables), key=lambda symbol: symbol.name)
+`,"./python/mathlab/progress.py":`"""Progress messages for long calculations, shown on the page while it waits.
+
+run_request() sets a listener for the duration of a request; any module can
+call report() to say what it is trying, such as "Trying the textbook rules…".
+"""
+
+_listener = None
+
+
+def listen(listener):
+    """Send reports to listener (a function taking a message), or stop with None."""
+    global _listener
+    _listener = listener
+
+
+def report(message):
+    if _listener is not None:
+        _listener(message)
 `,"./python/mathlab/steps.py":`"""The step format shared by derivative and integral explanations.
 
 A step is a dict with the rule's name, a short explanation (text with inline
@@ -1307,4 +2055,4 @@ def make_step(rule, explanation, math_parts, substeps=()):
     }
 `}),t=`/home/pyodide/python`;function n(n){for(let[r,i]of Object.entries(e)){let e=`${t}/${r.replace(`./python/`,``)}`;n.FS.mkdirTree(e.slice(0,e.lastIndexOf(`/`))),n.FS.writeFile(e,i)}return n.pyimport(`sys`).path.insert(0,t),n.pyimport(`mathlab.calculus`).run_request}const r=`https://cdn.jsdelivr.net/pyodide/v314.0.7/full/`;function i(e){self.postMessage(e)}async function a(){i({type:`progress`,message:`Downloading Python…`});let{loadPyodide:e}=await import(
 /* @vite-ignore */
-`${r}pyodide.mjs`),t=await e({indexURL:r});return i({type:`progress`,message:`Loading SymPy…`}),await t.loadPackage(`sympy`),n(t)}const o=a();o.then(()=>i({type:`ready`}),e=>i({type:`loadFailed`,error:String(e)})),self.onmessage=async e=>{let{id:t,operation:n,expression:r,point:a}=e.data,s;try{let e=await o;s=JSON.parse(e(JSON.stringify({operation:n,expression:r,point:a})))}catch(e){s={ok:!1,error:`The math engine failed: ${String(e)}`}}i({type:`response`,id:t,response:s})};
+`${r}pyodide.mjs`),t=await e({indexURL:r});return i({type:`progress`,message:`Loading SymPy…`}),await t.loadPackage(`sympy`),n(t)}const o=a();o.then(()=>i({type:`ready`}),e=>i({type:`loadFailed`,error:String(e)})),self.onmessage=async e=>{let{id:t,...n}=e.data,r;try{let e=await o,a=e=>i({type:`solveProgress`,id:t,message:e});r=JSON.parse(e(JSON.stringify({...n,format:`latex`}),a))}catch(e){r={ok:!1,error:`The math engine failed: ${String(e)}`}}i({type:`response`,id:t,response:r})};
