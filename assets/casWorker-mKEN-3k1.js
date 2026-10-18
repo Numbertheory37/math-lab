@@ -96,263 +96,269 @@ def find_antiderivative(function, variable=X, general=True):
         "Steps aren't available: SymPy found this antiderivative with an advanced algorithm "
         "rather than the rules taught in calculus courses.",
     )
-`,"./python/mathlab/calculus.py":`"""Calculus operations for the solver, run inside Pyodide (Python in the browser).
-
-The TypeScript side calls run_request() with a JSON string and gets a JSON
-string back. SymPy does the math, every answer is checked independently
-before it is shown, and answers come with step-by-step explanations when the
-rules taught in calculus courses can produce them.
-"""
-
-import json
-
-import mpmath
-import sympy
-
-from mathlab.antiderivatives import find_antiderivative
-from mathlab.checks import check_derivative, check_with_constants, numeric_function, plot_value
-from mathlab.curves import analyze_curve, parse_curve_function, trace
-from mathlab.definite import definite_integral
-from mathlab.directional import direction_picture, directional_derivative, number
-from mathlab.line_integrals import line_integral, line_trace
-from mathlab.optimize import constraint_picture, optimize
-from mathlab.tangent import tangent_picture, tangent_plane
-from mathlab.derivative_steps import derivative_with_steps
-from mathlab.double import double_integral
-from mathlab.expressions import X, Y, Z, T, InputError, to_latex
-from mathlab.latex_input import latex_to_text
-from mathlab.multivariable import parse_point, partial_derivatives, slices
-from mathlab.parsing import constants_in, parse_function
-from mathlab.practice import check, practice
-from mathlab.practice import solution as practice_solution
-from mathlab.progress import listen
-from mathlab.riemann import riemann_sum
-from mathlab.solid import solid_picture
-from mathlab.space_curves import analyze_space_curve, space_trace
-from mathlab.triple import triple_integral
-from mathlab.vectors import analyze_vectors, parse_vector
-
-GRAPH_X_MIN = -10.0
-GRAPH_X_MAX = 10.0
-GRAPH_POINT_COUNT = 801
-
-
-def sample_for_graph(expression):
-    as_numeric = numeric_function(expression)
-    values = []
-    for index in range(GRAPH_POINT_COUNT):
-        point = GRAPH_X_MIN + (GRAPH_X_MAX - GRAPH_X_MIN) * index / (GRAPH_POINT_COUNT - 1)
-        values.append(plot_value(lambda: as_numeric(mpmath.mpf(point))))
-    return values
-
-
-def graph_x_values():
-    return [
-        round(GRAPH_X_MIN + (GRAPH_X_MAX - GRAPH_X_MIN) * index / (GRAPH_POINT_COUNT - 1), 6)
-        for index in range(GRAPH_POINT_COUNT)
-    ]
-
-
-def solution(operation, function, equation_latex, result, check, steps, steps_note):
-    constants = constants_in(function, (X,))
-    # With constants like a and b there is no single curve to draw.
-    graph = None
-    if not constants:
-        graph = {
-            "x": graph_x_values(),
-            "input": sample_for_graph(function),
-            "result": sample_for_graph(result),
-        }
-    return {
-        "ok": True,
-        "operation": operation,
-        "equationLatex": equation_latex,
-        "resultLatex": to_latex(result),
-        "resultText": str(result),
-        "constants": [to_latex(constant) for constant in constants],
-        "check": check,
-        "steps": steps,
-        "stepsNote": steps_note,
-        "graph": graph,
-    }
-
-
-def differentiate(function):
-    derivative, steps, steps_note = derivative_with_steps(function)
-    equation = rf"\\frac{{d}}{{dx}}\\left[{to_latex(function)}\\right] = {to_latex(derivative)}"
-    check = check_with_constants(check_derivative, function, derivative)
-    return solution("differentiate", function, equation, derivative, check, steps, steps_note)
-
-
-def integral_solution(function, antiderivative, check, steps, steps_note):
-    equation = f"{to_latex(sympy.Integral(function, X))} = {to_latex(antiderivative)} + C"
-    return solution("integrate", function, equation, antiderivative, check, steps, steps_note)
-
-
-def integrate(function):
-    return integral_solution(function, *find_antiderivative(function))
-
-
-def expression_text(request):
-    """The request's expression as plain text. The math input box sends LaTeX."""
-    expression = request.get("expression", "")
-    return latex_to_text(expression) if request.get("format") == "latex" else expression
-
-
-def preview(request):
-    """How the input reads as math, shown while the student types."""
-    variables = {("x", "y"): (X, Y), ("x", "y", "z"): (X, Y, Z)}.get(
-        tuple(request.get("variables") or ()), (X,)
-    )
-    function = parse_function(expression_text(request), variables)
-    return {
-        "ok": True,
-        "operation": "preview",
-        "latex": to_latex(function),
-        "constants": [to_latex(constant) for constant in constants_in(function, variables)],
-    }
-
-
-def solid_bounds(request):
-    """A triple integral's bounds as (lower, upper) LaTeX pairs, innermost first:
-    the innermost may use the two other variables, the middle the outermost one."""
-    return (
-        (request.get("innerLower"), request.get("innerUpper")),
-        (request.get("middleLower"), request.get("middleUpper")),
-        (request.get("lower"), request.get("upper")),
-    )
-
-
-def constraint_function(request):
-    """The constraint g, from its math box, or None when the box is empty."""
-    text = request.get("constraintLatex")
-    if not isinstance(text, str) or text.strip() == "":
-        return None
-    try:
-        return parse_function(latex_to_text(text), (X, Y, Z))
-    except InputError as error:
-        raise InputError(f"g: {error}") from error
-
-
-def constraint_picture_request(request):
-    return constraint_picture(
-        parse_function(expression_text(request), (X, Y)),
-        constraint_function(request),
-        parse_curve_function(request.get("xExpression"), "x(t)", T),
-        parse_curve_function(request.get("yExpression"), "y(t)", T),
-        (number(request.get("lower"), "start of t"), number(request.get("upper"), "end of t")),
-        int(request.get("positionCount") or 72),
-    )
-
-
-OPERATIONS = {
-    "preview": preview,
-    "differentiate": lambda request: differentiate(parse_function(expression_text(request))),
-    "integrate": lambda request: integrate(parse_function(expression_text(request))),
-    # The bounds come from math boxes too, as LaTeX.
-    "definite": lambda request: definite_integral(
-        parse_function(expression_text(request)), request.get("lower"), request.get("upper")
-    ),
-    # Inside bounds may depend on the outside variable; all bounds are LaTeX.
-    "double": lambda request: double_integral(
-        parse_function(expression_text(request), (X, Y)),
-        request.get("order"),
-        (request.get("innerLower"), request.get("innerUpper")),
-        (request.get("lower"), request.get("upper")),
-    ),
-    "triple": lambda request: triple_integral(
-        parse_function(expression_text(request), (X, Y, Z)),
-        request.get("order"),
-        solid_bounds(request),
-        request.get("coordinates") or "rectangular",
-    ),
-    # The triple-integrals lesson picture: the same bounds, with f = 1.
-    "solid": lambda request: solid_picture(request.get("order"), solid_bounds(request)),
-    "partial": lambda request: partial_derivatives(
-        parse_function(expression_text(request), (X, Y)), parse_point(request.get("point"))
-    ),
-    # Vector components are short plain-text numbers, like -1/2 or sqrt(3).
-    "vectors": lambda request: analyze_vectors(
-        parse_vector(request.get("a"), "a"), parse_vector(request.get("b"), "b")
-    ),
-    "slices": lambda request: slices(
-        parse_function(expression_text(request), (X, Y)), parse_point(request.get("point"))
-    ),
-    # The rectangle's bounds are LaTeX, like the other bounds.
-    "riemann": lambda request: riemann_sum(
-        parse_function(expression_text(request), (X, Y)),
-        request.get("rectangle"),
-        request.get("divisions"),
-        request.get("sample"),
-    ),
-    "curve": analyze_curve,
-    # The parametric and polar curves lesson picture.
-    "trace": trace,
-    "space": analyze_space_curve,
-    # The space curves lesson picture.
-    "spaceTrace": space_trace,
-    # Point coordinates and direction components are LaTeX from math boxes.
-    "directional": lambda request: directional_derivative(
-        parse_function(expression_text(request), (X, Y, Z)),
-        request.get("pointLatex"),
-        request.get("direction"),
-    ),
-    # The directional derivatives lesson picture.
-    "directions": lambda request: direction_picture(
-        parse_function(expression_text(request), (X, Y, Z)), request.get("pointLatex")
-    ),
-    # Point coordinates are LaTeX from math boxes; near is an optional nearby
-    # point for a linear approximation.
-    "tangent": lambda request: tangent_plane(
-        parse_function(expression_text(request), (X, Y, Z)),
-        request.get("tangentKind"),
-        request.get("pointLatex"),
-        request.get("nearLatex"),
-    ),
-    # The tangent planes lesson picture.
-    "tangentPicture": lambda request: tangent_picture(
-        parse_function(expression_text(request), (X, Y))
-    ),
-    # Critical points of f(x, y), or extreme values of f on g = k; the
-    # constraint g and its value k are LaTeX from math boxes.
-    "optimize": lambda request: optimize(
-        parse_function(expression_text(request), (X, Y, Z)),
-        request.get("optimizeKind"),
-        constraint_function(request),
-        request.get("level"),
-    ),
-    # The optimization lesson picture: f on a constraint curve given by x(t), y(t).
-    "constraintPicture": constraint_picture_request,
-    # Curve components, field components, and f are LaTeX from math boxes.
-    "line": line_integral,
-    # The line integrals lesson picture.
-    "lineTrace": line_trace,
-    "practice": practice,
-    "check": check,
-    "solution": practice_solution,
-}
-
-
-def run_request(request_json, on_progress=None):
-    """Entry point from TypeScript. Takes and returns JSON strings.
-
-    on_progress, if given, is called with short messages about what a long
-    calculation is trying.
-    """
-    request = json.loads(request_json)
-    listen(on_progress)
-    try:
-        operation = OPERATIONS.get(request.get("operation"))
-        if operation is None:
-            raise InputError(f"Unknown operation: {request.get('operation')}")
-        response = operation(request)
-    except InputError as error:
-        response = {"ok": False, "error": str(error)}
-    except Exception as error:  # Report any SymPy failure instead of crashing the worker.
-        response = {"ok": False, "error": f"SymPy couldn't finish this calculation ({type(error).__name__})."}
-    finally:
-        listen(None)
-    return json.dumps(response, allow_nan=False)
+`,"./python/mathlab/calculus.py":`"""Calculus operations for the solver, run inside Pyodide (Python in the browser).\r
+\r
+The TypeScript side calls run_request() with a JSON string and gets a JSON\r
+string back. SymPy does the math, every answer is checked independently\r
+before it is shown, and answers come with step-by-step explanations when the\r
+rules taught in calculus courses can produce them.\r
+"""\r
+\r
+import json\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.antiderivatives import find_antiderivative\r
+from mathlab.checks import check_derivative, check_with_constants, numeric_function, plot_value\r
+from mathlab.curves import analyze_curve, parse_curve_function, trace\r
+from mathlab.definite import definite_integral\r
+from mathlab.directional import direction_picture, directional_derivative, number\r
+from mathlab.green import green, green_sweep\r
+from mathlab.line_integrals import line_integral, line_trace\r
+from mathlab.optimize import constraint_picture, optimize\r
+from mathlab.tangent import tangent_picture, tangent_plane\r
+from mathlab.derivative_steps import derivative_with_steps\r
+from mathlab.double import double_integral\r
+from mathlab.expressions import X, Y, Z, T, InputError, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.multivariable import parse_point, partial_derivatives, slices\r
+from mathlab.parsing import constants_in, parse_function\r
+from mathlab.practice import check, practice\r
+from mathlab.practice import solution as practice_solution\r
+from mathlab.progress import listen\r
+from mathlab.riemann import riemann_sum\r
+from mathlab.solid import solid_picture\r
+from mathlab.space_curves import analyze_space_curve, space_trace\r
+from mathlab.triple import triple_integral\r
+from mathlab.vectors import analyze_vectors, parse_vector\r
+\r
+GRAPH_X_MIN = -10.0\r
+GRAPH_X_MAX = 10.0\r
+GRAPH_POINT_COUNT = 801\r
+\r
+\r
+def sample_for_graph(expression):\r
+    as_numeric = numeric_function(expression)\r
+    values = []\r
+    for index in range(GRAPH_POINT_COUNT):\r
+        point = GRAPH_X_MIN + (GRAPH_X_MAX - GRAPH_X_MIN) * index / (GRAPH_POINT_COUNT - 1)\r
+        values.append(plot_value(lambda: as_numeric(mpmath.mpf(point))))\r
+    return values\r
+\r
+\r
+def graph_x_values():\r
+    return [\r
+        round(GRAPH_X_MIN + (GRAPH_X_MAX - GRAPH_X_MIN) * index / (GRAPH_POINT_COUNT - 1), 6)\r
+        for index in range(GRAPH_POINT_COUNT)\r
+    ]\r
+\r
+\r
+def solution(operation, function, equation_latex, result, check, steps, steps_note):\r
+    constants = constants_in(function, (X,))\r
+    # With constants like a and b there is no single curve to draw.\r
+    graph = None\r
+    if not constants:\r
+        graph = {\r
+            "x": graph_x_values(),\r
+            "input": sample_for_graph(function),\r
+            "result": sample_for_graph(result),\r
+        }\r
+    return {\r
+        "ok": True,\r
+        "operation": operation,\r
+        "equationLatex": equation_latex,\r
+        "resultLatex": to_latex(result),\r
+        "resultText": str(result),\r
+        "constants": [to_latex(constant) for constant in constants],\r
+        "check": check,\r
+        "steps": steps,\r
+        "stepsNote": steps_note,\r
+        "graph": graph,\r
+    }\r
+\r
+\r
+def differentiate(function):\r
+    derivative, steps, steps_note = derivative_with_steps(function)\r
+    equation = rf"\\frac{{d}}{{dx}}\\left[{to_latex(function)}\\right] = {to_latex(derivative)}"\r
+    check = check_with_constants(check_derivative, function, derivative)\r
+    return solution("differentiate", function, equation, derivative, check, steps, steps_note)\r
+\r
+\r
+def integral_solution(function, antiderivative, check, steps, steps_note):\r
+    equation = f"{to_latex(sympy.Integral(function, X))} = {to_latex(antiderivative)} + C"\r
+    return solution("integrate", function, equation, antiderivative, check, steps, steps_note)\r
+\r
+\r
+def integrate(function):\r
+    return integral_solution(function, *find_antiderivative(function))\r
+\r
+\r
+def expression_text(request):\r
+    """The request's expression as plain text. The math input box sends LaTeX."""\r
+    expression = request.get("expression", "")\r
+    return latex_to_text(expression) if request.get("format") == "latex" else expression\r
+\r
+\r
+def preview(request):\r
+    """How the input reads as math, shown while the student types."""\r
+    variables = {("x", "y"): (X, Y), ("x", "y", "z"): (X, Y, Z)}.get(\r
+        tuple(request.get("variables") or ()), (X,)\r
+    )\r
+    function = parse_function(expression_text(request), variables)\r
+    return {\r
+        "ok": True,\r
+        "operation": "preview",\r
+        "latex": to_latex(function),\r
+        "constants": [to_latex(constant) for constant in constants_in(function, variables)],\r
+    }\r
+\r
+\r
+def solid_bounds(request):\r
+    """A triple integral's bounds as (lower, upper) LaTeX pairs, innermost first:\r
+    the innermost may use the two other variables, the middle the outermost one."""\r
+    return (\r
+        (request.get("innerLower"), request.get("innerUpper")),\r
+        (request.get("middleLower"), request.get("middleUpper")),\r
+        (request.get("lower"), request.get("upper")),\r
+    )\r
+\r
+\r
+def constraint_function(request):\r
+    """The constraint g, from its math box, or None when the box is empty."""\r
+    text = request.get("constraintLatex")\r
+    if not isinstance(text, str) or text.strip() == "":\r
+        return None\r
+    try:\r
+        return parse_function(latex_to_text(text), (X, Y, Z))\r
+    except InputError as error:\r
+        raise InputError(f"g: {error}") from error\r
+\r
+\r
+def constraint_picture_request(request):\r
+    return constraint_picture(\r
+        parse_function(expression_text(request), (X, Y)),\r
+        constraint_function(request),\r
+        parse_curve_function(request.get("xExpression"), "x(t)", T),\r
+        parse_curve_function(request.get("yExpression"), "y(t)", T),\r
+        (number(request.get("lower"), "start of t"), number(request.get("upper"), "end of t")),\r
+        int(request.get("positionCount") or 72),\r
+    )\r
+\r
+\r
+OPERATIONS = {\r
+    "preview": preview,\r
+    "differentiate": lambda request: differentiate(parse_function(expression_text(request))),\r
+    "integrate": lambda request: integrate(parse_function(expression_text(request))),\r
+    # The bounds come from math boxes too, as LaTeX.\r
+    "definite": lambda request: definite_integral(\r
+        parse_function(expression_text(request)), request.get("lower"), request.get("upper")\r
+    ),\r
+    # Inside bounds may depend on the outside variable; all bounds are LaTeX.\r
+    "double": lambda request: double_integral(\r
+        parse_function(expression_text(request), (X, Y)),\r
+        request.get("order"),\r
+        (request.get("innerLower"), request.get("innerUpper")),\r
+        (request.get("lower"), request.get("upper")),\r
+    ),\r
+    "triple": lambda request: triple_integral(\r
+        parse_function(expression_text(request), (X, Y, Z)),\r
+        request.get("order"),\r
+        solid_bounds(request),\r
+        request.get("coordinates") or "rectangular",\r
+    ),\r
+    # The triple-integrals lesson picture: the same bounds, with f = 1.\r
+    "solid": lambda request: solid_picture(request.get("order"), solid_bounds(request)),\r
+    "partial": lambda request: partial_derivatives(\r
+        parse_function(expression_text(request), (X, Y)), parse_point(request.get("point"))\r
+    ),\r
+    # Vector components are short plain-text numbers, like -1/2 or sqrt(3).\r
+    "vectors": lambda request: analyze_vectors(\r
+        parse_vector(request.get("a"), "a"), parse_vector(request.get("b"), "b")\r
+    ),\r
+    "slices": lambda request: slices(\r
+        parse_function(expression_text(request), (X, Y)), parse_point(request.get("point"))\r
+    ),\r
+    # The rectangle's bounds are LaTeX, like the other bounds.\r
+    "riemann": lambda request: riemann_sum(\r
+        parse_function(expression_text(request), (X, Y)),\r
+        request.get("rectangle"),\r
+        request.get("divisions"),\r
+        request.get("sample"),\r
+    ),\r
+    "curve": analyze_curve,\r
+    # The parametric and polar curves lesson picture.\r
+    "trace": trace,\r
+    "space": analyze_space_curve,\r
+    # The space curves lesson picture.\r
+    "spaceTrace": space_trace,\r
+    # Point coordinates and direction components are LaTeX from math boxes.\r
+    "directional": lambda request: directional_derivative(\r
+        parse_function(expression_text(request), (X, Y, Z)),\r
+        request.get("pointLatex"),\r
+        request.get("direction"),\r
+    ),\r
+    # The directional derivatives lesson picture.\r
+    "directions": lambda request: direction_picture(\r
+        parse_function(expression_text(request), (X, Y, Z)), request.get("pointLatex")\r
+    ),\r
+    # Point coordinates are LaTeX from math boxes; near is an optional nearby\r
+    # point for a linear approximation.\r
+    "tangent": lambda request: tangent_plane(\r
+        parse_function(expression_text(request), (X, Y, Z)),\r
+        request.get("tangentKind"),\r
+        request.get("pointLatex"),\r
+        request.get("nearLatex"),\r
+    ),\r
+    # The tangent planes lesson picture.\r
+    "tangentPicture": lambda request: tangent_picture(\r
+        parse_function(expression_text(request), (X, Y))\r
+    ),\r
+    # Critical points of f(x, y), or extreme values of f on g = k; the\r
+    # constraint g and its value k are LaTeX from math boxes.\r
+    "optimize": lambda request: optimize(\r
+        parse_function(expression_text(request), (X, Y, Z)),\r
+        request.get("optimizeKind"),\r
+        constraint_function(request),\r
+        request.get("level"),\r
+    ),\r
+    # The optimization lesson picture: f on a constraint curve given by x(t), y(t).\r
+    "constraintPicture": constraint_picture_request,\r
+    # Curve components, field components, and f are LaTeX from math boxes.\r
+    "line": line_integral,\r
+    # The line integrals lesson picture.\r
+    "lineTrace": line_trace,\r
+    # F = <P, Q> and a region D described like a double integral's (dy dx or\r
+    # dx dy), or in polar coordinates; all LaTeX from math boxes.\r
+    "green": green,\r
+    # The Green's theorem lesson picture.\r
+    "greenSweep": green_sweep,\r
+    "practice": practice,\r
+    "check": check,\r
+    "solution": practice_solution,\r
+}\r
+\r
+\r
+def run_request(request_json, on_progress=None):\r
+    """Entry point from TypeScript. Takes and returns JSON strings.\r
+\r
+    on_progress, if given, is called with short messages about what a long\r
+    calculation is trying.\r
+    """\r
+    request = json.loads(request_json)\r
+    listen(on_progress)\r
+    try:\r
+        operation = OPERATIONS.get(request.get("operation"))\r
+        if operation is None:\r
+            raise InputError(f"Unknown operation: {request.get('operation')}")\r
+        response = operation(request)\r
+    except InputError as error:\r
+        response = {"ok": False, "error": str(error)}\r
+    except Exception as error:  # Report any SymPy failure instead of crashing the worker.\r
+        response = {"ok": False, "error": f"SymPy couldn't finish this calculation ({type(error).__name__})."}\r
+    finally:\r
+        listen(None)\r
+    return json.dumps(response, allow_nan=False)\r
 `,"./python/mathlab/checks.py":`"""Independent numerical checks of answers, so a wrong answer is flagged."""
 
 import itertools
@@ -2682,6 +2688,648 @@ def with_absolute_value_logs(expression):
         lambda part: isinstance(part, sympy.log) and not isinstance(part.args[0], sympy.Abs),
         lambda part: sympy.log(sympy.Abs(part.args[0])),
     )
+`,"./python/mathlab/green.py":`"""Green's theorem: ∮_C P dx + Q dy = ∬_D (∂Q/∂x − ∂P/∂y) dA, where C is the\r
+boundary of D traced counterclockwise (D on the left) and P and Q have\r
+continuous partial derivatives on all of D.\r
+\r
+D is given the way an iterated integral describes it: between two curves\r
+(y from g₁(x) to g₂(x), or x from h₁(y) to h₂(y)), or in polar coordinates\r
+(r from r₁(θ) to r₂(θ)). Both sides are computed: the double integral with\r
+the Solver's iterated integrals, and the line integral piece by piece around\r
+the boundary. Then they are compared, which checks each against the other.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.curves import latex_value, numerical_integral\r
+from mathlab.definite import parse_bound\r
+from mathlab.double import iterated_integral, numerical_check, parse_inside_bound\r
+from mathlab.expressions import R, T, THETA, X, Y, Z, InputError, factor_latex, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.line_integrals import (\r
+    GRAPH_POINTS,\r
+    along_curve,\r
+    curve_samples,\r
+    defined_everywhere,\r
+    field_arrows,\r
+    gentle,\r
+    independent_integrand,\r
+    integrate_along,\r
+    parenthesized,\r
+    simpson,\r
+)\r
+from mathlab.parsing import parse_function\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step, separate\r
+from mathlab.tangent import only_variables\r
+from mathlab.triple import parse_dependent_bound\r
+\r
+CHECK_DIGITS = 30\r
+CHECK_TOLERANCE = mpmath.mpf("1e-9")\r
+# Where the region's bounds are compared (lower ≤ upper, r ≥ 0), as fractions\r
+# of the outside interval.\r
+BOUND_CHECKS = 41\r
+# The lesson picture: positions of the sweep, and Simpson's rule with this\r
+# many pieces for each small step and for each line across the region.\r
+SWEEP_STEPS = 48\r
+SIMPSON_PIECES = 8\r
+CROSS_PIECES = 32\r
+CURL_GRID = 13\r
+\r
+# What each side of the region is called. The region is "inside from low(o)\r
+# to high(o), outside from a to b"; its boundary is the low curve, the edge\r
+# at o = b, the high curve, and the edge at o = a.\r
+NAMES = {\r
+    "dy dx": {"low": "bottom", "end": "right side", "high": "top", "start": "left side"},\r
+    "dx dy": {"low": "left side", "end": "top", "high": "right side", "start": "bottom"},\r
+    "polar": {"low": "inner curve", "end": "edge", "high": "outer curve", "start": "edge"},\r
+}\r
+\r
+\r
+def parse_field(texts):\r
+    texts = list(texts or [])\r
+    texts += [""] * (2 - len(texts))\r
+    field = []\r
+    for text, name in zip(texts[:2], ("P", "Q")):\r
+        if not isinstance(text, str) or text.strip() == "":\r
+            raise InputError(f"Enter {name}.")\r
+        try:\r
+            component = parse_function(latex_to_text(text), (X, Y, Z))\r
+        except InputError as error:\r
+            raise InputError(f"{name}: {error}") from error\r
+        if component.has(Z):\r
+            raise InputError("Green's theorem is for fields in the plane, so P and Q can use only x and y.")\r
+        only_variables(component, (X, Y), name)\r
+        field.append(component)\r
+    return sympy.Matrix(field)\r
+\r
+\r
+def region_from(request):\r
+    """The region D: its kind, its inside and outside variables and their\r
+    bounds, how (inside, outside) gives (x, y), and the area factor in dA."""\r
+    kind = request.get("order") if request.get("regionKind") != "polar" else "polar"\r
+    if kind not in NAMES:\r
+        raise InputError("Choose how to describe the region: dy dx, dx dy, or polar.")\r
+    if kind == "polar":\r
+        inside, outside = R, THETA\r
+        inner = tuple(\r
+            parse_dependent_bound(request.get(key), name, "inside", R, (THETA,))\r
+            for key, name in (("innerLower", "lower"), ("innerUpper", "upper"))\r
+        )\r
+        outer = tuple(\r
+            parse_bound(request.get(key), f"{name} θ") for key, name in (("lower", "starting"), ("upper", "ending"))\r
+        )\r
+    else:\r
+        inside, outside = (Y, X) if kind == "dy dx" else (X, Y)\r
+        inner = tuple(\r
+            parse_inside_bound(request.get(key), name, inside, outside)\r
+            for key, name in (("innerLower", "lower"), ("innerUpper", "upper"))\r
+        )\r
+        outer = tuple(\r
+            parse_bound(request.get(key), f"outside integral's {name}")\r
+            for key, name in (("lower", "lower"), ("upper", "upper"))\r
+        )\r
+    if any(bound.is_infinite for bound in outer):\r
+        raise InputError("The region must be bounded, so its bounds must be finite.")\r
+    width = sympy.simplify(outer[1] - outer[0])\r
+    if not width.is_positive:\r
+        raise InputError("The outside lower bound must be less than the upper bound, so the region isn't flat.")\r
+    if kind == "polar" and (width - 2 * sympy.pi).is_positive:\r
+        raise InputError("θ can go once around at most: the ending θ is at most 2π more than the starting one.")\r
+    return make_region(kind, inner, outer)\r
+\r
+\r
+def make_region(kind, inner, outer):\r
+    """kind is "dy dx", "dx dy", or "polar"; inner and outer are the inside and\r
+    outside (lower, upper) bounds. Practice problems use it too."""\r
+    inside, outside = {"dy dx": (Y, X), "dx dy": (X, Y), "polar": (R, THETA)}[kind]\r
+    region = {\r
+        "kind": kind,\r
+        "inside": inside,\r
+        "outside": outside,\r
+        "inner": inner,\r
+        "outer": outer,\r
+        "factor": R if kind == "polar" else sympy.Integer(1),\r
+    }\r
+    check_bounds(region)\r
+    return region\r
+\r
+\r
+def to_xy(region, inside_value, outside_value):\r
+    if region["kind"] == "polar":\r
+        return sympy.Matrix([inside_value * sympy.cos(outside_value), inside_value * sympy.sin(outside_value)])\r
+    if region["kind"] == "dy dx":\r
+        return sympy.Matrix([outside_value, inside_value])\r
+    return sympy.Matrix([inside_value, outside_value])\r
+\r
+\r
+def check_bounds(region):\r
+    """The lower inside bound must be at most the upper one all along the\r
+    region, or the boundary isn't traced counterclockwise; r can't be negative."""\r
+    outside = region["outside"]\r
+    low, high = (sympy.lambdify(outside, bound, modules="mpmath") for bound in region["inner"])\r
+    a, b = (mpmath.mpf(str(sympy.N(bound, 20))) for bound in region["outer"])\r
+    for index in range(BOUND_CHECKS):\r
+        o = a + (b - a) * index / (BOUND_CHECKS - 1)\r
+        try:\r
+            ends = [mpmath.mpmathify(bound(o)) for bound in (low, high)]\r
+        except (ValueError, ZeroDivisionError, TypeError):\r
+            ends = None\r
+        if ends is None or any(isinstance(end, mpmath.mpc) and abs(end.imag) > 1e-9 for end in ends):\r
+            raise InputError("The inside bounds aren't defined along the whole outside range.")\r
+        lower, upper = (mpmath.re(end) for end in ends)\r
+        if lower > upper + 1e-9:\r
+            raise InputError("The inside lower bound must be at most the upper bound everywhere in the region.")\r
+        if region["kind"] == "polar" and lower < -1e-9:\r
+            raise InputError("r can't be negative: the lower bound for r must be 0 or more.")\r
+\r
+\r
+def boundary_pieces(region):\r
+    """The boundary, counterclockwise: pieces (side, position r(t), interval).\r
+\r
+    In the (outside, inside) plane, the loop low curve → edge at b → high\r
+    curve → edge at a is counterclockwise. For dy dx that is (x, y) itself;\r
+    for dx dy and polar coordinates the plane is flipped, so the loop runs\r
+    backward. Pieces with no length are left out, and so are the two edges of\r
+    a polar region that goes all the way around, which trace the same ray in\r
+    opposite directions and cancel.\r
+    """\r
+    outside = region["outside"]\r
+    low, high = region["inner"]\r
+    a, b = region["outer"]\r
+    pieces = [\r
+        ("low", to_xy(region, low.subs(outside, T), T), (a, b)),\r
+        ("end", to_xy(region, T, b), (low.subs(outside, b), high.subs(outside, b))),\r
+        ("high", to_xy(region, high.subs(outside, T), T), (b, a)),\r
+        ("start", to_xy(region, T, a), (high.subs(outside, a), low.subs(outside, a))),\r
+    ]\r
+    edges_cancel = (\r
+        (to_xy(region, T, a) - to_xy(region, T, b)).applyfunc(sympy.simplify) == sympy.zeros(2, 1)\r
+        and sympy.simplify(low.subs(outside, a) - low.subs(outside, b)) == 0\r
+        and sympy.simplify(high.subs(outside, a) - high.subs(outside, b)) == 0\r
+    )\r
+    kept = []\r
+    for side, position, (start, stop) in pieces:\r
+        if side in ("start", "end") and edges_cancel:\r
+            continue\r
+        if sympy.simplify(stop - start) == 0:\r
+            continue\r
+        if position.diff(T).applyfunc(sympy.simplify) == sympy.zeros(2, 1):\r
+            continue\r
+        kept.append((side, position.applyfunc(sympy.simplify), (sympy.simplify(start), sympy.simplify(stop))))\r
+    if region["kind"] != "dy dx":\r
+        kept = [(side, position, (stop, start)) for side, position, (start, stop) in reversed(kept)]\r
+    return kept\r
+\r
+\r
+def side_description(region, side):\r
+    """Like "the bottom, $y = 0$" or "the edge $\\\\theta = \\\\pi$"."""\r
+    name = NAMES[region["kind"]][side]\r
+    low, high = region["inner"]\r
+    a, b = region["outer"]\r
+    inside, outside = to_latex(region["inside"]), to_latex(region["outside"])\r
+    if side in ("low", "high"):\r
+        bound = low if side == "low" else high\r
+        return rf"the {name}, \${inside} = {to_latex(bound)}$"\r
+    value = b if side == "end" else a\r
+    return rf"the {name} \${outside} = {to_latex(value)}$"\r
+\r
+\r
+def piece_step(number, region, field, side, position, interval):\r
+    """∫ over one piece of the boundary: the step, the exact value (or None),\r
+    and the numerical value."""\r
+    low, high = interval\r
+    velocity = position.diff(T)\r
+    on_curve = along_curve(field, (X, Y), position).applyfunc(gentle)\r
+    integrand = gentle(sympy.expand(on_curve.dot(velocity)))\r
+    direction = "increasing" if (high - low).is_positive else "decreasing"\r
+    explanation = (\r
+        rf"Along {side_description(region, side)}: $x = {to_latex(position[0])}$, "\r
+        rf"$y = {to_latex(position[1])}$, with $t$ {direction} from \${to_latex(low)}$ to "\r
+        rf"\${to_latex(high)}$, which keeps $D$ on the left. Then $dx = {to_latex(velocity[0])}\\,dt$ and "\r
+        rf"$dy = {to_latex(velocity[1])}\\,dt$."\r
+    )\r
+    name = rf"\\int_{{C_{number}}} P\\,dx + Q\\,dy"\r
+    if integrand == 0:\r
+        step = make_step(\r
+            f"Along the {NAMES[region['kind']][side]}",\r
+            explanation + r" Here $P\\,dx + Q\\,dy = 0$ all along the piece.",\r
+            [name, "0"],\r
+        )\r
+        return step, sympy.Integer(0), mpmath.mpf(0)\r
+    report(f"Integrating along piece {number} of the boundary…")\r
+    substeps, value, numeric = integrate_along(integrand, interval)\r
+    shown = latex_value(value) if value is not None else rf"\\approx {mpmath.nstr(numeric, 10)}"\r
+    step = make_step(\r
+        f"Along the {NAMES[region['kind']][side]}",\r
+        explanation,\r
+        [name, to_latex(sympy.Integral(integrand, (T, low, high))), shown],\r
+        substeps,\r
+    )\r
+    return step, value, numeric\r
+\r
+\r
+def line_side(region, field, pieces):\r
+    """∮_C P dx + Q dy, piece by piece: the step, the exact value (or None),\r
+    and the numerical value."""\r
+    steps, values, numerics = [], [], []\r
+    for number, (side, position, interval) in enumerate(pieces, start=1):\r
+        step, value, numeric = piece_step(number, region, field, side, position, interval)\r
+        steps.append(step)\r
+        values.append(value)\r
+        numerics.append(numeric)\r
+    exact = None if any(value is None for value in values) else sympy.simplify(sum(values))\r
+    numeric = sum(numerics)\r
+    names = " + ".join(rf"\\int_{{C_{number}}}" for number in range(1, len(pieces) + 1))\r
+    if exact is not None:\r
+        added = " + ".join(parenthesized(value) for value in values)\r
+        math = [r"\\oint_C P\\,dx + Q\\,dy", added, latex_value(exact)] if len(values) > 1 else [\r
+            r"\\oint_C P\\,dx + Q\\,dy",\r
+            latex_value(exact),\r
+        ]\r
+    else:\r
+        math = [r"\\oint_C P\\,dx + Q\\,dy", rf"\\approx {mpmath.nstr(numeric, 10)}"]\r
+    count = len(pieces)\r
+    step = make_step(\r
+        "Line integral around C",\r
+        rf"The long way, as a check: $C$ is made of {count} piece{'s' if count > 1 else ''}, "\r
+        rf"\${names}$, each traced so that $D$ is on the left. Integrate along each piece and add.",\r
+        math,\r
+        steps,\r
+    )\r
+    return step, exact, numeric\r
+\r
+\r
+def curl_step(field):\r
+    P, Q = field\r
+    Qx, Py = sympy.diff(Q, X), sympy.diff(P, Y)\r
+    curl = sympy.simplify(Qx - Py)\r
+    step = make_step(\r
+        "Green's theorem integrand",\r
+        r"$\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y}$ measures how much "\r
+        r"$\\mathbf{F}$ circulates, or spins, around each point: positive for counterclockwise. "\r
+        r"Green's theorem adds it up over $D$.",\r
+        [\r
+            separate(\r
+                rf"\\frac{{\\partial Q}}{{\\partial x}} = {to_latex(Qx)}",\r
+                rf"\\frac{{\\partial P}}{{\\partial y}} = {to_latex(Py)}",\r
+                rf"\\frac{{\\partial Q}}{{\\partial x}} - \\frac{{\\partial P}}{{\\partial y}} = {to_latex(curl)}",\r
+            ),\r
+        ],\r
+    )\r
+    return step, curl\r
+\r
+\r
+def double_side(region, curl):\r
+    """∬_D curl dA as an iterated integral: the step, the integrand in the\r
+    region's variables (None when curl is 0), and the exact value."""\r
+    if curl == 0:\r
+        step = make_step(\r
+            "Double integral over D",\r
+            r"The integrand is $0$, so the double integral is $0$.",\r
+            [r"\\iint_D 0\\, dA", "0"],\r
+        )\r
+        return step, None, sympy.Integer(0)\r
+    inside, outside = region["inside"], region["outside"]\r
+    substeps = []\r
+    integrand = curl\r
+    if region["kind"] == "polar":\r
+        substituted = sympy.simplify(curl.subs({X: R * sympy.cos(THETA), Y: R * sympy.sin(THETA)}, simultaneous=True))\r
+        integrand = sympy.simplify(substituted * R)\r
+        substeps.append(\r
+            make_step(\r
+                "Change to polar coordinates",\r
+                r"Write $x = r\\cos\\theta$ and $y = r\\sin\\theta$, and replace $dA$ by $r\\,dr\\,d\\theta$: "\r
+                r"a small polar box has sides $dr$ and $r\\,d\\theta$ (an arc of a circle of radius $r$), "\r
+                r"as in cylindrical coordinates.",\r
+                [\r
+                    r"\\left(\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y}\\right) dA",\r
+                    rf"{factor_latex(substituted)} \\cdot r\\, dr\\, d\\theta",\r
+                    rf"{to_latex(integrand)}\\, dr\\, d\\theta",\r
+                ],\r
+            )\r
+        )\r
+    iterated, steps, value = iterated_integral(integrand, inside, outside, region["inner"], region["outer"])\r
+    substeps.extend(steps[1:])\r
+    step = make_step(\r
+        "Double integral over D",\r
+        rf"Integrate over $D$ as an iterated integral: \${to_latex(inside)}$ inside, from "\r
+        rf"\${to_latex(region['inner'][0])}$ to \${to_latex(region['inner'][1])}$, then "\r
+        rf"\${to_latex(outside)}$ from \${to_latex(region['outer'][0])}$ to \${to_latex(region['outer'][1])}$.",\r
+        [rf"\\iint_D \\left({to_latex(curl)}\\right) dA", iterated, latex_value(value)],\r
+        substeps,\r
+    )\r
+    return step, integrand, value\r
+\r
+\r
+def boundary_numeric(field, pieces, method="tanh-sinh"):\r
+    """∮_C P dx + Q dy computed numerically straight from the typed field, or\r
+    None if a piece couldn't be integrated."""\r
+    total = mpmath.mpf(0)\r
+    for _, position, interval in pieces:\r
+        value = numerical_integral(independent_integrand("vector", field, (X, Y), position), list(interval), method)\r
+        if value is None:\r
+            return None\r
+        total += value\r
+    return total\r
+\r
+\r
+def agrees(first, second):\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        expected = mpmath.mpf(str(sympy.N(first, CHECK_DIGITS))) if isinstance(first, sympy.Basic) else first\r
+        return abs(second - expected) <= CHECK_TOLERANCE * max(1, abs(expected))\r
+\r
+\r
+def shown_number(value):\r
+    return mpmath.nstr(value, 10).removesuffix(".0")\r
+\r
+\r
+def line_check(field, pieces, exact, numeric):\r
+    independent = boundary_numeric(field, pieces)\r
+    if independent is None:\r
+        return {"status": "unchecked", "detail": "The line integral couldn't be checked numerically."}, None\r
+    if exact is not None:\r
+        if agrees(exact, independent):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"Integrating numerically around $C$, straight from the typed field, gives "\r
+                f"\${shown_number(independent)}$, matching the exact answer.",\r
+            }, independent\r
+        return {\r
+            "status": "failed",\r
+            "detail": f"Integrating numerically around $C$ gives \${shown_number(independent)}$, which "\r
+            "doesn't match. Treat this answer with caution.",\r
+        }, independent\r
+    other = boundary_numeric(field, pieces, "gauss-legendre")\r
+    if other is not None and agrees(independent, other) and agrees(independent, numeric):\r
+        return {\r
+            "status": "verified",\r
+            "detail": f"There is no exact form along the boundary, so it was computed numerically: two "\r
+            f"different methods (tanh-sinh and Gauss–Legendre quadrature) agree on "\r
+            f"\${shown_number(independent)}$.",\r
+        }, independent\r
+    return {\r
+        "status": "unchecked",\r
+        "detail": "There is no exact form along the boundary, and two numerical methods didn't agree "\r
+        "closely enough to confirm the decimal.",\r
+    }, independent\r
+\r
+\r
+def comparison(field, double_value, line_exact, line_numeric):\r
+    """The last step, and the check that both sides agree (None when Green's\r
+    theorem doesn't apply because F isn't defined everywhere)."""\r
+    if line_exact is not None:\r
+        equal = sympy.simplify(double_value - line_exact) == 0 or (\r
+            line_numeric is not None and agrees(double_value, line_numeric)\r
+        )\r
+    else:\r
+        equal = line_numeric is not None and agrees(double_value, line_numeric)\r
+    shown = latex_value(double_value)\r
+    if equal:\r
+        step = make_step(\r
+            "Compare the two sides",\r
+            r"The line integral around $C$ equals the double integral over $D$, as Green's theorem says. "\r
+            r"Often the double integral is the easier way to get it.",\r
+            [\r
+                r"\\oint_C P\\,dx + Q\\,dy",\r
+                r"\\iint_D \\left(\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y}\\right) dA",\r
+                shown,\r
+            ],\r
+        )\r
+        computed = (\r
+            f"The line integral, computed numerically around $C$ from the typed field, is \${shown_number(line_numeric)}$"\r
+            if line_numeric is not None\r
+            else f"The line integral, computed exactly around $C$, is \${shown}$"\r
+        )\r
+        check = {"status": "verified", "detail": f"{computed}, equal to the double integral, as Green's theorem says."}\r
+        return step, check\r
+    if not all(defined_everywhere(component) for component in field):\r
+        step = make_step(\r
+            "Compare the two sides",\r
+            r"The two sides differ, so Green's theorem doesn't apply here: it needs $P$ and $Q$ with "\r
+            r"continuous partial derivatives at every point of $D$, but $\\mathbf{F}$ isn't defined at "\r
+            r"some point inside $D$ (where a denominator is $0$, for example). The line integral, computed "\r
+            r"directly, is the answer.",\r
+            [],\r
+        )\r
+        return step, None\r
+    step = make_step(\r
+        "Compare the two sides",\r
+        r"The two sides should be equal by Green's theorem, but they differ. Treat these answers with caution.",\r
+        [],\r
+    )\r
+    check = {\r
+        "status": "failed",\r
+        "detail": f"The line integral, computed numerically, is \${shown_number(line_numeric)}$, which doesn't "\r
+        "match the double integral. Treat this answer with caution.",\r
+    }\r
+    return step, check\r
+\r
+\r
+def solve_green(field, region):\r
+    """Both sides of Green's theorem: the steps, the double integral's exact\r
+    value, and the line integral's exact value (or None) and numerical value.\r
+    Practice problems use it too."""\r
+    statement = make_step(\r
+        "Green's theorem",\r
+        r"$C$ is the boundary of $D$, traced counterclockwise (with $D$ on the left), and "\r
+        r"$\\mathbf{F} = \\langle P, Q \\rangle$. Green's theorem turns the line integral around $C$ "\r
+        r"into a double integral over $D$.",\r
+        [\r
+            r"\\oint_C P\\,dx + Q\\,dy",\r
+            r"\\iint_D \\left(\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y}\\right) dA",\r
+        ],\r
+    )\r
+    first, curl = curl_step(field)\r
+    report("Integrating over the region…")\r
+    double_step, integrand, double_value = double_side(region, curl)\r
+    pieces = boundary_pieces(region)\r
+    line_step, line_exact, line_numeric = line_side(region, field, pieces)\r
+    return {\r
+        "steps": [statement, first, double_step, line_step],\r
+        "curl": curl,\r
+        "integrand": integrand,\r
+        "double": double_value,\r
+        "line": line_exact,\r
+        "lineNumeric": line_numeric,\r
+        "pieces": pieces,\r
+    }\r
+\r
+\r
+def region_latex(region):\r
+    inside, outside = to_latex(region["inside"]), to_latex(region["outside"])\r
+    low, high = (to_latex(bound) for bound in region["inner"])\r
+    a, b = (to_latex(bound) for bound in region["outer"])\r
+    return rf"D: {low} \\le {inside} \\le {high}, \\quad {a} \\le {outside} \\le {b}"\r
+\r
+\r
+def green_graph(field, pieces):\r
+    """Each piece of the boundary as points, in order, and the field's arrows."""\r
+    curves = []\r
+    for _, position, interval in pieces:\r
+        _, (xs, ys) = curve_samples(position, interval, GRAPH_POINTS // 2)\r
+        curves.append({"x": xs, "y": ys})\r
+    xs = [x for curve in curves for x in curve["x"]]\r
+    ys = [y for curve in curves for y in curve["y"]]\r
+    return {"pieces": curves, "arrows": field_arrows(field, (X, Y), xs, ys)}\r
+\r
+\r
+def green(request):\r
+    field = parse_field(request.get("fieldLatex"))\r
+    region = region_from(request)\r
+    solved = solve_green(field, region)\r
+    report("Checking the answer numerically…")\r
+    checks = []\r
+    if solved["integrand"] is not None:\r
+        checks.append(\r
+            {\r
+                "label": "Double integral",\r
+                "check": numerical_check(\r
+                    solved["integrand"],\r
+                    region["inside"],\r
+                    region["outside"],\r
+                    region["inner"],\r
+                    region["outer"],\r
+                    solved["double"],\r
+                ),\r
+            }\r
+        )\r
+    check, independent = line_check(field, solved["pieces"], solved["line"], solved["lineNumeric"])\r
+    checks.append({"label": "Line integral", "check": check})\r
+    compare_step, compare_check = comparison(field, solved["double"], solved["line"], independent)\r
+    if compare_check is not None:\r
+        checks.append({"label": "Green's theorem", "check": compare_check})\r
+    line_shown = (\r
+        latex_value(solved["line"])\r
+        if solved["line"] is not None\r
+        else rf"\\approx {mpmath.nstr(solved['lineNumeric'], 10)}"\r
+    )\r
+    equals = "" if solved["line"] is None else "="\r
+    return {\r
+        "ok": True,\r
+        "operation": "green",\r
+        "problemLatex": rf"\\oint_C P\\,dx + Q\\,dy, \\quad \\mathbf{{F}} = \\left\\langle {to_latex(field[0])}, "\r
+        rf"{to_latex(field[1])} \\right\\rangle, \\quad {region_latex(region)}",\r
+        "results": [\r
+            {\r
+                "label": "Double integral",\r
+                "latex": rf"\\iint_D \\left(\\frac{{\\partial Q}}{{\\partial x}} - \\frac{{\\partial P}}{{\\partial y}}\\right) dA = "\r
+                rf"{latex_value(solved['double'])}",\r
+            },\r
+            {"label": "Line integral around C", "latex": rf"\\oint_C P\\,dx + Q\\,dy {equals} {line_shown}"},\r
+        ],\r
+        "checks": checks,\r
+        "steps": [*solved["steps"], compare_step],\r
+        "graph": green_graph(field, solved["pieces"]),\r
+    }\r
+\r
+\r
+# ------------------------------------------------------------------ the lesson picture\r
+\r
+\r
+def float_function(expression, variables):\r
+    as_float = sympy.lambdify(variables, expression, modules="math")\r
+    return lambda *values: float(as_float(*values))\r
+\r
+\r
+def green_sweep(request):\r
+    """The lesson picture: D filled in a little at a time, from o = a up to\r
+    o = s, and at each position both sides of Green's theorem for the part\r
+    filled so far, which agree all along.\r
+\r
+    The filled part D_s has the same description as D with b replaced by s, so\r
+    its boundary is the low curve from a to s, the edge at s, the high curve\r
+    back, and the edge at a. Everything here is numerical (Simpson's rule)."""\r
+    field = parse_field(request.get("fieldLatex"))\r
+    region = region_from(request)\r
+    _, curl = curl_step(field)\r
+    inside, outside = region["inside"], region["outside"]\r
+    low, high = region["inner"]\r
+\r
+    def work(position, variables):\r
+        """P dx + Q dy along position, a function of t (and maybe o)."""\r
+        integrand = along_curve(field, (X, Y), position).dot(position.diff(T))\r
+        return float_function(integrand, variables)\r
+\r
+    low_work = work(to_xy(region, low.subs(outside, T), T), (T,))\r
+    high_work = work(to_xy(region, high.subs(outside, T), T), (T,))\r
+    edge_work = work(to_xy(region, T, outside), (T, outside))\r
+    point = to_xy(region, inside, outside)\r
+    across = float_function(curl.subs({X: point[0], Y: point[1]}, simultaneous=True) * region["factor"], (inside, outside))\r
+    low_at, high_at = float_function(low, (outside,)), float_function(high, (outside,))\r
+    x_at, y_at = (float_function(coordinate, (inside, outside)) for coordinate in point)\r
+\r
+    def xy(i, o):\r
+        return x_at(i, o), y_at(i, o)\r
+\r
+    a, b = (float(sympy.N(bound)) for bound in region["outer"])\r
+\r
+    def cross(o):\r
+        """The line integral along the edge at o, from low(o) to high(o), and the\r
+        inside integral of the integrand times the area factor across it."""\r
+        lo, hi = low_at(o), high_at(o)\r
+        if hi - lo < 1e-12:\r
+            return 0.0, 0.0\r
+        edge = simpson(lambda t: edge_work(t, o), lo, hi, CROSS_PIECES)\r
+        inner = simpson(lambda i: across(i, o), lo, hi, CROSS_PIECES)\r
+        return edge, inner\r
+\r
+    try:\r
+        positions = [a + (b - a) * index / SWEEP_STEPS for index in range(SWEEP_STEPS + 1)]\r
+        start_edge, previous_inner = cross(a)\r
+        samples = []\r
+        low_total = high_total = double_total = 0.0\r
+        for index, s in enumerate(positions):\r
+            end_edge, inner = cross(s)\r
+            if index > 0:\r
+                previous = positions[index - 1]\r
+                low_total += simpson(low_work, previous, s, SIMPSON_PIECES)\r
+                high_total += simpson(high_work, previous, s, SIMPSON_PIECES)\r
+                _, middle = cross((previous + s) / 2)\r
+                double_total += (s - previous) * (previous_inner + 4 * middle + inner) / 6\r
+            previous_inner = inner\r
+            # Counterclockwise in (x, y). For dx dy and polar regions the loop\r
+            # low → edge at s → high → edge at a runs clockwise, so flip it.\r
+            loop = low_total + end_edge - high_total - start_edge\r
+            line = loop if region["kind"] == "dy dx" else -loop\r
+            samples.append({"s": round(s, 6), "line": round(line, 6), "double": round(double_total, 6)})\r
+        lows = [xy(low_at(s), s) for s in positions]\r
+        highs = [xy(high_at(s), s) for s in positions]\r
+        edges = [[xy(low_at(s) + (high_at(s) - low_at(s)) * k / 20, s) for k in range(21)] for s in positions]\r
+        dots = curl_dots(curl, region, xy, low_at, high_at, a, b)\r
+    except (ValueError, ZeroDivisionError, OverflowError, TypeError) as error:\r
+        raise InputError("The picture couldn't be drawn: the field isn't defined everywhere in the region.") from error\r
+    outline = green_graph(field, boundary_pieces(region))\r
+    return {\r
+        "ok": True,\r
+        "operation": "greenSweep",\r
+        "kind": region["kind"],\r
+        "samples": samples,\r
+        "pieces": outline["pieces"],\r
+        "arrows": outline["arrows"],\r
+        "curl": dots,\r
+        "low": rounded_points(lows),\r
+        "high": rounded_points(highs),\r
+        "edges": [rounded_points(edge) for edge in edges],\r
+    }\r
+\r
+\r
+def rounded_points(points):\r
+    return {"x": [round(x, 6) for x, _ in points], "y": [round(y, 6) for _, y in points]}\r
+\r
+\r
+def curl_dots(curl, region, xy, low_at, high_at, a, b):\r
+    """Q_x − P_y at a grid of points inside D: [x, y, value]."""\r
+    curl_at = float_function(curl, (X, Y))\r
+    dots = []\r
+    for row in range(CURL_GRID):\r
+        o = a + (b - a) * (row + 0.5) / CURL_GRID\r
+        lo, hi = low_at(o), high_at(o)\r
+        for column in range(CURL_GRID):\r
+            x, y = xy(lo + (hi - lo) * (column + 0.5) / CURL_GRID, o)\r
+            dots.append([round(x, 6), round(y, 6), round(curl_at(x, y), 6)])\r
+    return dots\r
 `,"./python/mathlab/integral_steps.py":`"""Step-by-step integrals, from the rule tree SymPy's manualintegrate builds.
 
 manualintegrate solves integrals with the techniques taught in calculus
@@ -3386,558 +4034,581 @@ def latex_to_text(latex):
     if reader.peek() is not None:
         raise InputError("Check the brackets: one of them doesn't pair up.")
     return text
-`,"./python/mathlab/line_integrals.py":`"""Line integrals along a curve r(t), a ≤ t ≤ b, in the plane or in space.
-
-A line integral of a function adds up f times length along the curve:
-∫_C f ds = ∫_a^b f(r(t)) |r'(t)| dt. A line integral of a vector field adds up
-the part of F along the curve, times length: ∫_C F · dr = ∫_a^b F(r(t)) · r'(t) dt,
-the work F does on a particle moving along C.
-
-When F is conservative, F = ∇f for a potential function f, and the
-fundamental theorem for line integrals gives ∫_C F · dr = f(r(b)) - f(r(a)):
-the answer depends only on where the curve starts and ends.
-"""
-
-import math
-
-import mpmath
-import sympy
-
-from mathlab.checks import numeric_function
-from mathlab.curves import (
-    integrate_piece,
-    latex_value,
-    numerical_cross_check,
-    numerical_integral,
-    parse_curve_function,
-    parse_interval,
-)
-from mathlab.expressions import X, Y, Z, T, InputError, to_latex
-from mathlab.latex_input import latex_to_text
-from mathlab.parsing import parse_function
-from mathlab.progress import report
-from mathlab.space_curves import magnitude, tidy
-from mathlab.steps import make_step, separate
-from mathlab.tangent import only_variables
-from mathlab.vectors import vector_latex
-
-CHECK_DIGITS = 30
-CHECK_TOLERANCE = mpmath.mpf("1e-12")
-# An exact antiderivative is tried only for integrands with at most this many
-# operations; longer ones are integrated numerically (as for arc length).
-EXACT_LIMIT = 40
-GRAPH_POINTS = 241
-# Field arrows in the plane: a grid this many on a side, over the curve's box.
-ARROW_GRID = 9
-# The lesson picture: positions along the curve, and Simpson's rule with this
-# many pieces between neighboring positions for the integral so far.
-TRACE_STEPS = 60
-SIMPSON_PIECES = 8
-# Functions defined (and smooth) at every point, so a field built from them
-# with curl 0 is conservative everywhere.
-EVERYWHERE = (sympy.exp, sympy.sin, sympy.cos, sympy.sinh, sympy.cosh)
-
-
-def parse_component(text, name, variables):
-    if not isinstance(text, str) or text.strip() == "":
-        raise InputError(f"Enter {name}.")
-    try:
-        component = parse_function(latex_to_text(text), (X, Y, Z))
-    except InputError as error:
-        raise InputError(f"{name}: {error}") from error
-    if Z not in variables and component.has(Z):
-        raise InputError("The curve is in the plane (no z(t)), so F can use only x and y.")
-    only_variables(component, variables, name)
-    return component
-
-
-def parse_problem(request):
-    """The curve r(t), its interval, the variables, and the integrand: f for
-    ∫ f ds, or the components of F for ∫ F · dr."""
-    kind = request.get("lineKind")
-    if kind not in ("scalar", "vector"):
-        raise InputError("Choose a line integral of a function, ∫ f ds, or of a vector field, ∫ F · dr.")
-    z_text = request.get("zExpression")
-    space = isinstance(z_text, str) and z_text.strip() != ""
-    keys = (("xExpression", "x(t)"), ("yExpression", "y(t)")) + ((("zExpression", "z(t)"),) if space else ())
-    position = sympy.Matrix([parse_curve_function(request.get(key), name, T) for key, name in keys])
-    interval = parse_interval(request.get("lower"), request.get("upper"), T)
-    variables = (X, Y, Z) if space else (X, Y)
-    if kind == "scalar":
-        text = request.get("expression")
-        if request.get("format") == "latex" and isinstance(text, str):
-            text = latex_to_text(text)
-        if not isinstance(text, str) or text.strip() == "":
-            raise InputError("Enter the function f to integrate along the curve.")
-        integrand = parse_function(text, (X, Y, Z))
-        if not space and integrand.has(Z):
-            raise InputError("The curve is in the plane (no z(t)), so f can use only x and y.")
-        only_variables(integrand, variables, "f")
-    else:
-        texts = list(request.get("fieldLatex") or [])
-        texts += [""] * (len(variables) - len(texts))
-        names = ("P", "Q", "R")
-        if not space and len(texts) > 2 and isinstance(texts[2], str) and texts[2].strip():
-            raise InputError("The curve is in the plane (no z(t)), so F has only two components, P and Q.")
-        integrand = sympy.Matrix(
-            [parse_component(texts[index], names[index], variables) for index in range(len(variables))]
-        )
-    return kind, position, interval, variables, integrand
-
-
-def along_curve(expression, variables, position):
-    return expression.subs(dict(zip(variables, position)), simultaneous=True)
-
-
-def defined_everywhere(expression):
-    """Whether the expression is built only from functions defined and smooth
-    at every point: polynomials, e^x, sin, cos, sinh, cosh."""
-    for node in sympy.preorder_traversal(expression):
-        if isinstance(node, sympy.Pow) and node.base.free_symbols:
-            if not (node.exp.is_Integer and node.exp >= 0):
-                return False
-        elif isinstance(node, sympy.Function) and not isinstance(node, EVERYWHERE):
-            return False
-    return True
-
-
-def trig_arguments(expression):
-    return {
-        node.args[0]
-        for node in sympy.preorder_traversal(expression)
-        if isinstance(node, sympy.functions.elementary.trigonometric.TrigonometricFunction)
-    }
-
-
-def gentle(expression):
-    """Simplified, unless that brings in new angles: sin²t + cos²t becomes 1,
-    but -sin t cos t stays as it is instead of becoming -sin(2t)/2."""
-    simpler = tidy(expression)
-    if trig_arguments(simpler) <= trig_arguments(expression) and sympy.count_ops(simpler) <= sympy.count_ops(
-        expression
-    ):
-        return simpler
-    return expression
-
-
-def fraction_form(expression):
-    """A derivative over one denominator, factored, so two equal ones look equal."""
-    numerator, denominator = sympy.fraction(sympy.together(expression))
-    return sympy.expand(numerator) / sympy.factor(denominator)
-
-
-def curl(field, variables):
-    if len(variables) == 2:
-        P, Q = field
-        return [sympy.simplify(sympy.diff(Q, X) - sympy.diff(P, Y))]
-    P, Q, R = field
-    return [
-        sympy.simplify(sympy.diff(R, Y) - sympy.diff(Q, Z)),
-        sympy.simplify(sympy.diff(P, Z) - sympy.diff(R, X)),
-        sympy.simplify(sympy.diff(Q, X) - sympy.diff(P, Y)),
-    ]
-
-
-def conservative_test(field, variables):
-    """Whether F is conservative everywhere, and the step that shows the test."""
-    everywhere = all(defined_everywhere(component) for component in field)
-    differences = curl(field, variables)
-    zero = all(difference == 0 for difference in differences)
-    if len(variables) == 2:
-        P, Q = field
-        math = [
-            rf"\\frac{{\\partial P}}{{\\partial y}} = {to_latex(fraction_form(sympy.diff(P, Y)))}, \\quad "
-            rf"\\frac{{\\partial Q}}{{\\partial x}} = {to_latex(fraction_form(sympy.diff(Q, X)))}"
-        ]
-        test = r"$\\frac{\\partial Q}{\\partial x} = \\frac{\\partial P}{\\partial y}$"
-    else:
-        math = [rf"\\nabla \\times \\mathbf{{F}} = {vector_latex(differences)}"]
-        test = r"$\\nabla \\times \\mathbf{F} = \\mathbf{0}$ (the curl)"
-    if zero and everywhere:
-        verdict = (
-            rf"{test} holds, and $\\mathbf{{F}}$ is defined everywhere, so $\\mathbf{{F}}$ is "
-            r"conservative: $\\mathbf{F} = \\nabla f$ for a potential function $f$."
-        )
-    elif zero:
-        verdict = (
-            rf"{test} holds, but $\\mathbf{{F}}$ isn't defined everywhere, so the test doesn't "
-            r"prove it conservative (it may circle a point where it is undefined). Integrate directly."
-        )
-    else:
-        verdict = (
-            rf"A conservative field has {test}. That fails here, so $\\mathbf{{F}}$ isn't "
-            r"conservative and the integral may depend on the path: integrate along this one."
-        )
-    step = make_step("Test for a conservative field", verdict, math)
-    return zero and everywhere, step
-
-
-def potential_function(field, variables):
-    """f with ∇f = F, found one variable at a time: the steps and f, or None.
-    What integrating in x leaves undetermined is a function g of the other
-    variables; matching the y-component finds g up to a function h of z."""
-    names = [to_latex(variable) for variable in variables]
-    component_names = ("P", "Q", "R")
-    potential = sympy.integrate(field[0], variables[0])
-    if potential.has(sympy.Integral):
-        return None
-    steps = [
-        make_step(
-            f"Integrate P with respect to {names[0]}",
-            rf"$f_{names[0]} = P$, so $f$ is an antiderivative of $P$ in \${names[0]}$, plus anything "
-            rf"that doesn't depend on \${names[0]}$: a function \${unknown_function('g', names[1:])}$.",
-            [
-                rf"f = \\int {grouped(field[0])} \\, d{names[0]} = {to_latex(potential)} + "
-                rf"{unknown_function('g', names[1:])}"
-            ],
-        )
-    ]
-    for index in range(1, len(variables)):
-        variable, name = variables[index], names[index]
-        letter = "gh"[index - 1]
-        unknown = unknown_function(letter, names[index:])
-        derivative = rf"{letter}'({name})" if index == len(variables) - 1 else rf"{letter}_{name}"
-        needed = sympy.simplify(field[index] - sympy.diff(potential, variable))
-        if needed.free_symbols & set(variables[:index]):
-            return None
-        added = sympy.integrate(needed, variable)
-        if added.has(sympy.Integral):
-            return None
-        later = names[index + 1 :]
-        remainder = rf" + {unknown_function('h', later)}" if later else ""
-        known = sympy.diff(potential, variable)
-        steps.append(
-            make_step(
-                f"Match the {name}-component",
-                rf"Differentiate $f$ with respect to \${name}$ and set it equal to "
-                rf"\${component_names[index]}$. What is left over is the derivative of \${unknown}$; "
-                r"integrate it.",
-                [
-                    separate(
-                        rf"f_{name} = {to_latex(known) + ' + ' if known != 0 else ''}{derivative} = "
-                        rf"{to_latex(field[index])} \\quad\\Longrightarrow\\quad {derivative} = {to_latex(needed)}",
-                        rf"{unknown} = {to_latex(added)}{remainder}",
-                    )
-                ],
-            )
-        )
-        potential = sympy.expand(potential + added)
-    if any(sympy.simplify(sympy.diff(potential, v) - c) != 0 for v, c in zip(variables, field)):
-        return None
-    steps.append(
-        make_step(
-            "Potential function",
-            r"Any constant could be added; $0$ is simplest. Check: $\\nabla f = \\mathbf{F}$.",
-            [rf"f({', '.join(names)}) = {to_latex(potential)}"],
-        )
-    )
-    return potential, steps
-
-
-def unknown_function(letter, names):
-    return rf"{letter}({', '.join(names)})"
-
-
-def grouped(expression):
-    """An integrand in parentheses when it is a sum, as in ∫ (2xy + 3) dx."""
-    text = to_latex(expression)
-    return rf"\\left({text}\\right)" if expression.is_Add else text
-
-
-def integrate_along(integrand, interval):
-    """∫ integrand dt over the interval: the step's math and substeps, the exact
-    value (None if only numerical), and the numerical value."""
-    low, high = interval
-    as_numeric = numeric_function(integrand, (T,))
-    numeric = numerical_integral(as_numeric, [low, high])
-    if sympy.count_ops(integrand) <= EXACT_LIMIT:
-        try:
-            step, value = integrate_piece(integrand, T, low, high, general=True)
-            # A hypergeometric "exact" answer tells a student less than a decimal.
-            if not value.has(sympy.hyper, sympy.meijerg):
-                return [step], value, numeric
-        except InputError:
-            pass
-    if numeric is None:
-        raise InputError("The line integral couldn't be computed, even numerically.")
-    note = make_step(
-        "Numerical integration",
-        "No antiderivative was found with the textbook rules, so the integral was computed numerically.",
-        [],
-    )
-    return [note], None, numeric
-
-
-def independent_integrand(kind, integrand, variables, position):
-    """The integrand in t, evaluated straight from the typed f or F and the
-    curve's derivatives, without the simplified formula the steps use."""
-    point = [numeric_function(component, (T,)) for component in position]
-    velocity = [numeric_function(sympy.diff(component, T), (T,)) for component in position]
-    if kind == "scalar":
-        f = numeric_function(integrand, variables)
-        return lambda t: f(*(c(t) for c in point)) * mpmath.sqrt(sum(v(t) ** 2 for v in velocity))
-    components = [numeric_function(component, variables) for component in integrand]
-    return lambda t: sum(
-        component(*(c(t) for c in point)) * v(t) for component, v in zip(components, velocity)
-    )
-
-
-def value_check(kind, integrand, variables, position, interval, exact, numeric_shown):
-    as_numeric = independent_integrand(kind, integrand, variables, position)
-    numeric = numerical_integral(as_numeric, list(interval))
-    if exact is None:
-        return numerical_cross_check(as_numeric, list(interval), numeric, numeric_shown) if numeric is not None else {
-            "status": "unchecked",
-            "detail": "The integral couldn't be checked numerically.",
-        }
-    if numeric is None:
-        return {"status": "unchecked", "detail": "The integral couldn't be checked numerically."}
-    with mpmath.workdps(CHECK_DIGITS):
-        expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))
-        shown = mpmath.nstr(numeric, 10).removesuffix(".0")
-        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):
-            return {
-                "status": "verified",
-                "detail": f"Integrating numerically along the curve, straight from the typed "
-                f"{'function' if kind == 'scalar' else 'field'} and curve, gives \${shown}$, matching the exact answer.",
-            }
-    return {
-        "status": "failed",
-        "detail": f"Integrating numerically along the curve gives \${shown}$, which doesn't match. "
-        "Treat this answer with caution.",
-    }
-
-
-def solve_line_integral(kind, position, interval, variables, integrand):
-    """The steps, the value (exact, or None), its numerical value, and for a
-    conservative field the potential function."""
-    low, high = interval
-    velocity = position.diff(T)
-    steps = [
-        make_step(
-            "Velocity",
-            r"Differentiate each component of $\\mathbf{r}(t)$.",
-            [rf"\\mathbf{{r}}'(t) = {vector_latex(velocity)}"],
-        )
-    ]
-    bounds = rf"_{{{to_latex(low)}}}^{{{to_latex(high)}}}"
-    potential = None
-    if kind == "vector":
-        is_conservative, test_step = conservative_test(integrand, variables)
-        steps.append(test_step)
-        found = potential_function(integrand, variables) if is_conservative else None
-        if found is not None:
-            potential, potential_steps = found
-            steps.extend(potential_steps)
-            start = sympy.simplify(along_curve(potential, variables, position.subs(T, low)))
-            end = sympy.simplify(along_curve(potential, variables, position.subs(T, high)))
-            value = sympy.simplify(end - start)
-            start_point = position.subs(T, low).applyfunc(sympy.simplify)
-            end_point = position.subs(T, high).applyfunc(sympy.simplify)
-            steps.append(
-                make_step(
-                    "Fundamental theorem for line integrals",
-                    r"For $\\mathbf{F} = \\nabla f$, $\\int_C \\nabla f \\cdot d\\mathbf{r} = "
-                    r"f(\\mathbf{r}(b)) - f(\\mathbf{r}(a))$: only the ends of the curve matter. "
-                    rf"It starts at $\\mathbf{{r}}({to_latex(low)}) = {vector_latex(start_point)}$ and ends at "
-                    rf"$\\mathbf{{r}}({to_latex(high)}) = {vector_latex(end_point)}$.",
-                    [
-                        r"\\int_C \\mathbf{F} \\cdot d\\mathbf{r}",
-                        rf"f{point_text(end_point)} - f{point_text(start_point)}",
-                        rf"{to_latex(end)} - {parenthesized(start)}",
-                        latex_value(value),
-                    ],
-                )
-            )
-            numeric = numerical_integral(
-                independent_integrand(kind, integrand, variables, position), [low, high]
-            )
-            return {"steps": steps, "value": value, "numeric": numeric, "potential": potential}
-        on_curve = along_curve(integrand, variables, position).applyfunc(gentle)
-        product = gentle(sympy.expand(on_curve.dot(velocity)))
-        steps.append(
-            make_step(
-                "Field along the curve",
-                r"Put $x(t)$, $y(t)$" + (r", $z(t)$" if len(variables) == 3 else "") + r" into $\\mathbf{F}$.",
-                [rf"\\mathbf{{F}}(\\mathbf{{r}}(t)) = {vector_latex(on_curve)}"],
-            )
-        )
-        steps.append(
-            make_step(
-                "Dot product with the velocity",
-                r"$\\mathbf{F} \\cdot d\\mathbf{r} = \\mathbf{F}(\\mathbf{r}(t)) \\cdot \\mathbf{r}'(t)\\,dt$: "
-                r"the part of the field along the motion, times the distance moved.",
-                [rf"{vector_latex(on_curve)} \\cdot {vector_latex(velocity)}", to_latex(product)],
-            )
-        )
-        formula = rf"\\int_C \\mathbf{{F}} \\cdot d\\mathbf{{r}} = \\int{bounds} \\mathbf{{F}}(\\mathbf{{r}}(t)) \\cdot \\mathbf{{r}}'(t)\\, dt"
-    else:
-        speed = tidy(magnitude(velocity))
-        on_curve = gentle(along_curve(integrand, variables, position))
-        product = gentle(on_curve * speed)
-        steps.append(
-            make_step(
-                "Speed",
-                r"$ds = |\\mathbf{r}'(t)|\\,dt$: over a short time $dt$ the point moves a distance "
-                r"$|\\mathbf{r}'(t)|\\,dt$.",
-                [rf"|\\mathbf{{r}}'(t)| = \\sqrt{{{to_latex(sympy.expand(velocity.dot(velocity)))}}}", to_latex(speed)],
-            )
-        )
-        steps.append(
-            make_step(
-                "Function along the curve",
-                r"Put $x(t)$, $y(t)$" + (r", $z(t)$" if len(variables) == 3 else "") + r" into $f$.",
-                [rf"f(\\mathbf{{r}}(t)) = {to_latex(on_curve)}"],
-            )
-        )
-        formula = rf"\\int_C f\\, ds = \\int{bounds} f(\\mathbf{{r}}(t))\\, |\\mathbf{{r}}'(t)|\\, dt"
-    report("Integrating along the curve…")
-    substeps, value, numeric = integrate_along(product, interval)
-    math = [formula, to_latex(sympy.Integral(product, (T, low, high)))]
-    math.append(latex_value(value) if value is not None else rf"\\approx {mpmath.nstr(numeric, 10)}")
-    steps.append(
-        make_step(
-            "Integrate",
-            r"The line integral is now an ordinary integral in $t$ from $a$ to $b$.",
-            math,
-            substeps,
-        )
-    )
-    return {"steps": steps, "value": value, "numeric": numeric, "potential": potential}
-
-
-def point_text(point):
-    return rf"\\left({', '.join(to_latex(value) for value in point)}\\right)"
-
-
-def parenthesized(value):
-    text = to_latex(value)
-    return rf"\\left({text}\\right)" if value.could_extract_minus_sign() or value.is_Add else text
-
-
-def field_arrows(field, variables, xs, ys):
-    """F at a grid of points over the curve's box, for drawing arrows."""
-    as_float = [sympy.lambdify(variables, component, modules="math") for component in field]
-    low_x, high_x, low_y, high_y = min(xs), max(xs), min(ys), max(ys)
-    pad = 0.15 * max(high_x - low_x, high_y - low_y, 1)
-    low_x, high_x, low_y, high_y = low_x - pad, high_x + pad, low_y - pad, high_y + pad
-    arrows = []
-    for i in range(ARROW_GRID):
-        for j in range(ARROW_GRID):
-            x = low_x + (high_x - low_x) * i / (ARROW_GRID - 1)
-            y = low_y + (high_y - low_y) * j / (ARROW_GRID - 1)
-            try:
-                u, v = (float(component(x, y)) for component in as_float)
-            except (ValueError, ZeroDivisionError, OverflowError, TypeError):
-                continue
-            if math.isfinite(u) and math.isfinite(v):
-                arrows.append([round(x, 6), round(y, 6), round(u, 6), round(v, 6)])
-    return arrows
-
-
-def curve_samples(position, interval, count):
-    low, high = (float(sympy.N(bound)) for bound in interval)
-    functions = [sympy.lambdify(T, component, modules="math") for component in position]
-    ts = [low + (high - low) * index / (count - 1) for index in range(count)]
-    return ts, [[round(float(function(t)), 6) for t in ts] for function in functions]
-
-
-def line_graph(kind, position, interval, variables, integrand):
-    _, coordinates = curve_samples(position, interval, GRAPH_POINTS)
-    graph = {"curve": coordinates, "arrows": None}
-    if kind == "vector" and len(variables) == 2:
-        graph["arrows"] = field_arrows(integrand, variables, coordinates[0], coordinates[1])
-    return graph
-
-
-def line_integral(request):
-    kind, position, interval, variables, integrand = parse_problem(request)
-    low, high = interval
-    solved = solve_line_integral(kind, position, interval, variables, integrand)
-    value, numeric = solved["value"], solved["numeric"]
-    shown = latex_value(value) if value is not None else rf"\\approx {mpmath.nstr(numeric, 10)}"
-    symbol = r"\\int_C \\mathbf{F} \\cdot d\\mathbf{r}" if kind == "vector" else r"\\int_C f\\, ds"
-    results = [{"label": "Line integral", "latex": f"{symbol} {'=' if value is not None else ''} {shown}"}]
-    if solved["potential"] is not None:
-        names = ", ".join(to_latex(variable) for variable in variables)
-        results.append({"label": "Potential function", "latex": rf"f({names}) = {to_latex(solved['potential'])}"})
-    report("Checking the answer numerically…")
-    check = value_check(
-        kind, integrand, variables, position, interval, value, mpmath.nstr(numeric, 10) if numeric is not None else ""
-    )
-    curve = rf"\\mathbf{{r}}(t) = {vector_latex(position)}, \\quad {to_latex(low)} \\le t \\le {to_latex(high)}"
-    given = (
-        rf"\\mathbf{{F}} = {vector_latex(integrand)}" if kind == "vector" else rf"f = {to_latex(integrand)}"
-    )
-    return {
-        "ok": True,
-        "operation": "line",
-        "kind": kind,
-        "problemLatex": rf"{symbol}, \\quad {given}, \\quad {curve}",
-        "results": results,
-        "checks": [{"label": "Line integral", "check": check}],
-        "steps": solved["steps"],
-        "graph": line_graph(kind, position, interval, variables, integrand),
-    }
-
-
-def simpson(function, low, high, pieces):
-    width = (high - low) / pieces
-    total = function(low) + function(high)
-    for index in range(1, pieces):
-        total += (4 if index % 2 else 2) * function(low + index * width)
-    return total * width / 3
-
-
-def line_trace(request):
-    """The lesson picture, for F in the plane: field arrows, the curve, and at
-    each of TRACE_STEPS + 1 times the point, F, r', and the integral so far
-    (and f(r(t)) - f(r(a)) when F has a potential f)."""
-    request = {**request, "lineKind": "vector"}
-    kind, position, interval, variables, field = parse_problem(request)
-    if len(variables) != 2:
-        raise InputError("The picture is for curves in the plane.")
-    velocity = position.diff(T)
-    as_float = [sympy.lambdify(T, expression, modules="math") for expression in (*position, *velocity)]
-    field_float = [sympy.lambdify(variables, component, modules="math") for component in field]
-
-    def integrand(t):
-        x, y, dx, dy = (function(t) for function in as_float)
-        return field_float[0](x, y) * dx + field_float[1](x, y) * dy
-
-    potential = None
-    is_conservative, _ = conservative_test(field, variables)
-    if is_conservative:
-        found = potential_function(field, variables)
-        if found is not None:
-            potential = sympy.lambdify(variables, found[0], modules="math")
-    ts, _ = curve_samples(position, interval, TRACE_STEPS + 1)
-    samples, total = [], 0.0
-    for index, t in enumerate(ts):
-        if index > 0:
-            total += simpson(integrand, ts[index - 1], t, SIMPSON_PIECES)
-        x, y, dx, dy = (function(t) for function in as_float)
-        sample = {
-            "t": round(t, 6),
-            "point": [round(x, 6), round(y, 6)],
-            "field": [round(f(x, y), 6) for f in field_float],
-            "velocity": [round(dx, 6), round(dy, 6)],
-            "integral": round(total, 6),
-            "potential": None,
-        }
-        if potential is not None:
-            start = position.subs(T, interval[0])
-            sample["potential"] = round(potential(x, y) - potential(*(float(sympy.N(c)) for c in start)), 6)
-        samples.append(sample)
-    _, (cx, cy) = curve_samples(position, interval, GRAPH_POINTS)
-    return {
-        "ok": True,
-        "operation": "lineTrace",
-        "curve": {"x": cx, "y": cy},
-        "arrows": field_arrows(field, variables, cx, cy),
-        "samples": samples,
-        "conservative": potential is not None,
-    }
+`,"./python/mathlab/line_integrals.py":`"""Line integrals along a curve r(t), a ≤ t ≤ b, in the plane or in space.\r
+\r
+A line integral of a function adds up f times length along the curve:\r
+∫_C f ds = ∫_a^b f(r(t)) |r'(t)| dt. A line integral of a vector field adds up\r
+the part of F along the curve, times length: ∫_C F · dr = ∫_a^b F(r(t)) · r'(t) dt,\r
+the work F does on a particle moving along C.\r
+\r
+When F is conservative, F = ∇f for a potential function f, and the\r
+fundamental theorem for line integrals gives ∫_C F · dr = f(r(b)) - f(r(a)):\r
+the answer depends only on where the curve starts and ends.\r
+"""\r
+\r
+import math\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import numeric_function\r
+from mathlab.curves import (\r
+    integrate_piece,\r
+    latex_value,\r
+    numerical_cross_check,\r
+    numerical_integral,\r
+    parse_curve_function,\r
+    parse_interval,\r
+)\r
+from mathlab.expressions import X, Y, Z, T, InputError, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.parsing import parse_function\r
+from mathlab.progress import report\r
+from mathlab.space_curves import magnitude, tidy\r
+from mathlab.steps import make_step, separate\r
+from mathlab.tangent import only_variables\r
+from mathlab.vectors import vector_latex\r
+\r
+CHECK_DIGITS = 30\r
+CHECK_TOLERANCE = mpmath.mpf("1e-12")\r
+# An exact antiderivative is tried only for integrands with at most this many\r
+# operations; longer ones are integrated numerically (as for arc length).\r
+EXACT_LIMIT = 40\r
+GRAPH_POINTS = 241\r
+# Field arrows in the plane: a grid this many on a side, over the curve's box.\r
+ARROW_GRID = 9\r
+# The lesson picture: positions along the curve, and Simpson's rule with this\r
+# many pieces between neighboring positions for the integral so far.\r
+TRACE_STEPS = 60\r
+SIMPSON_PIECES = 8\r
+# Functions defined (and smooth) at every point, so a field built from them\r
+# with curl 0 is conservative everywhere.\r
+EVERYWHERE = (sympy.exp, sympy.sin, sympy.cos, sympy.sinh, sympy.cosh)\r
+\r
+\r
+def parse_component(text, name, variables):\r
+    if not isinstance(text, str) or text.strip() == "":\r
+        raise InputError(f"Enter {name}.")\r
+    try:\r
+        component = parse_function(latex_to_text(text), (X, Y, Z))\r
+    except InputError as error:\r
+        raise InputError(f"{name}: {error}") from error\r
+    if Z not in variables and component.has(Z):\r
+        raise InputError("The curve is in the plane (no z(t)), so F can use only x and y.")\r
+    only_variables(component, variables, name)\r
+    return component\r
+\r
+\r
+def parse_problem(request):\r
+    """The curve r(t), its interval, the variables, and the integrand: f for\r
+    ∫ f ds, or the components of F for ∫ F · dr."""\r
+    kind = request.get("lineKind")\r
+    if kind not in ("scalar", "vector"):\r
+        raise InputError("Choose a line integral of a function, ∫ f ds, or of a vector field, ∫ F · dr.")\r
+    z_text = request.get("zExpression")\r
+    space = isinstance(z_text, str) and z_text.strip() != ""\r
+    keys = (("xExpression", "x(t)"), ("yExpression", "y(t)")) + ((("zExpression", "z(t)"),) if space else ())\r
+    position = sympy.Matrix([parse_curve_function(request.get(key), name, T) for key, name in keys])\r
+    interval = parse_interval(request.get("lower"), request.get("upper"), T)\r
+    variables = (X, Y, Z) if space else (X, Y)\r
+    if kind == "scalar":\r
+        text = request.get("expression")\r
+        if request.get("format") == "latex" and isinstance(text, str):\r
+            text = latex_to_text(text)\r
+        if not isinstance(text, str) or text.strip() == "":\r
+            raise InputError("Enter the function f to integrate along the curve.")\r
+        integrand = parse_function(text, (X, Y, Z))\r
+        if not space and integrand.has(Z):\r
+            raise InputError("The curve is in the plane (no z(t)), so f can use only x and y.")\r
+        only_variables(integrand, variables, "f")\r
+    else:\r
+        texts = list(request.get("fieldLatex") or [])\r
+        texts += [""] * (len(variables) - len(texts))\r
+        names = ("P", "Q", "R")\r
+        if not space and len(texts) > 2 and isinstance(texts[2], str) and texts[2].strip():\r
+            raise InputError("The curve is in the plane (no z(t)), so F has only two components, P and Q.")\r
+        integrand = sympy.Matrix(\r
+            [parse_component(texts[index], names[index], variables) for index in range(len(variables))]\r
+        )\r
+    return kind, position, interval, variables, integrand\r
+\r
+\r
+def along_curve(expression, variables, position):\r
+    return expression.subs(dict(zip(variables, position)), simultaneous=True)\r
+\r
+\r
+def defined_everywhere(expression):\r
+    """Whether the expression is built only from functions defined and smooth\r
+    at every point: polynomials, e^x, sin, cos, sinh, cosh."""\r
+    for node in sympy.preorder_traversal(expression):\r
+        if isinstance(node, sympy.Pow) and node.base.free_symbols:\r
+            if not (node.exp.is_Integer and node.exp >= 0):\r
+                return False\r
+        elif isinstance(node, sympy.Function) and not isinstance(node, EVERYWHERE):\r
+            return False\r
+    return True\r
+\r
+\r
+def trig_arguments(expression):\r
+    return {\r
+        node.args[0]\r
+        for node in sympy.preorder_traversal(expression)\r
+        if isinstance(node, sympy.functions.elementary.trigonometric.TrigonometricFunction)\r
+    }\r
+\r
+\r
+def gentle(expression):\r
+    """Simplified, unless that brings in new angles: sin²t + cos²t becomes 1,\r
+    but -sin t cos t stays as it is instead of becoming -sin(2t)/2."""\r
+    simpler = tidy(expression)\r
+    if trig_arguments(simpler) <= trig_arguments(expression) and sympy.count_ops(simpler) <= sympy.count_ops(\r
+        expression\r
+    ):\r
+        return simpler\r
+    return expression\r
+\r
+\r
+def fraction_form(expression):\r
+    """A derivative over one denominator, factored, so two equal ones look equal."""\r
+    numerator, denominator = sympy.fraction(sympy.together(expression))\r
+    return sympy.expand(numerator) / sympy.factor(denominator)\r
+\r
+\r
+def curl(field, variables):\r
+    if len(variables) == 2:\r
+        P, Q = field\r
+        return [sympy.simplify(sympy.diff(Q, X) - sympy.diff(P, Y))]\r
+    P, Q, R = field\r
+    return [\r
+        sympy.simplify(sympy.diff(R, Y) - sympy.diff(Q, Z)),\r
+        sympy.simplify(sympy.diff(P, Z) - sympy.diff(R, X)),\r
+        sympy.simplify(sympy.diff(Q, X) - sympy.diff(P, Y)),\r
+    ]\r
+\r
+\r
+def conservative_test(field, variables):\r
+    """Whether F is conservative everywhere, and the step that shows the test."""\r
+    everywhere = all(defined_everywhere(component) for component in field)\r
+    differences = curl(field, variables)\r
+    zero = all(difference == 0 for difference in differences)\r
+    if len(variables) == 2:\r
+        P, Q = field\r
+        math = [\r
+            rf"\\frac{{\\partial P}}{{\\partial y}} = {to_latex(fraction_form(sympy.diff(P, Y)))}, \\quad "\r
+            rf"\\frac{{\\partial Q}}{{\\partial x}} = {to_latex(fraction_form(sympy.diff(Q, X)))}"\r
+        ]\r
+        test = r"$\\frac{\\partial Q}{\\partial x} = \\frac{\\partial P}{\\partial y}$"\r
+    else:\r
+        math = [rf"\\nabla \\times \\mathbf{{F}} = {vector_latex(differences)}"]\r
+        test = r"$\\nabla \\times \\mathbf{F} = \\mathbf{0}$ (the curl)"\r
+    if zero and everywhere:\r
+        verdict = (\r
+            rf"{test} holds, and $\\mathbf{{F}}$ is defined everywhere, so $\\mathbf{{F}}$ is "\r
+            r"conservative: $\\mathbf{F} = \\nabla f$ for a potential function $f$."\r
+        )\r
+    elif zero:\r
+        verdict = (\r
+            rf"{test} holds, but $\\mathbf{{F}}$ isn't defined everywhere, so the test doesn't "\r
+            r"prove it conservative (it may circle a point where it is undefined). Integrate directly."\r
+        )\r
+    else:\r
+        verdict = (\r
+            rf"A conservative field has {test}. That fails here, so $\\mathbf{{F}}$ isn't "\r
+            r"conservative and the integral may depend on the path: integrate along this one."\r
+        )\r
+    step = make_step("Test for a conservative field", verdict, math)\r
+    return zero and everywhere, step\r
+\r
+\r
+def potential_function(field, variables):\r
+    """f with ∇f = F, found one variable at a time: the steps and f, or None.\r
+    What integrating in x leaves undetermined is a function g of the other\r
+    variables; matching the y-component finds g up to a function h of z."""\r
+    names = [to_latex(variable) for variable in variables]\r
+    component_names = ("P", "Q", "R")\r
+    potential = sympy.integrate(field[0], variables[0])\r
+    if potential.has(sympy.Integral):\r
+        return None\r
+    steps = [\r
+        make_step(\r
+            f"Integrate P with respect to {names[0]}",\r
+            rf"$f_{names[0]} = P$, so $f$ is an antiderivative of $P$ in \${names[0]}$, plus anything "\r
+            rf"that doesn't depend on \${names[0]}$: a function \${unknown_function('g', names[1:])}$.",\r
+            [\r
+                rf"f = \\int {grouped(field[0])} \\, d{names[0]} = {to_latex(potential)} + "\r
+                rf"{unknown_function('g', names[1:])}"\r
+            ],\r
+        )\r
+    ]\r
+    for index in range(1, len(variables)):\r
+        variable, name = variables[index], names[index]\r
+        letter = "gh"[index - 1]\r
+        unknown = unknown_function(letter, names[index:])\r
+        derivative = rf"{letter}'({name})" if index == len(variables) - 1 else rf"{letter}_{name}"\r
+        needed = sympy.simplify(field[index] - sympy.diff(potential, variable))\r
+        if needed.free_symbols & set(variables[:index]):\r
+            return None\r
+        added = sympy.integrate(needed, variable)\r
+        if added.has(sympy.Integral):\r
+            return None\r
+        later = names[index + 1 :]\r
+        remainder = rf" + {unknown_function('h', later)}" if later else ""\r
+        known = sympy.diff(potential, variable)\r
+        steps.append(\r
+            make_step(\r
+                f"Match the {name}-component",\r
+                rf"Differentiate $f$ with respect to \${name}$ and set it equal to "\r
+                rf"\${component_names[index]}$. What is left over is the derivative of \${unknown}$; "\r
+                r"integrate it.",\r
+                [\r
+                    separate(\r
+                        rf"f_{name} = {to_latex(known) + ' + ' if known != 0 else ''}{derivative} = "\r
+                        rf"{to_latex(field[index])} \\quad\\Longrightarrow\\quad {derivative} = {to_latex(needed)}",\r
+                        rf"{unknown} = {to_latex(added)}{remainder}",\r
+                    )\r
+                ],\r
+            )\r
+        )\r
+        potential = sympy.expand(potential + added)\r
+    if any(sympy.simplify(sympy.diff(potential, v) - c) != 0 for v, c in zip(variables, field)):\r
+        return None\r
+    steps.append(\r
+        make_step(\r
+            "Potential function",\r
+            r"Any constant could be added; $0$ is simplest. Check: $\\nabla f = \\mathbf{F}$.",\r
+            [rf"f({', '.join(names)}) = {to_latex(potential)}"],\r
+        )\r
+    )\r
+    return potential, steps\r
+\r
+\r
+def unknown_function(letter, names):\r
+    return rf"{letter}({', '.join(names)})"\r
+\r
+\r
+def grouped(expression):\r
+    """An integrand in parentheses when it is a sum, as in ∫ (2xy + 3) dx."""\r
+    text = to_latex(expression)\r
+    return rf"\\left({text}\\right)" if expression.is_Add else text\r
+\r
+\r
+def is_transcendental(expression):\r
+    """A function of t other than a polynomial's pieces: sin t, e^t, √t."""\r
+    return expression.has(T) and (\r
+        isinstance(expression, sympy.Function) or (isinstance(expression, sympy.Pow) and not expression.exp.is_Integer)\r
+    )\r
+\r
+\r
+def has_nested_functions(expression):\r
+    """Whether a function is applied to something transcendental, as in\r
+    e^{sin(3 cos t)} or √(81 sin⁴t + 1). SymPy's general algorithms almost\r
+    never find an antiderivative for these, and spent 44 seconds failing on\r
+    Stewart's e^{sin x} and √(y⁴ + 1) around a circle; the textbook rules\r
+    still get their (quick) try, which handles e^{sin t} cos t."""\r
+    for node in sympy.preorder_traversal(expression):\r
+        if not is_transcendental(node):\r
+            continue\r
+        inside = node.args[0] if isinstance(node, sympy.Function) else node.base\r
+        if any(is_transcendental(part) for part in sympy.preorder_traversal(inside)):\r
+            return True\r
+    return False\r
+\r
+\r
+def integrate_along(integrand, interval):\r
+    """∫ integrand dt over the interval: the step's math and substeps, the exact\r
+    value (None if only numerical), and the numerical value."""\r
+    low, high = interval\r
+    as_numeric = numeric_function(integrand, (T,))\r
+    numeric = numerical_integral(as_numeric, [low, high])\r
+    if sympy.count_ops(integrand) <= EXACT_LIMIT:\r
+        try:\r
+            general = not has_nested_functions(integrand)\r
+            step, value = integrate_piece(integrand, T, low, high, general=general)\r
+            # A hypergeometric "exact" answer tells a student less than a decimal.\r
+            if not value.has(sympy.hyper, sympy.meijerg):\r
+                return [step], value, numeric\r
+        except InputError:\r
+            pass\r
+    if numeric is None:\r
+        raise InputError("The line integral couldn't be computed, even numerically.")\r
+    note = make_step(\r
+        "Numerical integration",\r
+        "No antiderivative was found with the textbook rules, so the integral was computed numerically.",\r
+        [],\r
+    )\r
+    return [note], None, numeric\r
+\r
+\r
+def independent_integrand(kind, integrand, variables, position):\r
+    """The integrand in t, evaluated straight from the typed f or F and the\r
+    curve's derivatives, without the simplified formula the steps use."""\r
+    point = [numeric_function(component, (T,)) for component in position]\r
+    velocity = [numeric_function(sympy.diff(component, T), (T,)) for component in position]\r
+    if kind == "scalar":\r
+        f = numeric_function(integrand, variables)\r
+        return lambda t: f(*(c(t) for c in point)) * mpmath.sqrt(sum(v(t) ** 2 for v in velocity))\r
+    components = [numeric_function(component, variables) for component in integrand]\r
+    return lambda t: sum(\r
+        component(*(c(t) for c in point)) * v(t) for component, v in zip(components, velocity)\r
+    )\r
+\r
+\r
+def value_check(kind, integrand, variables, position, interval, exact, numeric_shown):\r
+    as_numeric = independent_integrand(kind, integrand, variables, position)\r
+    numeric = numerical_integral(as_numeric, list(interval))\r
+    if exact is None:\r
+        return numerical_cross_check(as_numeric, list(interval), numeric, numeric_shown) if numeric is not None else {\r
+            "status": "unchecked",\r
+            "detail": "The integral couldn't be checked numerically.",\r
+        }\r
+    if numeric is None:\r
+        return {"status": "unchecked", "detail": "The integral couldn't be checked numerically."}\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))\r
+        shown = mpmath.nstr(numeric, 10).removesuffix(".0")\r
+        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"Integrating numerically along the curve, straight from the typed "\r
+                f"{'function' if kind == 'scalar' else 'field'} and curve, gives \${shown}$, matching the exact answer.",\r
+            }\r
+    return {\r
+        "status": "failed",\r
+        "detail": f"Integrating numerically along the curve gives \${shown}$, which doesn't match. "\r
+        "Treat this answer with caution.",\r
+    }\r
+\r
+\r
+def solve_line_integral(kind, position, interval, variables, integrand):\r
+    """The steps, the value (exact, or None), its numerical value, and for a\r
+    conservative field the potential function."""\r
+    low, high = interval\r
+    velocity = position.diff(T)\r
+    steps = [\r
+        make_step(\r
+            "Velocity",\r
+            r"Differentiate each component of $\\mathbf{r}(t)$.",\r
+            [rf"\\mathbf{{r}}'(t) = {vector_latex(velocity)}"],\r
+        )\r
+    ]\r
+    bounds = rf"_{{{to_latex(low)}}}^{{{to_latex(high)}}}"\r
+    potential = None\r
+    if kind == "vector":\r
+        is_conservative, test_step = conservative_test(integrand, variables)\r
+        steps.append(test_step)\r
+        found = potential_function(integrand, variables) if is_conservative else None\r
+        if found is not None:\r
+            potential, potential_steps = found\r
+            steps.extend(potential_steps)\r
+            start = sympy.simplify(along_curve(potential, variables, position.subs(T, low)))\r
+            end = sympy.simplify(along_curve(potential, variables, position.subs(T, high)))\r
+            value = sympy.simplify(end - start)\r
+            start_point = position.subs(T, low).applyfunc(sympy.simplify)\r
+            end_point = position.subs(T, high).applyfunc(sympy.simplify)\r
+            steps.append(\r
+                make_step(\r
+                    "Fundamental theorem for line integrals",\r
+                    r"For $\\mathbf{F} = \\nabla f$, $\\int_C \\nabla f \\cdot d\\mathbf{r} = "\r
+                    r"f(\\mathbf{r}(b)) - f(\\mathbf{r}(a))$: only the ends of the curve matter. "\r
+                    rf"It starts at $\\mathbf{{r}}({to_latex(low)}) = {vector_latex(start_point)}$ and ends at "\r
+                    rf"$\\mathbf{{r}}({to_latex(high)}) = {vector_latex(end_point)}$.",\r
+                    [\r
+                        r"\\int_C \\mathbf{F} \\cdot d\\mathbf{r}",\r
+                        rf"f{point_text(end_point)} - f{point_text(start_point)}",\r
+                        rf"{to_latex(end)} - {parenthesized(start)}",\r
+                        latex_value(value),\r
+                    ],\r
+                )\r
+            )\r
+            numeric = numerical_integral(\r
+                independent_integrand(kind, integrand, variables, position), [low, high]\r
+            )\r
+            return {"steps": steps, "value": value, "numeric": numeric, "potential": potential}\r
+        on_curve = along_curve(integrand, variables, position).applyfunc(gentle)\r
+        product = gentle(sympy.expand(on_curve.dot(velocity)))\r
+        steps.append(\r
+            make_step(\r
+                "Field along the curve",\r
+                r"Put $x(t)$, $y(t)$" + (r", $z(t)$" if len(variables) == 3 else "") + r" into $\\mathbf{F}$.",\r
+                [rf"\\mathbf{{F}}(\\mathbf{{r}}(t)) = {vector_latex(on_curve)}"],\r
+            )\r
+        )\r
+        steps.append(\r
+            make_step(\r
+                "Dot product with the velocity",\r
+                r"$\\mathbf{F} \\cdot d\\mathbf{r} = \\mathbf{F}(\\mathbf{r}(t)) \\cdot \\mathbf{r}'(t)\\,dt$: "\r
+                r"the part of the field along the motion, times the distance moved.",\r
+                [rf"{vector_latex(on_curve)} \\cdot {vector_latex(velocity)}", to_latex(product)],\r
+            )\r
+        )\r
+        formula = rf"\\int_C \\mathbf{{F}} \\cdot d\\mathbf{{r}} = \\int{bounds} \\mathbf{{F}}(\\mathbf{{r}}(t)) \\cdot \\mathbf{{r}}'(t)\\, dt"\r
+    else:\r
+        speed = tidy(magnitude(velocity))\r
+        on_curve = gentle(along_curve(integrand, variables, position))\r
+        product = gentle(on_curve * speed)\r
+        steps.append(\r
+            make_step(\r
+                "Speed",\r
+                r"$ds = |\\mathbf{r}'(t)|\\,dt$: over a short time $dt$ the point moves a distance "\r
+                r"$|\\mathbf{r}'(t)|\\,dt$.",\r
+                [rf"|\\mathbf{{r}}'(t)| = \\sqrt{{{to_latex(sympy.expand(velocity.dot(velocity)))}}}", to_latex(speed)],\r
+            )\r
+        )\r
+        steps.append(\r
+            make_step(\r
+                "Function along the curve",\r
+                r"Put $x(t)$, $y(t)$" + (r", $z(t)$" if len(variables) == 3 else "") + r" into $f$.",\r
+                [rf"f(\\mathbf{{r}}(t)) = {to_latex(on_curve)}"],\r
+            )\r
+        )\r
+        formula = rf"\\int_C f\\, ds = \\int{bounds} f(\\mathbf{{r}}(t))\\, |\\mathbf{{r}}'(t)|\\, dt"\r
+    report("Integrating along the curve…")\r
+    substeps, value, numeric = integrate_along(product, interval)\r
+    math = [formula, to_latex(sympy.Integral(product, (T, low, high)))]\r
+    math.append(latex_value(value) if value is not None else rf"\\approx {mpmath.nstr(numeric, 10)}")\r
+    steps.append(\r
+        make_step(\r
+            "Integrate",\r
+            r"The line integral is now an ordinary integral in $t$ from $a$ to $b$.",\r
+            math,\r
+            substeps,\r
+        )\r
+    )\r
+    return {"steps": steps, "value": value, "numeric": numeric, "potential": potential}\r
+\r
+\r
+def point_text(point):\r
+    return rf"\\left({', '.join(to_latex(value) for value in point)}\\right)"\r
+\r
+\r
+def parenthesized(value):\r
+    text = to_latex(value)\r
+    return rf"\\left({text}\\right)" if value.could_extract_minus_sign() or value.is_Add else text\r
+\r
+\r
+def field_arrows(field, variables, xs, ys):\r
+    """F at a grid of points over the curve's box, for drawing arrows."""\r
+    as_float = [sympy.lambdify(variables, component, modules="math") for component in field]\r
+    low_x, high_x, low_y, high_y = min(xs), max(xs), min(ys), max(ys)\r
+    pad = 0.15 * max(high_x - low_x, high_y - low_y, 1)\r
+    low_x, high_x, low_y, high_y = low_x - pad, high_x + pad, low_y - pad, high_y + pad\r
+    arrows = []\r
+    for i in range(ARROW_GRID):\r
+        for j in range(ARROW_GRID):\r
+            x = low_x + (high_x - low_x) * i / (ARROW_GRID - 1)\r
+            y = low_y + (high_y - low_y) * j / (ARROW_GRID - 1)\r
+            try:\r
+                u, v = (float(component(x, y)) for component in as_float)\r
+            except (ValueError, ZeroDivisionError, OverflowError, TypeError):\r
+                continue\r
+            if math.isfinite(u) and math.isfinite(v):\r
+                arrows.append([round(x, 6), round(y, 6), round(u, 6), round(v, 6)])\r
+    return arrows\r
+\r
+\r
+def curve_samples(position, interval, count):\r
+    low, high = (float(sympy.N(bound)) for bound in interval)\r
+    functions = [sympy.lambdify(T, component, modules="math") for component in position]\r
+    ts = [low + (high - low) * index / (count - 1) for index in range(count)]\r
+    return ts, [[round(float(function(t)), 6) for t in ts] for function in functions]\r
+\r
+\r
+def line_graph(kind, position, interval, variables, integrand):\r
+    _, coordinates = curve_samples(position, interval, GRAPH_POINTS)\r
+    graph = {"curve": coordinates, "arrows": None}\r
+    if kind == "vector" and len(variables) == 2:\r
+        graph["arrows"] = field_arrows(integrand, variables, coordinates[0], coordinates[1])\r
+    return graph\r
+\r
+\r
+def line_integral(request):\r
+    kind, position, interval, variables, integrand = parse_problem(request)\r
+    low, high = interval\r
+    solved = solve_line_integral(kind, position, interval, variables, integrand)\r
+    value, numeric = solved["value"], solved["numeric"]\r
+    shown = latex_value(value) if value is not None else rf"\\approx {mpmath.nstr(numeric, 10)}"\r
+    symbol = r"\\int_C \\mathbf{F} \\cdot d\\mathbf{r}" if kind == "vector" else r"\\int_C f\\, ds"\r
+    results = [{"label": "Line integral", "latex": f"{symbol} {'=' if value is not None else ''} {shown}"}]\r
+    if solved["potential"] is not None:\r
+        names = ", ".join(to_latex(variable) for variable in variables)\r
+        results.append({"label": "Potential function", "latex": rf"f({names}) = {to_latex(solved['potential'])}"})\r
+    report("Checking the answer numerically…")\r
+    check = value_check(\r
+        kind, integrand, variables, position, interval, value, mpmath.nstr(numeric, 10) if numeric is not None else ""\r
+    )\r
+    curve = rf"\\mathbf{{r}}(t) = {vector_latex(position)}, \\quad {to_latex(low)} \\le t \\le {to_latex(high)}"\r
+    given = (\r
+        rf"\\mathbf{{F}} = {vector_latex(integrand)}" if kind == "vector" else rf"f = {to_latex(integrand)}"\r
+    )\r
+    return {\r
+        "ok": True,\r
+        "operation": "line",\r
+        "kind": kind,\r
+        "problemLatex": rf"{symbol}, \\quad {given}, \\quad {curve}",\r
+        "results": results,\r
+        "checks": [{"label": "Line integral", "check": check}],\r
+        "steps": solved["steps"],\r
+        "graph": line_graph(kind, position, interval, variables, integrand),\r
+    }\r
+\r
+\r
+def simpson(function, low, high, pieces):\r
+    width = (high - low) / pieces\r
+    total = function(low) + function(high)\r
+    for index in range(1, pieces):\r
+        total += (4 if index % 2 else 2) * function(low + index * width)\r
+    return total * width / 3\r
+\r
+\r
+def line_trace(request):\r
+    """The lesson picture, for F in the plane: field arrows, the curve, and at\r
+    each of TRACE_STEPS + 1 times the point, F, r', and the integral so far\r
+    (and f(r(t)) - f(r(a)) when F has a potential f)."""\r
+    request = {**request, "lineKind": "vector"}\r
+    kind, position, interval, variables, field = parse_problem(request)\r
+    if len(variables) != 2:\r
+        raise InputError("The picture is for curves in the plane.")\r
+    velocity = position.diff(T)\r
+    as_float = [sympy.lambdify(T, expression, modules="math") for expression in (*position, *velocity)]\r
+    field_float = [sympy.lambdify(variables, component, modules="math") for component in field]\r
+\r
+    def integrand(t):\r
+        x, y, dx, dy = (function(t) for function in as_float)\r
+        return field_float[0](x, y) * dx + field_float[1](x, y) * dy\r
+\r
+    potential = None\r
+    is_conservative, _ = conservative_test(field, variables)\r
+    if is_conservative:\r
+        found = potential_function(field, variables)\r
+        if found is not None:\r
+            potential = sympy.lambdify(variables, found[0], modules="math")\r
+    ts, _ = curve_samples(position, interval, TRACE_STEPS + 1)\r
+    samples, total = [], 0.0\r
+    for index, t in enumerate(ts):\r
+        if index > 0:\r
+            total += simpson(integrand, ts[index - 1], t, SIMPSON_PIECES)\r
+        x, y, dx, dy = (function(t) for function in as_float)\r
+        sample = {\r
+            "t": round(t, 6),\r
+            "point": [round(x, 6), round(y, 6)],\r
+            "field": [round(f(x, y), 6) for f in field_float],\r
+            "velocity": [round(dx, 6), round(dy, 6)],\r
+            "integral": round(total, 6),\r
+            "potential": None,\r
+        }\r
+        if potential is not None:\r
+            start = position.subs(T, interval[0])\r
+            sample["potential"] = round(potential(x, y) - potential(*(float(sympy.N(c)) for c in start)), 6)\r
+        samples.append(sample)\r
+    _, (cx, cy) = curve_samples(position, interval, GRAPH_POINTS)\r
+    return {\r
+        "ok": True,\r
+        "operation": "lineTrace",\r
+        "curve": {"x": cx, "y": cy},\r
+        "arrows": field_arrows(field, variables, cx, cy),\r
+        "samples": samples,\r
+        "conservative": potential is not None,\r
+    }\r
 `,"./python/mathlab/multivariable.py":`"""Functions of two variables: partial derivatives, the gradient, and surface samples."""
 
 import math
@@ -5411,543 +6082,576 @@ def parse_function(text, variables=(X,)):
 def constants_in(function, variables):
     """The letters in function other than its variables, sorted by name."""
     return sorted(function.free_symbols - set(variables), key=lambda symbol: symbol.name)
-`,"./python/mathlab/practice.py":`"""Practice problems for the lessons, and checking a student's answer.
-
-A problem is built from its lesson and a seed. Checking rebuilds the same
-problem from the seed, so the expected answer never has to leave Python.
-"""
-
-import random
-
-import sympy
-
-from mathlab.checks import agree_numerically
-from mathlab.curves import arc_length, area, build_curve, slope_steps
-from mathlab.derivative_steps import Differentiation, derivative_with_steps
-from mathlab.directional import solve_directional
-from mathlab.double import iterated_integral
-from mathlab.expressions import PHI, THETA, R, T, X, Y, Z, InputError, to_latex
-from mathlab.latex_input import latex_to_text
-from mathlab.line_integrals import solve_line_integral
-from mathlab.optimize import solve_critical, solve_lagrange
-from mathlab.parsing import parse_function
-from mathlab.space_curves import build_space_curve, curvature_steps, velocity_steps
-from mathlab.tangent import solve_graph
-from mathlab.triple import COORDINATE_SYSTEMS, ORDERS, change_coordinates, iterated_triple_integral
-from mathlab.vectors import angle_result, dot_product_step, length, length_step, projection_results, vector_latex
-
-# Answers within this relative distance count as correct, so a decimal with
-# four significant digits is accepted for an answer like arccos(1/3).
-DECIMAL_TOLERANCE = 5e-4
-
-
-class Problem:
-    def __init__(self, prompt, expected, variables, steps):
-        self.prompt = prompt  # Text with inline LaTeX between $ signs.
-        self.expected = expected  # The exact answer, as a SymPy expression.
-        self.variables = variables  # Variables the answer may contain.
-        self.steps = steps  # How to get the answer.
-
-
-def nonzero_vector(rng):
-    while True:
-        vector = sympy.Matrix([rng.randint(-5, 5) for _ in range(3)])
-        if vector != sympy.zeros(3, 1):
-            return vector
-
-
-def vector_problem(rng):
-    a, b = nonzero_vector(rng), nonzero_vector(rng)
-    dot = a.dot(b)
-    vectors = rf"$\\mathbf{{a}} = {vector_latex(a)}$ and $\\mathbf{{b}} = {vector_latex(b)}$"
-    kind = rng.choice(["dot", "length", "angle", "component"])
-    if kind == "dot":
-        return Problem(
-            rf"Find $\\mathbf{{a}} \\cdot \\mathbf{{b}}$ for {vectors}.", dot, (), [dot_product_step(a, b)]
-        )
-    if kind == "length":
-        return Problem(rf"Find $|\\mathbf{{a}}|$ for {vectors}.", length(a), (), [length_step(a, "a")])
-    if kind == "angle":
-        angle, step = angle_result(a, b, dot)
-        return Problem(
-            rf"Find the angle $\\theta$ between {vectors}, in radians (exact, or a decimal "
-            r"with four significant digits).",
-            angle,
-            (),
-            [dot_product_step(a, b), step],
-        )
-    scalar, _, step = projection_results(a, b, dot)
-    return Problem(
-        rf"Find the scalar projection $\\operatorname{{comp}}_{{\\mathbf{{b}}}} \\mathbf{{a}}$ for {vectors}.",
-        scalar,
-        (),
-        [dot_product_step(a, b), length_step(b, "b"), step],
-    )
-
-
-def partial_derivative_problem(rng):
-    c = rng.choice([2, 3, 4, 5])
-    m = rng.choice([2, 3])
-    n = rng.choice([1, 2, 3])
-    function = rng.choice(
-        [
-            c * X**m * Y**n,
-            sympy.sin(c * X * Y),
-            sympy.exp(c * X) * sympy.cos(Y),
-            sympy.log(X**2 + c * Y**2),
-            X**m * sympy.exp(c * Y),
-            (X + c * Y) ** m,
-            X / (Y + c),
-            X**m * Y + c * X * Y**n,
-        ]
-    )
-    variable = rng.choice([X, Y])
-    d = Differentiation(variable, partial=True)
-    derivative, steps, _ = derivative_with_steps(function, d, (X, Y))
-    return Problem(
-        rf"Find $\\frac{{\\partial f}}{{\\partial {variable}}}$ for $f(x, y) = {to_latex(function)}$.",
-        derivative,
-        (X, Y),
-        steps,
-    )
-
-
-def double_integral_problem(rng):
-    """An iterated integral over a rectangle, or over a region with a curved or
-    slanted edge, with an exact answer."""
-    c = rng.choice([1, 2, 3])
-    kind = rng.choice(["rectangle", "rectangle", "separable", "region"])
-    if kind == "rectangle":
-        function = rng.choice([c * X * Y**2, X**2 + c * Y, c * X**2 * Y, X + c * Y, X * Y + c])
-        inside, outside = rng.choice([(Y, X), (X, Y)])
-        low = rng.choice([0, 1])
-        inner_bounds = (low, low + rng.choice([1, 2]))
-        outer_bounds = (0, rng.choice([1, 2, 3]))
-    elif kind == "separable":
-        function, inside, outside, inner_bounds, outer_bounds = rng.choice(
-            [
-                (sympy.sin(X) * sympy.cos(Y), Y, X, (0, sympy.pi / 2), (0, sympy.pi)),
-                (sympy.exp(X + Y), Y, X, (0, 1), (0, c)),
-                (X * sympy.exp(Y), X, Y, (0, 2), (0, 1)),
-            ]
-        )
-    else:
-        inside, outside = rng.choice([(Y, X), (X, Y)])
-        function = rng.choice([X * Y, X + Y, c * outside, inside**2 + c])
-        inner_bounds = rng.choice([(0, outside), (outside**2, outside), (0, c * outside)])
-        outer_bounds = (0, 1) if inner_bounds[0] != 0 else (0, rng.choice([1, 2]))
-    # Exact SymPy numbers, as the Solver's bounds are.
-    inner_bounds, outer_bounds = (tuple(map(sympy.sympify, bounds)) for bounds in (inner_bounds, outer_bounds))
-    iterated, steps, value = iterated_integral(function, inside, outside, inner_bounds, outer_bounds)
-    return Problem(rf"Evaluate \${iterated}$.", value, (), steps)
-
-
-def triple_integral_problem(rng):
-    """An iterated triple integral over a box, a tetrahedron, or the solid under
-    a slanted plane, with an exact answer."""
-    c = rng.choice([1, 2, 3])
-    variables = ORDERS[rng.choice(sorted(ORDERS))]
-    inner, middle, outer = variables
-    kind = rng.choice(["box", "box", "tetrahedron", "under a plane"])
-    if kind == "box":
-        function = rng.choice([c * X * Y * Z, X + Y + Z, X**2 * Z + c * Y, c * X * Y**2, Y * Z + c])
-        lows = [rng.choice([0, 1]) for _ in variables]
-        bounds = [(low, low + rng.choice([1, 2])) for low in lows]
-    elif kind == "tetrahedron":
-        # The solid with inner + middle + outer ≤ size in the first octant.
-        size = rng.choice([1, 2])
-        function = rng.choice([sympy.Integer(1), X, Y, Z, c * X * Y])
-        bounds = [(0, size - outer - middle), (0, size - outer), (0, size)]
-    else:
-        # Below the plane inner = middle + outer, over a rectangle.
-        function = rng.choice([sympy.Integer(1), c * inner, middle + outer])
-        bounds = [(0, middle + outer), (0, rng.choice([1, 2])), (0, rng.choice([1, 2]))]
-    # Exact SymPy numbers, as the Solver's bounds are.
-    bounds = [tuple(map(sympy.sympify, pair)) for pair in bounds]
-    iterated, steps, (_, _, value) = iterated_triple_integral(function, variables, bounds)
-    return Problem(rf"Evaluate \${iterated}$.", value, (), steps)
-
-
-def curve_problem(rng):
-    """The slope of a parametric curve at a point, the area inside a polar
-    curve, or an arc length built so that its integral has an exact value."""
-    c = rng.choice([1, 2, 3])
-    pi = sympy.pi
-    kind = rng.choice(["slope", "polar area", "arc length"])
-    if kind == "slope":
-        x, y, at = rng.choice(
-            [
-                (T**2, T**3 - 3 * T, rng.choice([1, 2, sympy.sqrt(3)])),
-                (T**2 + c * T, T**3, rng.choice([1, 2])),
-                (c * sympy.cos(T), c * sympy.sin(T), rng.choice([pi / 6, pi / 4, pi / 3])),
-                (T - sympy.sin(T), 1 - sympy.cos(T), rng.choice([pi / 2, pi / 3, 2 * pi / 3])),
-                (sympy.exp(T), sympy.exp(c * T), rng.choice([0, 1])),
-            ]
-        )
-        curve = build_curve("parametric", x, y, None, (at, at), at)
-        steps, _ = slope_steps(curve)
-        dx0, dy0 = (derivative.subs(T, at) for derivative in (curve["dxdt"], curve["dydt"]))
-        # The slope's step and the step at the point; d²y/dx² isn't asked for.
-        return Problem(
-            rf"Find $\\frac{{dy}}{{dx}}$ for $x = {to_latex(x)}$, $y = {to_latex(y)}$ at "
-            rf"$t = {to_latex(at)}$.",
-            sympy.simplify(dy0 / dx0),
-            (),
-            [steps[0], steps[-1]],
-        )
-    if kind == "polar area":
-        r, low, high, region = rng.choice(
-            [
-                (sympy.Integer(c), 0, pi / 2, "the quarter disk"),
-                (c * sympy.cos(THETA), -pi / 2, pi / 2, "the circle"),
-                (1 + sympy.cos(THETA), 0, 2 * pi, "the cardioid"),
-                (sympy.cos(2 * THETA), -pi / 4, pi / 4, "one loop of the rose"),
-                (sympy.sin(3 * THETA), 0, pi / 3, "one loop of the rose"),
-            ]
-        )
-        curve = build_curve("polar", r * sympy.cos(THETA), r * sympy.sin(THETA), r, (low, high))
-        step, _, _, value = area(curve)
-        return Problem(
-            rf"Find the area of {region} $r = {to_latex(r)}$, "
-            rf"\${to_latex(low)} \\le \\theta \\le {to_latex(high)}$.",
-            value,
-            (),
-            [step],
-        )
-    kind, x, y, r, low, high = rng.choice(
-        [
-            ("parametric", c * sympy.cos(T), c * sympy.sin(T), None, 0, pi),
-            ("parametric", c * (T - sympy.sin(T)), c * (1 - sympy.cos(T)), None, 0, 2 * pi),
-            ("parametric", T**2, 2 * T**3 / 3, None, 0, 1),
-            ("polar", None, None, c * (1 + sympy.cos(THETA)), 0, 2 * pi),
-        ]
-    )
-    if kind == "polar":
-        x, y = r * sympy.cos(THETA), r * sympy.sin(THETA)
-        description = rf"$r = {to_latex(r)}$, \${to_latex(low)} \\le \\theta \\le {to_latex(high)}$"
-    else:
-        description = (
-            rf"$x = {to_latex(x)}$, $y = {to_latex(y)}$, \${to_latex(low)} \\le t \\le {to_latex(high)}$"
-        )
-    curve = build_curve(kind, x, y, r, (sympy.sympify(low), sympy.sympify(high)))
-    step, _, _, value = arc_length(curve)
-    return Problem(rf"Find the length of the curve {description}.", value, (), [step])
-
-
-def space_curve_problem(rng):
-    """The speed or curvature of a space curve at a point, or an arc length
-    built so that its integral has an exact value."""
-    pi = sympy.pi
-    a, b = rng.choice([(3, 4), (4, 3), (1, 1), (5, 12)])
-    helix = (a * sympy.cos(T), a * sympy.sin(T), b * T)
-    kind = rng.choice(["speed", "arc length", "curvature"])
-    if kind == "speed":
-        (x, y, z), at = rng.choice(
-            [
-                (helix, rng.choice([0, pi / 2, pi])),
-                ((T, T**2, T**3), rng.choice([0, 1, 2])),
-                ((sympy.exp(T), sympy.exp(-T), sympy.sqrt(2) * T), rng.choice([0, 1])),
-            ]
-        )
-        curve = build_space_curve(x, y, z, (at, at), at)
-        steps, _ = velocity_steps(curve)
-        value = sympy.simplify(curve["speed"].subs(T, at))
-        prompt = rf"Find the speed $|\\mathbf{{r}}'(t)|$ of $\\mathbf{{r}}(t) = {vector_latex((x, y, z))}$ at $t = {to_latex(at)}$."
-        return Problem(prompt, value, (), steps)
-    if kind == "arc length":
-        (x, y, z), low, high = rng.choice(
-            [
-                (helix, 0, 2 * pi),
-                ((sympy.exp(T), sympy.exp(-T), sympy.sqrt(2) * T), 0, 1),
-                ((sympy.cos(T), sympy.sin(T), T), 0, rng.choice([pi, 2 * pi])),
-            ]
-        )
-        curve = build_space_curve(x, y, z, (sympy.sympify(low), sympy.sympify(high)))
-        step, _, _, value = arc_length(curve)
-        prompt = (
-            rf"Find the length of $\\mathbf{{r}}(t) = {vector_latex((x, y, z))}$ for "
-            rf"\${to_latex(low)} \\le t \\le {to_latex(high)}$."
-        )
-        return Problem(prompt, value, (), [step])
-    c = rng.choice([2, 3, 5])
-    (x, y, z), at = rng.choice(
-        [
-            (helix, rng.choice([0, pi / 2])),
-            ((c * sympy.cos(T), c * sympy.sin(T), sympy.Integer(0)), rng.choice([0, pi / 3])),
-            ((T, T**2, T**3), 0),
-            ((T, T**2, sympy.Integer(0)), rng.choice([0, 1])),
-        ]
-    )
-    curve = build_space_curve(x, y, z, (at, at), at)
-    steps, _ = velocity_steps(curve)
-    step, _ = curvature_steps(curve)
-    value = sympy.simplify(curve["curvature"].subs(T, at))
-    prompt = rf"Find the curvature $\\kappa$ of $\\mathbf{{r}}(t) = {vector_latex((x, y, z))}$ at $t = {to_latex(at)}$."
-    return Problem(prompt, value, (), [*steps, step])
-
-
-def coordinates_problem(rng):
-    """A triple integral over a solid that is easy in cylindrical or spherical
-    coordinates, described in words, with an exact answer."""
-    pi = sympy.pi
-    a = rng.choice([1, 2, 3])
-    choices = [
-        (
-            "cylindrical",
-            rf"the volume of the solid under the paraboloid $z = {a**2} - x^2 - y^2$ and above the "
-            r"$xy$-plane",
-            sympy.Integer(1),
-            [(0, a**2 - R**2), (0, a), (0, 2 * pi)],
-        ),
-        (
-            "cylindrical",
-            rf"$\\iiint_E (x^2 + y^2)\\,dV$, where $E$ is the cylinder $x^2 + y^2 \\le {a**2}$, "
-            r"$0 \\le z \\le 2$",
-            X**2 + Y**2,
-            [(0, 2), (0, a), (0, 2 * pi)],
-        ),
-        (
-            "cylindrical",
-            rf"$\\iiint_E z\\,dV$, where $E$ is the cylinder $x^2 + y^2 \\le {a**2}$, $0 \\le z \\le 3$",
-            Z,
-            [(0, 3), (0, a), (0, 2 * pi)],
-        ),
-        (
-            "spherical",
-            rf"the volume of the ball $x^2 + y^2 + z^2 \\le {a**2}$",
-            sympy.Integer(1),
-            [(0, a), (0, pi), (0, 2 * pi)],
-        ),
-        (
-            "spherical",
-            rf"the volume of the upper half of the ball $x^2 + y^2 + z^2 \\le {a**2}$",
-            sympy.Integer(1),
-            [(0, a), (0, pi / 2), (0, 2 * pi)],
-        ),
-        (
-            "spherical",
-            r"$\\iiint_B (x^2 + y^2 + z^2)\\,dV$, where $B$ is the unit ball $x^2 + y^2 + z^2 \\le 1$",
-            X**2 + Y**2 + Z**2,
-            [(0, 1), (0, pi), (0, 2 * pi)],
-        ),
-        (
-            "spherical",
-            r"the volume of the solid above the cone $z = \\sqrt{x^2 + y^2}$ and below the sphere "
-            r"$x^2 + y^2 + z^2 = z$",
-            sympy.Integer(1),
-            [(0, sympy.cos(PHI)), (0, pi / 4), (0, 2 * pi)],
-        ),
-    ]
-    coordinates, description, function, bounds = rng.choice(choices)
-    system = COORDINATE_SYSTEMS[coordinates]
-    bounds = [tuple(map(sympy.sympify, pair)) for pair in bounds]
-    step, integrand = change_coordinates(function, system)
-    _, steps, (_, _, value) = iterated_triple_integral(integrand, system["variables"], bounds)
-    return Problem(rf"Use {coordinates} coordinates to find {description}.", value, (), [step, *steps])
-
-
-def directional_problem(rng):
-    """A directional derivative at a point (in the direction of a vector or an
-    angle), or the maximum rate of change there."""
-    c = rng.choice([1, 2, 3])
-    function = rng.choice(
-        [X**2 * Y + c * Y**2, X * Y**2 - c * X, c * X**2 + X * Y, X**3 - c * X * Y, Y * sympy.exp(X)]
-    )
-    point = (sympy.Integer(rng.choice([1, 2])), sympy.Integer(rng.choice([-1, 1, 2])))
-    kind = rng.choice(["vector", "vector", "angle", "maximum"])
-    if kind == "angle":
-        angle = rng.choice([sympy.pi / 4, sympy.pi / 3, sympy.pi / 2, sympy.pi])
-        given = ("angle", angle)
-        vector = sympy.Matrix([sympy.cos(angle), sympy.sin(angle)])
-        direction = rf"at angle $\\theta = {to_latex(angle)}$ from the positive $x$-axis"
-    else:
-        vector = sympy.Matrix(rng.choice([(3, 4), (4, -3), (1, 1), (-1, 2), (5, 12)]))
-        given = ("vector", vector)
-        direction = rf"in the direction of $\\mathbf{{v}} = {vector_latex(vector)}$"
-    solved = solve_directional(function, (X, Y), point, vector, given)
-    at = rf"({to_latex(point[0])}, {to_latex(point[1])})"
-    if kind == "maximum":
-        return Problem(
-            rf"Find the maximum rate of change of $f(x, y) = {to_latex(function)}$ at \${at}$.",
-            solved["largest"],
-            (),
-            # Every step but the directional derivative's own, which isn't asked for.
-            [step for step in solved["steps"] if step["rule"] not in ("Unit vector", "Directional derivative")],
-        )
-    return Problem(
-        rf"Find the directional derivative of $f(x, y) = {to_latex(function)}$ at \${at}$ {direction}.",
-        solved["rate"],
-        (),
-        [step for step in solved["steps"] if step["rule"] != "Maximum rate of change"],
-    )
-
-
-def tangent_problem(rng):
-    """The linearization of f at a point (an expression in x and y), or the
-    linear approximation of f at a nearby point (a number)."""
-    c = rng.choice([1, 2, 3])
-    function = rng.choice(
-        [X**2 + c * Y**2, X * Y + c * X, X**2 * Y - c * Y, sympy.sqrt(X**2 + Y**2), X * sympy.exp(Y)]
-    )
-    point = (sympy.Integer(rng.choice([1, 2])), sympy.Integer(rng.choice([0, 1, 2])))
-    if function == sympy.sqrt(X**2 + Y**2):
-        point = rng.choice([(sympy.Integer(3), sympy.Integer(4)), (sympy.Integer(4), sympy.Integer(3))])
-    at = rf"({to_latex(point[0])}, {to_latex(point[1])})"
-    if rng.choice(["linearization", "approximation"]) == "linearization":
-        solved = solve_graph(function, point)
-        return Problem(
-            rf"Find the linearization $L(x, y)$ of $f(x, y) = {to_latex(function)}$ at \${at}$.",
-            solved["plane"],
-            (X, Y),
-            solved["steps"],
-        )
-    near = (point[0] + sympy.Rational(rng.choice([1, -1]), 10), point[1] + sympy.Rational(rng.choice([1, -1]), 10))
-    solved = solve_graph(function, point, near)
-    there = rf"({to_latex(near[0])}, {to_latex(near[1])})"
-    return Problem(
-        rf"Use the linearization of $f(x, y) = {to_latex(function)}$ at \${at}$ to approximate "
-        rf"$f{there}$.",
-        solved["approximate"],
-        (),
-        # Every step but the comparison with the exact value and dz, which aren't asked for.
-        [step for step in solved["steps"] if step["rule"] != "Differential"],
-    )
-
-
-def optimization_problem(rng):
-    """The local maximum or minimum value of a quadratic f(x, y), or the
-    maximum of a linear f on a circle by Lagrange multipliers (a number)."""
-    if rng.choice(["critical", "lagrange"]) == "critical":
-        a, b = rng.choice([-2, -1, 1, 2, 3]), rng.choice([-2, -1, 1, 2, 3])
-        stretch = rng.choice([1, 2, 3])
-        # Not 0: hints say "f_x = 0", which would read as giving the answer away.
-        value = rng.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
-        sign = rng.choice([1, -1])
-        function = sympy.expand(value + sign * ((X - a) ** 2 + stretch * (Y - b) ** 2))
-        kind = "minimum" if sign > 0 else "maximum"
-        return Problem(
-            rf"Find the local {kind} value of $f(x, y) = {to_latex(function)}$.",
-            sympy.Integer(value),
-            (),
-            solve_critical(function)["steps"],
-        )
-    a, b = rng.choice([(3, 4), (4, 3), (1, 1), (1, 2), (2, 1), (5, 12)])
-    a, b = a * rng.choice([1, -1]), b * rng.choice([1, -1])
-    radius_squared = sympy.Integer(rng.choice([1, 4, 9]))
-    function = a * X + b * Y
-    solved = solve_lagrange(function, X**2 + Y**2, radius_squared, (X, Y))
-    return Problem(
-        rf"Use Lagrange multipliers to find the maximum value of $f(x, y) = {to_latex(function)}$ on "
-        rf"the circle $x^2 + y^2 = {to_latex(radius_squared)}$.",
-        solved["maximum"][0],
-        (),
-        solved["steps"],
-    )
-
-
-def line_integral_problem(rng):
-    """A line integral along a segment from the origin: of a function, of a
-    field, or of a gradient field (a number)."""
-    p, q = rng.choice([(3, 4), (4, 3), (1, 2), (2, 1), (1, 1), (2, 3)])
-    position = sympy.Matrix([p * T, q * T])
-    interval = (sympy.Integer(0), sympy.Integer(1))
-    segment = rf"the line segment from $(0, 0)$ to $({p}, {q})$"
-    kind = rng.choice(["scalar", "vector", "conservative"])
-    if kind == "scalar":
-        a, b = rng.choice([1, 2, 3]), rng.choice([1, 2])
-        function = a * X + b * Y
-        solved = solve_line_integral("scalar", position, interval, (X, Y), function)
-        return Problem(
-            rf"Evaluate $\\int_C ({to_latex(function)})\\, ds$, where $C$ is {segment}.",
-            solved["value"],
-            (),
-            solved["steps"],
-        )
-    if kind == "vector":
-        a, b = rng.choice([1, 2, 3]), rng.choice([-1, 1, 2])
-        field = sympy.Matrix([a * Y, b * X**2])
-    else:
-        potential = rng.choice([X**2 * Y, X * Y**2, X * Y + X, X**2 + Y**2])
-        field = sympy.Matrix([sympy.diff(potential, X), sympy.diff(potential, Y)])
-    solved = solve_line_integral("vector", position, interval, (X, Y), field)
-    return Problem(
-        rf"Evaluate $\\int_C \\mathbf{{F}} \\cdot d\\mathbf{{r}}$ for $\\mathbf{{F}} = {vector_latex(field)}$, "
-        rf"where $C$ is {segment}.",
-        solved["value"],
-        (),
-        solved["steps"],
-    )
-
-
-GENERATORS = {
-    "vectors": vector_problem,
-    "partial-derivatives": partial_derivative_problem,
-    "double-integrals": double_integral_problem,
-    "triple-integrals": triple_integral_problem,
-    "parametric-polar": curve_problem,
-    "space-curves": space_curve_problem,
-    "cylindrical-spherical": coordinates_problem,
-    "directional-derivatives": directional_problem,
-    "tangent-planes": tangent_problem,
-    "optimization": optimization_problem,
-    "line-integrals": line_integral_problem,
-}
-
-
-def build_problem(request):
-    generator = GENERATORS.get(request.get("lesson"))
-    seed = request.get("seed")
-    if generator is None or not isinstance(seed, int):
-        raise InputError("That practice problem doesn't exist.")
-    return generator(random.Random(seed))
-
-
-def practice(request):
-    problem = build_problem(request)
-    return {
-        "ok": True,
-        "operation": "practice",
-        "prompt": problem.prompt,
-        "variables": [variable.name for variable in problem.variables],
-    }
-
-
-def is_correct(answer, expected, variables):
-    if sympy.simplify(answer - expected) == 0:
-        return True
-    if variables:
-        return agree_numerically(answer, expected, variables)
-    try:
-        answer_value, expected_value = complex(answer.evalf(30)), complex(expected.evalf(30))
-    except TypeError:  # Something symbolic remained, so it can't be compared as a number.
-        return False
-    return abs(answer_value - expected_value) <= DECIMAL_TOLERANCE * max(1, abs(expected_value))
-
-
-def check(request):
-    problem = build_problem(request)
-    answer = parse_function(latex_to_text(request.get("answer", "")), problem.variables)
-    correct = is_correct(answer, problem.expected, problem.variables)
-    return {
-        "ok": True,
-        "operation": "check",
-        "correct": correct,
-        "answerLatex": to_latex(problem.expected),
-        "yourAnswerLatex": to_latex(answer),
-        "steps": problem.steps,
-    }
-
-
-def solution(request):
-    """The answer and its steps. The page turns the steps into hints and never
-    shows the answer early."""
-    problem = build_problem(request)
-    return {
-        "ok": True,
-        "operation": "solution",
-        "answerLatex": to_latex(problem.expected),
-        "steps": problem.steps,
-    }
+`,"./python/mathlab/practice.py":`"""Practice problems for the lessons, and checking a student's answer.\r
+\r
+A problem is built from its lesson and a seed. Checking rebuilds the same\r
+problem from the seed, so the expected answer never has to leave Python.\r
+"""\r
+\r
+import random\r
+\r
+import sympy\r
+\r
+from mathlab.checks import agree_numerically\r
+from mathlab.curves import arc_length, area, build_curve, slope_steps\r
+from mathlab.derivative_steps import Differentiation, derivative_with_steps\r
+from mathlab.directional import solve_directional\r
+from mathlab.double import iterated_integral\r
+from mathlab.expressions import PHI, THETA, R, T, X, Y, Z, InputError, to_latex\r
+from mathlab.green import make_region, solve_green\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.line_integrals import solve_line_integral\r
+from mathlab.optimize import solve_critical, solve_lagrange\r
+from mathlab.parsing import parse_function\r
+from mathlab.space_curves import build_space_curve, curvature_steps, velocity_steps\r
+from mathlab.tangent import solve_graph\r
+from mathlab.triple import COORDINATE_SYSTEMS, ORDERS, change_coordinates, iterated_triple_integral\r
+from mathlab.vectors import angle_result, dot_product_step, length, length_step, projection_results, vector_latex\r
+\r
+# Answers within this relative distance count as correct, so a decimal with\r
+# four significant digits is accepted for an answer like arccos(1/3).\r
+DECIMAL_TOLERANCE = 5e-4\r
+\r
+\r
+class Problem:\r
+    def __init__(self, prompt, expected, variables, steps):\r
+        self.prompt = prompt  # Text with inline LaTeX between $ signs.\r
+        self.expected = expected  # The exact answer, as a SymPy expression.\r
+        self.variables = variables  # Variables the answer may contain.\r
+        self.steps = steps  # How to get the answer.\r
+\r
+\r
+def nonzero_vector(rng):\r
+    while True:\r
+        vector = sympy.Matrix([rng.randint(-5, 5) for _ in range(3)])\r
+        if vector != sympy.zeros(3, 1):\r
+            return vector\r
+\r
+\r
+def vector_problem(rng):\r
+    a, b = nonzero_vector(rng), nonzero_vector(rng)\r
+    dot = a.dot(b)\r
+    vectors = rf"$\\mathbf{{a}} = {vector_latex(a)}$ and $\\mathbf{{b}} = {vector_latex(b)}$"\r
+    kind = rng.choice(["dot", "length", "angle", "component"])\r
+    if kind == "dot":\r
+        return Problem(\r
+            rf"Find $\\mathbf{{a}} \\cdot \\mathbf{{b}}$ for {vectors}.", dot, (), [dot_product_step(a, b)]\r
+        )\r
+    if kind == "length":\r
+        return Problem(rf"Find $|\\mathbf{{a}}|$ for {vectors}.", length(a), (), [length_step(a, "a")])\r
+    if kind == "angle":\r
+        angle, step = angle_result(a, b, dot)\r
+        return Problem(\r
+            rf"Find the angle $\\theta$ between {vectors}, in radians (exact, or a decimal "\r
+            r"with four significant digits).",\r
+            angle,\r
+            (),\r
+            [dot_product_step(a, b), step],\r
+        )\r
+    scalar, _, step = projection_results(a, b, dot)\r
+    return Problem(\r
+        rf"Find the scalar projection $\\operatorname{{comp}}_{{\\mathbf{{b}}}} \\mathbf{{a}}$ for {vectors}.",\r
+        scalar,\r
+        (),\r
+        [dot_product_step(a, b), length_step(b, "b"), step],\r
+    )\r
+\r
+\r
+def partial_derivative_problem(rng):\r
+    c = rng.choice([2, 3, 4, 5])\r
+    m = rng.choice([2, 3])\r
+    n = rng.choice([1, 2, 3])\r
+    function = rng.choice(\r
+        [\r
+            c * X**m * Y**n,\r
+            sympy.sin(c * X * Y),\r
+            sympy.exp(c * X) * sympy.cos(Y),\r
+            sympy.log(X**2 + c * Y**2),\r
+            X**m * sympy.exp(c * Y),\r
+            (X + c * Y) ** m,\r
+            X / (Y + c),\r
+            X**m * Y + c * X * Y**n,\r
+        ]\r
+    )\r
+    variable = rng.choice([X, Y])\r
+    d = Differentiation(variable, partial=True)\r
+    derivative, steps, _ = derivative_with_steps(function, d, (X, Y))\r
+    return Problem(\r
+        rf"Find $\\frac{{\\partial f}}{{\\partial {variable}}}$ for $f(x, y) = {to_latex(function)}$.",\r
+        derivative,\r
+        (X, Y),\r
+        steps,\r
+    )\r
+\r
+\r
+def double_integral_problem(rng):\r
+    """An iterated integral over a rectangle, or over a region with a curved or\r
+    slanted edge, with an exact answer."""\r
+    c = rng.choice([1, 2, 3])\r
+    kind = rng.choice(["rectangle", "rectangle", "separable", "region"])\r
+    if kind == "rectangle":\r
+        function = rng.choice([c * X * Y**2, X**2 + c * Y, c * X**2 * Y, X + c * Y, X * Y + c])\r
+        inside, outside = rng.choice([(Y, X), (X, Y)])\r
+        low = rng.choice([0, 1])\r
+        inner_bounds = (low, low + rng.choice([1, 2]))\r
+        outer_bounds = (0, rng.choice([1, 2, 3]))\r
+    elif kind == "separable":\r
+        function, inside, outside, inner_bounds, outer_bounds = rng.choice(\r
+            [\r
+                (sympy.sin(X) * sympy.cos(Y), Y, X, (0, sympy.pi / 2), (0, sympy.pi)),\r
+                (sympy.exp(X + Y), Y, X, (0, 1), (0, c)),\r
+                (X * sympy.exp(Y), X, Y, (0, 2), (0, 1)),\r
+            ]\r
+        )\r
+    else:\r
+        inside, outside = rng.choice([(Y, X), (X, Y)])\r
+        function = rng.choice([X * Y, X + Y, c * outside, inside**2 + c])\r
+        inner_bounds = rng.choice([(0, outside), (outside**2, outside), (0, c * outside)])\r
+        outer_bounds = (0, 1) if inner_bounds[0] != 0 else (0, rng.choice([1, 2]))\r
+    # Exact SymPy numbers, as the Solver's bounds are.\r
+    inner_bounds, outer_bounds = (tuple(map(sympy.sympify, bounds)) for bounds in (inner_bounds, outer_bounds))\r
+    iterated, steps, value = iterated_integral(function, inside, outside, inner_bounds, outer_bounds)\r
+    return Problem(rf"Evaluate \${iterated}$.", value, (), steps)\r
+\r
+\r
+def triple_integral_problem(rng):\r
+    """An iterated triple integral over a box, a tetrahedron, or the solid under\r
+    a slanted plane, with an exact answer."""\r
+    c = rng.choice([1, 2, 3])\r
+    variables = ORDERS[rng.choice(sorted(ORDERS))]\r
+    inner, middle, outer = variables\r
+    kind = rng.choice(["box", "box", "tetrahedron", "under a plane"])\r
+    if kind == "box":\r
+        function = rng.choice([c * X * Y * Z, X + Y + Z, X**2 * Z + c * Y, c * X * Y**2, Y * Z + c])\r
+        lows = [rng.choice([0, 1]) for _ in variables]\r
+        bounds = [(low, low + rng.choice([1, 2])) for low in lows]\r
+    elif kind == "tetrahedron":\r
+        # The solid with inner + middle + outer ≤ size in the first octant.\r
+        size = rng.choice([1, 2])\r
+        function = rng.choice([sympy.Integer(1), X, Y, Z, c * X * Y])\r
+        bounds = [(0, size - outer - middle), (0, size - outer), (0, size)]\r
+    else:\r
+        # Below the plane inner = middle + outer, over a rectangle.\r
+        function = rng.choice([sympy.Integer(1), c * inner, middle + outer])\r
+        bounds = [(0, middle + outer), (0, rng.choice([1, 2])), (0, rng.choice([1, 2]))]\r
+    # Exact SymPy numbers, as the Solver's bounds are.\r
+    bounds = [tuple(map(sympy.sympify, pair)) for pair in bounds]\r
+    iterated, steps, (_, _, value) = iterated_triple_integral(function, variables, bounds)\r
+    return Problem(rf"Evaluate \${iterated}$.", value, (), steps)\r
+\r
+\r
+def curve_problem(rng):\r
+    """The slope of a parametric curve at a point, the area inside a polar\r
+    curve, or an arc length built so that its integral has an exact value."""\r
+    c = rng.choice([1, 2, 3])\r
+    pi = sympy.pi\r
+    kind = rng.choice(["slope", "polar area", "arc length"])\r
+    if kind == "slope":\r
+        x, y, at = rng.choice(\r
+            [\r
+                (T**2, T**3 - 3 * T, rng.choice([1, 2, sympy.sqrt(3)])),\r
+                (T**2 + c * T, T**3, rng.choice([1, 2])),\r
+                (c * sympy.cos(T), c * sympy.sin(T), rng.choice([pi / 6, pi / 4, pi / 3])),\r
+                (T - sympy.sin(T), 1 - sympy.cos(T), rng.choice([pi / 2, pi / 3, 2 * pi / 3])),\r
+                (sympy.exp(T), sympy.exp(c * T), rng.choice([0, 1])),\r
+            ]\r
+        )\r
+        curve = build_curve("parametric", x, y, None, (at, at), at)\r
+        steps, _ = slope_steps(curve)\r
+        dx0, dy0 = (derivative.subs(T, at) for derivative in (curve["dxdt"], curve["dydt"]))\r
+        # The slope's step and the step at the point; d²y/dx² isn't asked for.\r
+        return Problem(\r
+            rf"Find $\\frac{{dy}}{{dx}}$ for $x = {to_latex(x)}$, $y = {to_latex(y)}$ at "\r
+            rf"$t = {to_latex(at)}$.",\r
+            sympy.simplify(dy0 / dx0),\r
+            (),\r
+            [steps[0], steps[-1]],\r
+        )\r
+    if kind == "polar area":\r
+        r, low, high, region = rng.choice(\r
+            [\r
+                (sympy.Integer(c), 0, pi / 2, "the quarter disk"),\r
+                (c * sympy.cos(THETA), -pi / 2, pi / 2, "the circle"),\r
+                (1 + sympy.cos(THETA), 0, 2 * pi, "the cardioid"),\r
+                (sympy.cos(2 * THETA), -pi / 4, pi / 4, "one loop of the rose"),\r
+                (sympy.sin(3 * THETA), 0, pi / 3, "one loop of the rose"),\r
+            ]\r
+        )\r
+        curve = build_curve("polar", r * sympy.cos(THETA), r * sympy.sin(THETA), r, (low, high))\r
+        step, _, _, value = area(curve)\r
+        return Problem(\r
+            rf"Find the area of {region} $r = {to_latex(r)}$, "\r
+            rf"\${to_latex(low)} \\le \\theta \\le {to_latex(high)}$.",\r
+            value,\r
+            (),\r
+            [step],\r
+        )\r
+    kind, x, y, r, low, high = rng.choice(\r
+        [\r
+            ("parametric", c * sympy.cos(T), c * sympy.sin(T), None, 0, pi),\r
+            ("parametric", c * (T - sympy.sin(T)), c * (1 - sympy.cos(T)), None, 0, 2 * pi),\r
+            ("parametric", T**2, 2 * T**3 / 3, None, 0, 1),\r
+            ("polar", None, None, c * (1 + sympy.cos(THETA)), 0, 2 * pi),\r
+        ]\r
+    )\r
+    if kind == "polar":\r
+        x, y = r * sympy.cos(THETA), r * sympy.sin(THETA)\r
+        description = rf"$r = {to_latex(r)}$, \${to_latex(low)} \\le \\theta \\le {to_latex(high)}$"\r
+    else:\r
+        description = (\r
+            rf"$x = {to_latex(x)}$, $y = {to_latex(y)}$, \${to_latex(low)} \\le t \\le {to_latex(high)}$"\r
+        )\r
+    curve = build_curve(kind, x, y, r, (sympy.sympify(low), sympy.sympify(high)))\r
+    step, _, _, value = arc_length(curve)\r
+    return Problem(rf"Find the length of the curve {description}.", value, (), [step])\r
+\r
+\r
+def space_curve_problem(rng):\r
+    """The speed or curvature of a space curve at a point, or an arc length\r
+    built so that its integral has an exact value."""\r
+    pi = sympy.pi\r
+    a, b = rng.choice([(3, 4), (4, 3), (1, 1), (5, 12)])\r
+    helix = (a * sympy.cos(T), a * sympy.sin(T), b * T)\r
+    kind = rng.choice(["speed", "arc length", "curvature"])\r
+    if kind == "speed":\r
+        (x, y, z), at = rng.choice(\r
+            [\r
+                (helix, rng.choice([0, pi / 2, pi])),\r
+                ((T, T**2, T**3), rng.choice([0, 1, 2])),\r
+                ((sympy.exp(T), sympy.exp(-T), sympy.sqrt(2) * T), rng.choice([0, 1])),\r
+            ]\r
+        )\r
+        curve = build_space_curve(x, y, z, (at, at), at)\r
+        steps, _ = velocity_steps(curve)\r
+        value = sympy.simplify(curve["speed"].subs(T, at))\r
+        prompt = rf"Find the speed $|\\mathbf{{r}}'(t)|$ of $\\mathbf{{r}}(t) = {vector_latex((x, y, z))}$ at $t = {to_latex(at)}$."\r
+        return Problem(prompt, value, (), steps)\r
+    if kind == "arc length":\r
+        (x, y, z), low, high = rng.choice(\r
+            [\r
+                (helix, 0, 2 * pi),\r
+                ((sympy.exp(T), sympy.exp(-T), sympy.sqrt(2) * T), 0, 1),\r
+                ((sympy.cos(T), sympy.sin(T), T), 0, rng.choice([pi, 2 * pi])),\r
+            ]\r
+        )\r
+        curve = build_space_curve(x, y, z, (sympy.sympify(low), sympy.sympify(high)))\r
+        step, _, _, value = arc_length(curve)\r
+        prompt = (\r
+            rf"Find the length of $\\mathbf{{r}}(t) = {vector_latex((x, y, z))}$ for "\r
+            rf"\${to_latex(low)} \\le t \\le {to_latex(high)}$."\r
+        )\r
+        return Problem(prompt, value, (), [step])\r
+    c = rng.choice([2, 3, 5])\r
+    (x, y, z), at = rng.choice(\r
+        [\r
+            (helix, rng.choice([0, pi / 2])),\r
+            ((c * sympy.cos(T), c * sympy.sin(T), sympy.Integer(0)), rng.choice([0, pi / 3])),\r
+            ((T, T**2, T**3), 0),\r
+            ((T, T**2, sympy.Integer(0)), rng.choice([0, 1])),\r
+        ]\r
+    )\r
+    curve = build_space_curve(x, y, z, (at, at), at)\r
+    steps, _ = velocity_steps(curve)\r
+    step, _ = curvature_steps(curve)\r
+    value = sympy.simplify(curve["curvature"].subs(T, at))\r
+    prompt = rf"Find the curvature $\\kappa$ of $\\mathbf{{r}}(t) = {vector_latex((x, y, z))}$ at $t = {to_latex(at)}$."\r
+    return Problem(prompt, value, (), [*steps, step])\r
+\r
+\r
+def coordinates_problem(rng):\r
+    """A triple integral over a solid that is easy in cylindrical or spherical\r
+    coordinates, described in words, with an exact answer."""\r
+    pi = sympy.pi\r
+    a = rng.choice([1, 2, 3])\r
+    choices = [\r
+        (\r
+            "cylindrical",\r
+            rf"the volume of the solid under the paraboloid $z = {a**2} - x^2 - y^2$ and above the "\r
+            r"$xy$-plane",\r
+            sympy.Integer(1),\r
+            [(0, a**2 - R**2), (0, a), (0, 2 * pi)],\r
+        ),\r
+        (\r
+            "cylindrical",\r
+            rf"$\\iiint_E (x^2 + y^2)\\,dV$, where $E$ is the cylinder $x^2 + y^2 \\le {a**2}$, "\r
+            r"$0 \\le z \\le 2$",\r
+            X**2 + Y**2,\r
+            [(0, 2), (0, a), (0, 2 * pi)],\r
+        ),\r
+        (\r
+            "cylindrical",\r
+            rf"$\\iiint_E z\\,dV$, where $E$ is the cylinder $x^2 + y^2 \\le {a**2}$, $0 \\le z \\le 3$",\r
+            Z,\r
+            [(0, 3), (0, a), (0, 2 * pi)],\r
+        ),\r
+        (\r
+            "spherical",\r
+            rf"the volume of the ball $x^2 + y^2 + z^2 \\le {a**2}$",\r
+            sympy.Integer(1),\r
+            [(0, a), (0, pi), (0, 2 * pi)],\r
+        ),\r
+        (\r
+            "spherical",\r
+            rf"the volume of the upper half of the ball $x^2 + y^2 + z^2 \\le {a**2}$",\r
+            sympy.Integer(1),\r
+            [(0, a), (0, pi / 2), (0, 2 * pi)],\r
+        ),\r
+        (\r
+            "spherical",\r
+            r"$\\iiint_B (x^2 + y^2 + z^2)\\,dV$, where $B$ is the unit ball $x^2 + y^2 + z^2 \\le 1$",\r
+            X**2 + Y**2 + Z**2,\r
+            [(0, 1), (0, pi), (0, 2 * pi)],\r
+        ),\r
+        (\r
+            "spherical",\r
+            r"the volume of the solid above the cone $z = \\sqrt{x^2 + y^2}$ and below the sphere "\r
+            r"$x^2 + y^2 + z^2 = z$",\r
+            sympy.Integer(1),\r
+            [(0, sympy.cos(PHI)), (0, pi / 4), (0, 2 * pi)],\r
+        ),\r
+    ]\r
+    coordinates, description, function, bounds = rng.choice(choices)\r
+    system = COORDINATE_SYSTEMS[coordinates]\r
+    bounds = [tuple(map(sympy.sympify, pair)) for pair in bounds]\r
+    step, integrand = change_coordinates(function, system)\r
+    _, steps, (_, _, value) = iterated_triple_integral(integrand, system["variables"], bounds)\r
+    return Problem(rf"Use {coordinates} coordinates to find {description}.", value, (), [step, *steps])\r
+\r
+\r
+def directional_problem(rng):\r
+    """A directional derivative at a point (in the direction of a vector or an\r
+    angle), or the maximum rate of change there."""\r
+    c = rng.choice([1, 2, 3])\r
+    function = rng.choice(\r
+        [X**2 * Y + c * Y**2, X * Y**2 - c * X, c * X**2 + X * Y, X**3 - c * X * Y, Y * sympy.exp(X)]\r
+    )\r
+    point = (sympy.Integer(rng.choice([1, 2])), sympy.Integer(rng.choice([-1, 1, 2])))\r
+    kind = rng.choice(["vector", "vector", "angle", "maximum"])\r
+    if kind == "angle":\r
+        angle = rng.choice([sympy.pi / 4, sympy.pi / 3, sympy.pi / 2, sympy.pi])\r
+        given = ("angle", angle)\r
+        vector = sympy.Matrix([sympy.cos(angle), sympy.sin(angle)])\r
+        direction = rf"at angle $\\theta = {to_latex(angle)}$ from the positive $x$-axis"\r
+    else:\r
+        vector = sympy.Matrix(rng.choice([(3, 4), (4, -3), (1, 1), (-1, 2), (5, 12)]))\r
+        given = ("vector", vector)\r
+        direction = rf"in the direction of $\\mathbf{{v}} = {vector_latex(vector)}$"\r
+    solved = solve_directional(function, (X, Y), point, vector, given)\r
+    at = rf"({to_latex(point[0])}, {to_latex(point[1])})"\r
+    if kind == "maximum":\r
+        return Problem(\r
+            rf"Find the maximum rate of change of $f(x, y) = {to_latex(function)}$ at \${at}$.",\r
+            solved["largest"],\r
+            (),\r
+            # Every step but the directional derivative's own, which isn't asked for.\r
+            [step for step in solved["steps"] if step["rule"] not in ("Unit vector", "Directional derivative")],\r
+        )\r
+    return Problem(\r
+        rf"Find the directional derivative of $f(x, y) = {to_latex(function)}$ at \${at}$ {direction}.",\r
+        solved["rate"],\r
+        (),\r
+        [step for step in solved["steps"] if step["rule"] != "Maximum rate of change"],\r
+    )\r
+\r
+\r
+def tangent_problem(rng):\r
+    """The linearization of f at a point (an expression in x and y), or the\r
+    linear approximation of f at a nearby point (a number)."""\r
+    c = rng.choice([1, 2, 3])\r
+    function = rng.choice(\r
+        [X**2 + c * Y**2, X * Y + c * X, X**2 * Y - c * Y, sympy.sqrt(X**2 + Y**2), X * sympy.exp(Y)]\r
+    )\r
+    point = (sympy.Integer(rng.choice([1, 2])), sympy.Integer(rng.choice([0, 1, 2])))\r
+    if function == sympy.sqrt(X**2 + Y**2):\r
+        point = rng.choice([(sympy.Integer(3), sympy.Integer(4)), (sympy.Integer(4), sympy.Integer(3))])\r
+    at = rf"({to_latex(point[0])}, {to_latex(point[1])})"\r
+    if rng.choice(["linearization", "approximation"]) == "linearization":\r
+        solved = solve_graph(function, point)\r
+        return Problem(\r
+            rf"Find the linearization $L(x, y)$ of $f(x, y) = {to_latex(function)}$ at \${at}$.",\r
+            solved["plane"],\r
+            (X, Y),\r
+            solved["steps"],\r
+        )\r
+    near = (point[0] + sympy.Rational(rng.choice([1, -1]), 10), point[1] + sympy.Rational(rng.choice([1, -1]), 10))\r
+    solved = solve_graph(function, point, near)\r
+    there = rf"({to_latex(near[0])}, {to_latex(near[1])})"\r
+    return Problem(\r
+        rf"Use the linearization of $f(x, y) = {to_latex(function)}$ at \${at}$ to approximate "\r
+        rf"$f{there}$.",\r
+        solved["approximate"],\r
+        (),\r
+        # Every step but the comparison with the exact value and dz, which aren't asked for.\r
+        [step for step in solved["steps"] if step["rule"] != "Differential"],\r
+    )\r
+\r
+\r
+def optimization_problem(rng):\r
+    """The local maximum or minimum value of a quadratic f(x, y), or the\r
+    maximum of a linear f on a circle by Lagrange multipliers (a number)."""\r
+    if rng.choice(["critical", "lagrange"]) == "critical":\r
+        a, b = rng.choice([-2, -1, 1, 2, 3]), rng.choice([-2, -1, 1, 2, 3])\r
+        stretch = rng.choice([1, 2, 3])\r
+        # Not 0: hints say "f_x = 0", which would read as giving the answer away.\r
+        value = rng.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])\r
+        sign = rng.choice([1, -1])\r
+        function = sympy.expand(value + sign * ((X - a) ** 2 + stretch * (Y - b) ** 2))\r
+        kind = "minimum" if sign > 0 else "maximum"\r
+        return Problem(\r
+            rf"Find the local {kind} value of $f(x, y) = {to_latex(function)}$.",\r
+            sympy.Integer(value),\r
+            (),\r
+            solve_critical(function)["steps"],\r
+        )\r
+    a, b = rng.choice([(3, 4), (4, 3), (1, 1), (1, 2), (2, 1), (5, 12)])\r
+    a, b = a * rng.choice([1, -1]), b * rng.choice([1, -1])\r
+    radius_squared = sympy.Integer(rng.choice([1, 4, 9]))\r
+    function = a * X + b * Y\r
+    solved = solve_lagrange(function, X**2 + Y**2, radius_squared, (X, Y))\r
+    return Problem(\r
+        rf"Use Lagrange multipliers to find the maximum value of $f(x, y) = {to_latex(function)}$ on "\r
+        rf"the circle $x^2 + y^2 = {to_latex(radius_squared)}$.",\r
+        solved["maximum"][0],\r
+        (),\r
+        solved["steps"],\r
+    )\r
+\r
+\r
+def line_integral_problem(rng):\r
+    """A line integral along a segment from the origin: of a function, of a\r
+    field, or of a gradient field (a number)."""\r
+    p, q = rng.choice([(3, 4), (4, 3), (1, 2), (2, 1), (1, 1), (2, 3)])\r
+    position = sympy.Matrix([p * T, q * T])\r
+    interval = (sympy.Integer(0), sympy.Integer(1))\r
+    segment = rf"the line segment from $(0, 0)$ to $({p}, {q})$"\r
+    kind = rng.choice(["scalar", "vector", "conservative"])\r
+    if kind == "scalar":\r
+        a, b = rng.choice([1, 2, 3]), rng.choice([1, 2])\r
+        function = a * X + b * Y\r
+        solved = solve_line_integral("scalar", position, interval, (X, Y), function)\r
+        return Problem(\r
+            rf"Evaluate $\\int_C ({to_latex(function)})\\, ds$, where $C$ is {segment}.",\r
+            solved["value"],\r
+            (),\r
+            solved["steps"],\r
+        )\r
+    if kind == "vector":\r
+        a, b = rng.choice([1, 2, 3]), rng.choice([-1, 1, 2])\r
+        field = sympy.Matrix([a * Y, b * X**2])\r
+    else:\r
+        potential = rng.choice([X**2 * Y, X * Y**2, X * Y + X, X**2 + Y**2])\r
+        field = sympy.Matrix([sympy.diff(potential, X), sympy.diff(potential, Y)])\r
+    solved = solve_line_integral("vector", position, interval, (X, Y), field)\r
+    return Problem(\r
+        rf"Evaluate $\\int_C \\mathbf{{F}} \\cdot d\\mathbf{{r}}$ for $\\mathbf{{F}} = {vector_latex(field)}$, "\r
+        rf"where $C$ is {segment}.",\r
+        solved["value"],\r
+        (),\r
+        solved["steps"],\r
+    )\r
+\r
+\r
+def green_problem(rng):\r
+    """A line integral around a rectangle or a triangle, by Green's theorem. The\r
+    hints are the steps of the quick way, the double integral."""\r
+    p, q = rng.choice([(1, 2), (2, 1), (2, 3), (3, 2), (1, 3), (3, 1)])\r
+    a, b = rng.choice([1, 2, 3]), rng.choice([1, 2, 3])\r
+    field = rng.choice(\r
+        [\r
+            sympy.Matrix([a * Y**2, b * X * Y]),\r
+            sympy.Matrix([-a * Y, b * X]),\r
+            sympy.Matrix([a * X * Y, b * X**2]),\r
+            sympy.Matrix([X**2 - a * Y, b * X + Y**2]),\r
+        ]\r
+    )\r
+    width, height = sympy.Integer(p), sympy.Integer(q)\r
+    if rng.choice(["rectangle", "triangle"]) == "rectangle":\r
+        region = make_region("dy dx", (sympy.Integer(0), height), (sympy.Integer(0), width))\r
+        shape = rf"the rectangle with corners $(0, 0)$, $({p}, 0)$, $({p}, {q})$, and $(0, {q})$"\r
+    else:\r
+        region = make_region("dy dx", (sympy.Integer(0), height - height / width * X), (sympy.Integer(0), width))\r
+        shape = rf"the triangle with corners $(0, 0)$, $({p}, 0)$, and $(0, {q})$"\r
+    solved = solve_green(field, region)\r
+    P, Q = (to_latex(component) for component in field)\r
+    return Problem(\r
+        rf"Use Green's theorem to evaluate $\\oint_C ({P})\\,dx + ({Q})\\,dy$, where $C$ is the boundary "\r
+        rf"of {shape}, traced counterclockwise.",\r
+        solved["double"],\r
+        (),\r
+        solved["steps"][:3],\r
+    )\r
+\r
+\r
+GENERATORS = {\r
+    "vectors": vector_problem,\r
+    "partial-derivatives": partial_derivative_problem,\r
+    "double-integrals": double_integral_problem,\r
+    "triple-integrals": triple_integral_problem,\r
+    "parametric-polar": curve_problem,\r
+    "space-curves": space_curve_problem,\r
+    "cylindrical-spherical": coordinates_problem,\r
+    "directional-derivatives": directional_problem,\r
+    "tangent-planes": tangent_problem,\r
+    "optimization": optimization_problem,\r
+    "line-integrals": line_integral_problem,\r
+    "greens-theorem": green_problem,\r
+}\r
+\r
+\r
+def build_problem(request):\r
+    generator = GENERATORS.get(request.get("lesson"))\r
+    seed = request.get("seed")\r
+    if generator is None or not isinstance(seed, int):\r
+        raise InputError("That practice problem doesn't exist.")\r
+    return generator(random.Random(seed))\r
+\r
+\r
+def practice(request):\r
+    problem = build_problem(request)\r
+    return {\r
+        "ok": True,\r
+        "operation": "practice",\r
+        "prompt": problem.prompt,\r
+        "variables": [variable.name for variable in problem.variables],\r
+    }\r
+\r
+\r
+def is_correct(answer, expected, variables):\r
+    if sympy.simplify(answer - expected) == 0:\r
+        return True\r
+    if variables:\r
+        return agree_numerically(answer, expected, variables)\r
+    try:\r
+        answer_value, expected_value = complex(answer.evalf(30)), complex(expected.evalf(30))\r
+    except TypeError:  # Something symbolic remained, so it can't be compared as a number.\r
+        return False\r
+    return abs(answer_value - expected_value) <= DECIMAL_TOLERANCE * max(1, abs(expected_value))\r
+\r
+\r
+def check(request):\r
+    problem = build_problem(request)\r
+    answer = parse_function(latex_to_text(request.get("answer", "")), problem.variables)\r
+    correct = is_correct(answer, problem.expected, problem.variables)\r
+    return {\r
+        "ok": True,\r
+        "operation": "check",\r
+        "correct": correct,\r
+        "answerLatex": to_latex(problem.expected),\r
+        "yourAnswerLatex": to_latex(answer),\r
+        "steps": problem.steps,\r
+    }\r
+\r
+\r
+def solution(request):\r
+    """The answer and its steps. The page turns the steps into hints and never\r
+    shows the answer early."""\r
+    problem = build_problem(request)\r
+    return {\r
+        "ok": True,\r
+        "operation": "solution",\r
+        "answerLatex": to_latex(problem.expected),\r
+        "steps": problem.steps,\r
+    }\r
 `,"./python/mathlab/progress.py":`"""Progress messages for long calculations, shown on the page while it waits.
 
 run_request() sets a listener for the duration of a request; any module can
