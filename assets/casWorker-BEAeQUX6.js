@@ -116,6 +116,7 @@ from mathlab.definite import definite_integral\r
 from mathlab.directional import direction_picture, directional_derivative, number\r
 from mathlab.curl_div import curl_divergence, curl_picture\r
 from mathlab.green import green, green_sweep\r
+from mathlab.surfaces import surface_integral, surface_picture\r
 from mathlab.line_integrals import line_integral, line_trace\r
 from mathlab.optimize import constraint_picture, optimize\r
 from mathlab.tangent import tangent_picture, tangent_plane\r
@@ -338,6 +339,11 @@ OPERATIONS = {\r
     "curl": curl_divergence,\r
     # The curl and divergence lesson picture, for a field in the plane.\r
     "curlPicture": curl_picture,\r
+    # r(u, v) in xExpression, yExpression, zExpression; u from innerLower to\r
+    # innerUpper, v from lower to upper; f in expression or F in fieldLatex.\r
+    "surface": surface_integral,\r
+    # The surface integrals lesson picture.\r
+    "surfacePicture": surface_picture,\r
     "practice": practice,\r
     "check": check,\r
     "solution": practice_solution,\r
@@ -2917,137 +2923,140 @@ def iterated_integral(function, inside, outside, inner_bounds, outer_bounds):
         ),
     ]
     return iterated, steps, value
-`,"./python/mathlab/expressions.py":`"""Shared symbols, the input error, and printing math as LaTeX."""
-
-import sympy
-from sympy.printing.latex import LatexPrinter
-
-X = sympy.Symbol("x", real=True)
-Y = sympy.Symbol("y", real=True)
-Z = sympy.Symbol("z", real=True)
-# The parameters of parametric and polar curves.
-T = sympy.Symbol("t", real=True)
-THETA = sympy.Symbol("theta", real=True)
-# Cylindrical and spherical coordinates. r and ρ are distances, so SymPy may
-# simplify √(r²) to r.
-R = sympy.Symbol("r", nonnegative=True)
-RHO = sympy.Symbol("rho", nonnegative=True)
-PHI = sympy.Symbol("phi", real=True)
-
-
-class InputError(Exception):
-    """The user's input cannot be used; the message says why and what to do."""
-
-
-# Functions written the textbook way: sin x, sin(x^2), sin^2 x.
-TEXTBOOK_FUNCTIONS = {
-    "sin": r"\\sin",
-    "cos": r"\\cos",
-    "tan": r"\\tan",
-    "cot": r"\\cot",
-    "sec": r"\\sec",
-    "csc": r"\\csc",
-    "sinh": r"\\sinh",
-    "cosh": r"\\cosh",
-    "tanh": r"\\tanh",
-    "asin": r"\\arcsin",
-    "acos": r"\\arccos",
-    "atan": r"\\arctan",
-    "sech": r"\\operatorname{sech}",
-    "csch": r"\\operatorname{csch}",
-    "coth": r"\\coth",
-    "asec": r"\\operatorname{arcsec}",
-    "acsc": r"\\operatorname{arccsc}",
-    "acot": r"\\operatorname{arccot}",
-    "asinh": r"\\operatorname{arsinh}",
-    "acosh": r"\\operatorname{arcosh}",
-    "atanh": r"\\operatorname{artanh}",
-    "erf": r"\\operatorname{erf}",
-    "sign": r"\\operatorname{sgn}",
-}
-
-# LaTeX that is taller than a line of text, which needs tall parentheses.
-TALL_LATEX = (r"\\frac", r"\\int", r"\\sum", r"\\sqrt")
-
-
-class TextbookLatexPrinter(LatexPrinter):
-    """Prints functions as textbooks write them.
-
-    SymPy writes sin(x) as \\\\sin{\\\\left(x \\\\right)}, which shows a gap and
-    oversized parentheses. This prints sin x, sin(x^2), sin^2 x, and ln|x|.
-    """
-
-    def _argument(self, argument):
-        text = self._print(argument)
-        is_simple = isinstance(argument, sympy.Symbol) or (
-            argument.is_Integer and not argument.could_extract_minus_sign()
-        )
-        if is_simple:
-            return f" {text}"
-        if any(tall in text for tall in TALL_LATEX):
-            return rf"\\left({text}\\right)"
-        return f"({text})"
-
-    def _call(self, name, argument, exponent):
-        if exponent is not None:
-            name = f"{name}^{{{exponent}}}"
-        return name + self._argument(argument)
-
-    def _print_Function(self, expr, exp=None):
-        name = TEXTBOOK_FUNCTIONS.get(type(expr).__name__)
-        if name is None or len(expr.args) != 1:
-            return super()._print_Function(expr, exp)
-        return self._call(name, expr.args[0], exp)
-
-    def _print_log(self, expr, exp=None):
-        argument = expr.args[0]
-        if isinstance(argument, sympy.Abs):
-            name = r"\\ln" if exp is None else rf"\\ln^{{{exp}}}"
-            return name + self._print(argument)
-        return self._call(r"\\ln", argument, exp)
-
-
-LATEX_PRINTER = TextbookLatexPrinter({"inv_trig_style": "full"})
-
-
-def to_latex(expression):
-    return LATEX_PRINTER.doprint(sympy.sympify(expression))
-
-
-def factor_latex(expression):
-    """LaTeX for an expression used as a factor, in parentheses when needed."""
-    # SymPy sometimes stores constants as Python ints, which lack SymPy's methods.
-    expression = sympy.sympify(expression)
-    text = to_latex(expression)
-    if isinstance(expression, sympy.Add) or expression.could_extract_minus_sign():
-        return rf"\\left({text}\\right)"
-    return text
-
-
-def power_base_latex(expression):
-    """LaTeX for an expression that will be raised to a power."""
-    expression = sympy.sympify(expression)
-    text = to_latex(expression)
-    if isinstance(expression, (sympy.Symbol, sympy.Number)) and not expression.could_extract_minus_sign():
-        return text
-    return rf"\\left({text}\\right)"
-
-
-def differential_latex(expression, variable):
-    """LaTeX for a differential like 2x dx, with parentheses around sums: (x + 1) dx."""
-    expression = sympy.sympify(expression)
-    text = to_latex(expression)
-    if isinstance(expression, sympy.Add):
-        text = rf"\\left({text}\\right)"
-    return rf"{text}\\,d{to_latex(variable)}"
-
-
-def with_absolute_value_logs(expression):
-    """Write ln(u) as ln|u|, the textbook form that also holds where u < 0."""
-    return expression.replace(
-        lambda part: isinstance(part, sympy.log) and not isinstance(part.args[0], sympy.Abs),
-        lambda part: sympy.log(sympy.Abs(part.args[0])),
-    )
+`,"./python/mathlab/expressions.py":`"""Shared symbols, the input error, and printing math as LaTeX."""\r
+\r
+import sympy\r
+from sympy.printing.latex import LatexPrinter\r
+\r
+X = sympy.Symbol("x", real=True)\r
+Y = sympy.Symbol("y", real=True)\r
+Z = sympy.Symbol("z", real=True)\r
+# The parameters of parametric and polar curves.\r
+T = sympy.Symbol("t", real=True)\r
+THETA = sympy.Symbol("theta", real=True)\r
+# The parameters of parametric surfaces.\r
+U = sympy.Symbol("u", real=True)\r
+V = sympy.Symbol("v", real=True)\r
+# Cylindrical and spherical coordinates. r and ρ are distances, so SymPy may\r
+# simplify √(r²) to r.\r
+R = sympy.Symbol("r", nonnegative=True)\r
+RHO = sympy.Symbol("rho", nonnegative=True)\r
+PHI = sympy.Symbol("phi", real=True)\r
+\r
+\r
+class InputError(Exception):\r
+    """The user's input cannot be used; the message says why and what to do."""\r
+\r
+\r
+# Functions written the textbook way: sin x, sin(x^2), sin^2 x.\r
+TEXTBOOK_FUNCTIONS = {\r
+    "sin": r"\\sin",\r
+    "cos": r"\\cos",\r
+    "tan": r"\\tan",\r
+    "cot": r"\\cot",\r
+    "sec": r"\\sec",\r
+    "csc": r"\\csc",\r
+    "sinh": r"\\sinh",\r
+    "cosh": r"\\cosh",\r
+    "tanh": r"\\tanh",\r
+    "asin": r"\\arcsin",\r
+    "acos": r"\\arccos",\r
+    "atan": r"\\arctan",\r
+    "sech": r"\\operatorname{sech}",\r
+    "csch": r"\\operatorname{csch}",\r
+    "coth": r"\\coth",\r
+    "asec": r"\\operatorname{arcsec}",\r
+    "acsc": r"\\operatorname{arccsc}",\r
+    "acot": r"\\operatorname{arccot}",\r
+    "asinh": r"\\operatorname{arsinh}",\r
+    "acosh": r"\\operatorname{arcosh}",\r
+    "atanh": r"\\operatorname{artanh}",\r
+    "erf": r"\\operatorname{erf}",\r
+    "sign": r"\\operatorname{sgn}",\r
+}\r
+\r
+# LaTeX that is taller than a line of text, which needs tall parentheses.\r
+TALL_LATEX = (r"\\frac", r"\\int", r"\\sum", r"\\sqrt")\r
+\r
+\r
+class TextbookLatexPrinter(LatexPrinter):\r
+    """Prints functions as textbooks write them.\r
+\r
+    SymPy writes sin(x) as \\\\sin{\\\\left(x \\\\right)}, which shows a gap and\r
+    oversized parentheses. This prints sin x, sin(x^2), sin^2 x, and ln|x|.\r
+    """\r
+\r
+    def _argument(self, argument):\r
+        text = self._print(argument)\r
+        is_simple = isinstance(argument, sympy.Symbol) or (\r
+            argument.is_Integer and not argument.could_extract_minus_sign()\r
+        )\r
+        if is_simple:\r
+            return f" {text}"\r
+        if any(tall in text for tall in TALL_LATEX):\r
+            return rf"\\left({text}\\right)"\r
+        return f"({text})"\r
+\r
+    def _call(self, name, argument, exponent):\r
+        if exponent is not None:\r
+            name = f"{name}^{{{exponent}}}"\r
+        return name + self._argument(argument)\r
+\r
+    def _print_Function(self, expr, exp=None):\r
+        name = TEXTBOOK_FUNCTIONS.get(type(expr).__name__)\r
+        if name is None or len(expr.args) != 1:\r
+            return super()._print_Function(expr, exp)\r
+        return self._call(name, expr.args[0], exp)\r
+\r
+    def _print_log(self, expr, exp=None):\r
+        argument = expr.args[0]\r
+        if isinstance(argument, sympy.Abs):\r
+            name = r"\\ln" if exp is None else rf"\\ln^{{{exp}}}"\r
+            return name + self._print(argument)\r
+        return self._call(r"\\ln", argument, exp)\r
+\r
+\r
+LATEX_PRINTER = TextbookLatexPrinter({"inv_trig_style": "full"})\r
+\r
+\r
+def to_latex(expression):\r
+    return LATEX_PRINTER.doprint(sympy.sympify(expression))\r
+\r
+\r
+def factor_latex(expression):\r
+    """LaTeX for an expression used as a factor, in parentheses when needed."""\r
+    # SymPy sometimes stores constants as Python ints, which lack SymPy's methods.\r
+    expression = sympy.sympify(expression)\r
+    text = to_latex(expression)\r
+    if isinstance(expression, sympy.Add) or expression.could_extract_minus_sign():\r
+        return rf"\\left({text}\\right)"\r
+    return text\r
+\r
+\r
+def power_base_latex(expression):\r
+    """LaTeX for an expression that will be raised to a power."""\r
+    expression = sympy.sympify(expression)\r
+    text = to_latex(expression)\r
+    if isinstance(expression, (sympy.Symbol, sympy.Number)) and not expression.could_extract_minus_sign():\r
+        return text\r
+    return rf"\\left({text}\\right)"\r
+\r
+\r
+def differential_latex(expression, variable):\r
+    """LaTeX for a differential like 2x dx, with parentheses around sums: (x + 1) dx."""\r
+    expression = sympy.sympify(expression)\r
+    text = to_latex(expression)\r
+    if isinstance(expression, sympy.Add):\r
+        text = rf"\\left({text}\\right)"\r
+    return rf"{text}\\,d{to_latex(variable)}"\r
+\r
+\r
+def with_absolute_value_logs(expression):\r
+    """Write ln(u) as ln|u|, the textbook form that also holds where u < 0."""\r
+    return expression.replace(\r
+        lambda part: isinstance(part, sympy.log) and not isinstance(part.args[0], sympy.Abs),\r
+        lambda part: sympy.log(sympy.Abs(part.args[0])),\r
+    )\r
 `,"./python/mathlab/green.py":`"""Green's theorem: ∮_C P dx + Q dy = ∬_D (∂Q/∂x − ∂P/∂y) dA, where C is the\r
 boundary of D traced counterclockwise (D on the left) and P and Q have\r
 continuous partial derivatives on all of D.\r
@@ -6458,13 +6467,14 @@ from mathlab.curl_div import solve_curl_divergence\r
 from mathlab.derivative_steps import Differentiation, derivative_with_steps\r
 from mathlab.directional import solve_directional\r
 from mathlab.double import iterated_integral\r
-from mathlab.expressions import PHI, THETA, R, T, X, Y, Z, InputError, to_latex\r
+from mathlab.expressions import PHI, THETA, R, T, U, V, X, Y, Z, InputError, to_latex\r
 from mathlab.green import make_region, solve_green\r
 from mathlab.latex_input import latex_to_text\r
 from mathlab.line_integrals import solve_line_integral\r
 from mathlab.optimize import solve_critical, solve_lagrange\r
 from mathlab.parsing import parse_function\r
 from mathlab.space_curves import build_space_curve, curvature_steps, velocity_steps\r
+from mathlab.surfaces import solve_surface\r
 from mathlab.tangent import solve_graph\r
 from mathlab.triple import COORDINATE_SYSTEMS, ORDERS, change_coordinates, iterated_triple_integral\r
 from mathlab.vectors import angle_result, dot_product_step, length, length_step, projection_results, vector_latex\r
@@ -6978,6 +6988,33 @@ def curl_divergence_problem(rng):\r
     )\r
 \r
 \r
+def surface_problem(rng):\r
+    """The area of a tilted plane over a rectangle, or ∬ z dS on a cylinder."""\r
+    if rng.choice(["plane", "cylinder"]) == "plane":\r
+        a, b = rng.choice([(1, 2), (2, 1), (2, 2), (1, 1), (2, 3)])\r
+        p, q = rng.choice([1, 2, 3]), rng.choice([1, 2])\r
+        position = sympy.Matrix([U, V, a * U + b * V])\r
+        solved = solve_surface("area", position, (sympy.Integer(0), sympy.Integer(p)), (sympy.Integer(0), sympy.Integer(q)), None)\r
+        return Problem(\r
+            rf"Find the area of the part of the plane $z = {to_latex(a * X + b * Y)}$ over the rectangle "\r
+            rf"$0 \\le x \\le {p}$, $0 \\le y \\le {q}$. (Use $\\mathbf{{r}}(u, v) = {vector_latex(position)}$.)",\r
+            solved["value"],\r
+            (),\r
+            solved["steps"],\r
+        )\r
+    radius, height = rng.choice([1, 2, 3]), rng.choice([1, 2, 3])\r
+    position = sympy.Matrix([radius * sympy.cos(V), radius * sympy.sin(V), U])\r
+    solved = solve_surface("scalar", position, (sympy.Integer(0), sympy.Integer(height)), (sympy.Integer(0), 2 * sympy.pi), Z)\r
+    return Problem(\r
+        rf"Evaluate $\\iint_S z\\,dS$, where $S$ is the side of the cylinder $x^2 + y^2 = {radius**2}$, "\r
+        rf"$0 \\le z \\le {height}$. (Use $\\mathbf{{r}}(u, v) = {vector_latex(position)}$, $0 \\le u \\le {height}$, "\r
+        r"$0 \\le v \\le 2\\pi$.)",\r
+        solved["value"],\r
+        (),\r
+        solved["steps"],\r
+    )\r
+\r
+\r
 GENERATORS = {\r
     "vectors": vector_problem,\r
     "partial-derivatives": partial_derivative_problem,\r
@@ -6992,6 +7029,7 @@ GENERATORS = {\r
     "line-integrals": line_integral_problem,\r
     "greens-theorem": green_problem,\r
     "curl-divergence": curl_divergence_problem,\r
+    "surface-integrals": surface_problem,\r
 }\r
 \r
 \r
@@ -7796,6 +7834,451 @@ def make_step(rule, explanation, math_parts, substeps=()):
         "math": equation_latex(math_parts),
         "substeps": [substep for substep in substeps if substep is not None],
     }
+`,"./python/mathlab/surfaces.py":`"""Parametric surfaces r(u, v) = ⟨x(u, v), y(u, v), z(u, v)⟩ over a rectangle\r
+a ≤ u ≤ b, c ≤ v ≤ d, and integrals over them.\r
+\r
+A small rectangle du by dv in the (u, v) plane is carried to a small patch on\r
+the surface spanned by r_u du and r_v dv, a parallelogram of area\r
+|r_u × r_v| du dv. So the surface area is ∬ |r_u × r_v| dA, a function's\r
+integral is ∬_S f dS = ∬ f(r(u, v)) |r_u × r_v| dA, and the flux of a field\r
+through the surface, with the normal r_u × r_v, is\r
+∬_S F · dS = ∬ F(r(u, v)) · (r_u × r_v) dA.\r
+\r
+Each answer is checked by integrating numerically straight from the typed\r
+surface, without the simplified formulas the steps use.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.curves import latex_value\r
+from mathlab.definite import parse_bound\r
+from mathlab.double import iterated_integral\r
+from mathlab.expressions import U, V, X, Y, Z, InputError, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.line_integrals import gentle\r
+from mathlab.parsing import constants_in, parse_function\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step, separate\r
+from mathlab.tangent import only_variables\r
+from mathlab.vectors import vector_latex\r
+\r
+KINDS = ("area", "scalar", "flux")\r
+CHECK_DIGITS = 15\r
+CHECK_TOLERANCE = mpmath.mpf("1e-9")\r
+# Gauss-Legendre is fast on smooth integrands; when its error estimate is\r
+# larger than this, tanh-sinh is used instead.\r
+FAST_METHOD_TOLERANCE = mpmath.mpf("1e-10")\r
+# Where signs are tested to remove absolute values, as fractions of each side.\r
+SIGN_FRACTIONS = [sympy.Rational(index, 8) for index in range(1, 8)]\r
+GRID = 41\r
+NORMAL_GRID = 5\r
+# The lesson picture: slider positions along each side of the rectangle.\r
+PICTURE_STEPS = 12\r
+\r
+\r
+def parse_coordinate(text, name):\r
+    if not isinstance(text, str) or text.strip() == "":\r
+        raise InputError(f"Enter {name}.")\r
+    try:\r
+        function = parse_function(latex_to_text(text), (U, V))\r
+    except InputError as error:\r
+        raise InputError(f"{name}: {error}") from error\r
+    constants = constants_in(function, (U, V))\r
+    if constants:\r
+        raise InputError(\r
+            f"{name} must use only u and v, so the answers are numbers. "\r
+            f"Remove {', '.join(str(constant) for constant in constants)}."\r
+        )\r
+    return function\r
+\r
+\r
+def parse_side(lower_text, upper_text, name):\r
+    low, high = (parse_bound(text, f"{which} {name}") for text, which in ((lower_text, "lower"), (upper_text, "upper")))\r
+    if low.is_infinite or high.is_infinite:\r
+        raise InputError(f"The bounds for {name} must be finite.")\r
+    if not sympy.simplify(high - low).is_positive:\r
+        raise InputError(f"The lower bound for {name} must be less than the upper bound.")\r
+    return low, high\r
+\r
+\r
+def parse_surface(request):\r
+    """The surface r(u, v), the bounds of u and v, and what to integrate."""\r
+    position = sympy.Matrix(\r
+        [\r
+            parse_coordinate(request.get(key), name)\r
+            for key, name in (("xExpression", "x(u, v)"), ("yExpression", "y(u, v)"), ("zExpression", "z(u, v)"))\r
+        ]\r
+    )\r
+    u_bounds = parse_side(request.get("innerLower"), request.get("innerUpper"), "u")\r
+    v_bounds = parse_side(request.get("lower"), request.get("upper"), "v")\r
+    kind = request.get("surfaceKind")\r
+    if kind not in KINDS:\r
+        raise InputError("Choose the surface's area, the integral of a function f, or the flux of a field F.")\r
+    integrand = None\r
+    if kind == "scalar":\r
+        text = request.get("expression")\r
+        if not isinstance(text, str) or text.strip() == "":\r
+            raise InputError("Enter the function f to integrate over the surface.")\r
+        integrand = parse_function(latex_to_text(text), (X, Y, Z))\r
+        only_variables(integrand, (X, Y, Z), "f")\r
+    elif kind == "flux":\r
+        texts = list(request.get("fieldLatex") or [])\r
+        texts += [""] * (3 - len(texts))\r
+        components = []\r
+        for text, name in zip(texts[:3], ("P", "Q", "R")):\r
+            if not isinstance(text, str) or text.strip() == "":\r
+                raise InputError(f"Enter {name}.")\r
+            component = parse_function(latex_to_text(text), (X, Y, Z))\r
+            only_variables(component, (X, Y, Z), name)\r
+            components.append(component)\r
+        integrand = sympy.Matrix(components)\r
+    if position.diff(U).applyfunc(sympy.simplify) == sympy.zeros(3, 1) or position.diff(V).applyfunc(\r
+        sympy.simplify\r
+    ) == sympy.zeros(3, 1):\r
+        raise InputError("The surface must change with both u and v; otherwise it is a curve, not a surface.")\r
+    return kind, position, u_bounds, v_bounds, integrand\r
+\r
+\r
+def on_surface(expression, position):\r
+    return expression.subs({X: position[0], Y: position[1], Z: position[2]}, simultaneous=True)\r
+\r
+\r
+def sample_points(u_bounds, v_bounds):\r
+    return [\r
+        {U: u_bounds[0] + (u_bounds[1] - u_bounds[0]) * a, V: v_bounds[0] + (v_bounds[1] - v_bounds[0]) * b}\r
+        for a in SIGN_FRACTIONS\r
+        for b in SIGN_FRACTIONS\r
+    ]\r
+\r
+\r
+def without_absolute_values(expression, u_bounds, v_bounds):\r
+    """|g| replaced by g or -g when g keeps one sign inside the rectangle, as\r
+    |sin u| = sin u for 0 ≤ u ≤ π."""\r
+    points = sample_points(u_bounds, v_bounds)\r
+    replacements = {}\r
+    for absolute in expression.atoms(sympy.Abs):\r
+        inside = absolute.args[0]\r
+        try:\r
+            signs = {sympy.sign(sympy.N(inside.subs(point))) for point in points}\r
+        except TypeError:\r
+            continue\r
+        if signs <= {0, 1}:\r
+            replacements[absolute] = inside\r
+        elif signs <= {0, -1}:\r
+            replacements[absolute] = -inside\r
+    return expression.xreplace(replacements)\r
+\r
+\r
+def simplify_on_rectangle(expression, u_bounds, v_bounds):\r
+    """expression simplified for points in the rectangle: a parameter that is\r
+    never negative there is treated as nonnegative (so √(u²) = u), and absolute\r
+    values whose inside keeps one sign are removed."""\r
+    replacements = {}\r
+    for symbol, (low, _) in ((U, u_bounds), (V, v_bounds)):\r
+        if low.is_nonnegative:\r
+            replacements[symbol] = sympy.Symbol(symbol.name, nonnegative=True)\r
+    simpler = sympy.simplify(expression.xreplace(replacements))\r
+    simpler = simpler.xreplace({value: key for key, value in replacements.items()})\r
+    return sympy.simplify(without_absolute_values(simpler, u_bounds, v_bounds))\r
+\r
+\r
+def normal_steps(position, u_bounds, v_bounds, need_length):\r
+    """r_u, r_v, the normal r_u × r_v, and (for area and f dS) its length."""\r
+    ru, rv = position.diff(U), position.diff(V)\r
+    # Simplified without new angles: sin u cos u stays, not sin(2u)/2.\r
+    normal = ru.cross(rv).applyfunc(gentle)\r
+    steps = [\r
+        make_step(\r
+            "Partial derivatives of r",\r
+            r"Differentiate each component of $\\mathbf{r}(u, v)$ with respect to $u$, then $v$. They are "\r
+            r"tangent to the surface: $\\mathbf{r}_u$ along the curves where $v$ is fixed, $\\mathbf{r}_v$ along "\r
+            r"those where $u$ is fixed.",\r
+            [separate(rf"\\mathbf{{r}}_u = {vector_latex(ru)}", rf"\\mathbf{{r}}_v = {vector_latex(rv)}")],\r
+        ),\r
+        make_step(\r
+            "Normal vector from the cross product",\r
+            r"The cross product of two tangent vectors is perpendicular to the surface. Its length is the area "\r
+            r"of the parallelogram they span.",\r
+            [\r
+                r"\\mathbf{r}_u \\times \\mathbf{r}_v",\r
+                r"\\begin{vmatrix} \\mathbf{i} & \\mathbf{j} & \\mathbf{k} \\\\ "\r
+                + r" & ".join(to_latex(component) for component in ru)\r
+                + r" \\\\ "\r
+                + r" & ".join(to_latex(component) for component in rv)\r
+                + r" \\end{vmatrix}",\r
+                vector_latex(normal),\r
+            ],\r
+        ),\r
+    ]\r
+    length = None\r
+    if need_length:\r
+        squared = sympy.simplify(sympy.expand(normal.dot(normal)))\r
+        length = simplify_on_rectangle(sympy.sqrt(squared), u_bounds, v_bounds)\r
+        steps.append(\r
+            make_step(\r
+                "Length of the normal",\r
+                r"$|\\mathbf{r}_u \\times \\mathbf{r}_v|$ is how much a small $du$ by $dv$ rectangle is stretched: "\r
+                r"it becomes a patch of area $dS = |\\mathbf{r}_u \\times \\mathbf{r}_v|\\,du\\,dv$ on the surface.",\r
+                [r"|\\mathbf{r}_u \\times \\mathbf{r}_v|", rf"\\sqrt{{{to_latex(squared)}}}", to_latex(length)],\r
+            )\r
+        )\r
+    return normal, length, steps\r
+\r
+\r
+def integrand_step(kind, position, integrand, normal, length, u_bounds, v_bounds):\r
+    """The integrand in u and v, and the step that builds it."""\r
+    if kind == "area":\r
+        return length, None\r
+    if kind == "scalar":\r
+        value = on_surface(integrand, position)\r
+        product = simplify_on_rectangle(value * length, u_bounds, v_bounds)\r
+        step = make_step(\r
+            "Function on the surface",\r
+            r"Put $x(u, v)$, $y(u, v)$, $z(u, v)$ into $f$, and multiply by $|\\mathbf{r}_u \\times \\mathbf{r}_v|$: "\r
+            r"$f\\,dS = f(\\mathbf{r}(u, v))\\,|\\mathbf{r}_u \\times \\mathbf{r}_v|\\,du\\,dv$.",\r
+            [\r
+                r"f(\\mathbf{r}(u, v))\\,|\\mathbf{r}_u \\times \\mathbf{r}_v|",\r
+                rf"\\left({to_latex(value)}\\right) \\cdot {parenthesized(length)}",\r
+                to_latex(product),\r
+            ],\r
+        )\r
+        return product, step\r
+    field = on_surface(integrand, position)\r
+    product = simplify_on_rectangle(sympy.expand(field.dot(normal)), u_bounds, v_bounds)\r
+    step = make_step(\r
+        "Field on the surface",\r
+        r"Put $x(u, v)$, $y(u, v)$, $z(u, v)$ into $\\mathbf{F}$ and dot it with the normal: "\r
+        r"$\\mathbf{F} \\cdot d\\mathbf{S} = \\mathbf{F}(\\mathbf{r}(u, v)) \\cdot (\\mathbf{r}_u \\times \\mathbf{r}_v)\\,du\\,dv$, "\r
+        r"the part of $\\mathbf{F}$ that goes through the surface, times the patch's area.",\r
+        [\r
+            r"\\mathbf{F}(\\mathbf{r}(u, v)) \\cdot (\\mathbf{r}_u \\times \\mathbf{r}_v)",\r
+            rf"{vector_latex(field)} \\cdot {vector_latex(normal)}",\r
+            to_latex(product),\r
+        ],\r
+    )\r
+    return product, step\r
+\r
+\r
+def parenthesized(value):\r
+    text = to_latex(value)\r
+    return rf"\\left({text}\\right)" if value.is_Add else text\r
+\r
+\r
+def numerical_integral(as_numeric, u_bounds, v_bounds, method):\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        bounds = [[mpmath.mpf(str(sympy.N(bound, CHECK_DIGITS))) for bound in side] for side in (u_bounds, v_bounds)]\r
+        try:\r
+            value, error = mpmath.quad(as_numeric, *bounds, method=method, error=True)\r
+        except Exception:  # Numerical integration fails in many ways; all mean "no value".\r
+            return None, None\r
+        if isinstance(value, mpmath.mpc):\r
+            if abs(value.imag) > CHECK_TOLERANCE * max(1, abs(value.real)):\r
+                return None, None\r
+            value = value.real\r
+        return value, error\r
+\r
+\r
+def independent_value(kind, position, integrand, u_bounds, v_bounds, method=None):\r
+    """The integral computed numerically from the typed surface and f or F,\r
+    with r_u × r_v left unsimplified."""\r
+    ru, rv = position.diff(U), position.diff(V)\r
+    normal = ru.cross(rv)\r
+    if kind == "flux":\r
+        expression = on_surface(integrand, position).dot(normal)\r
+    else:\r
+        length = sympy.sqrt(normal.dot(normal))\r
+        expression = length if kind == "area" else on_surface(integrand, position) * length\r
+    as_numeric = sympy.lambdify((U, V), expression, modules="mpmath")\r
+    if method is not None:\r
+        return numerical_integral(as_numeric, u_bounds, v_bounds, method)[0]\r
+    value, error = numerical_integral(as_numeric, u_bounds, v_bounds, "gauss-legendre")\r
+    if value is None or error > FAST_METHOD_TOLERANCE * max(1, abs(value)):\r
+        value, _ = numerical_integral(as_numeric, u_bounds, v_bounds, "tanh-sinh")\r
+    return value\r
+\r
+\r
+def shown(value):\r
+    return mpmath.nstr(value, 10).removesuffix(".0")\r
+\r
+\r
+def value_check(kind, position, integrand, u_bounds, v_bounds, exact):\r
+    numeric = independent_value(kind, position, integrand, u_bounds, v_bounds)\r
+    if numeric is None:\r
+        return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}, None\r
+    if exact is None:\r
+        other = independent_value(kind, position, integrand, u_bounds, v_bounds, "tanh-sinh")\r
+        if other is not None and abs(other - numeric) <= CHECK_TOLERANCE * max(1, abs(numeric)):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"There is no exact form, so it was computed numerically: two different methods "\r
+                f"(Gauss–Legendre and tanh-sinh quadrature) agree on \${shown(numeric)}$.",\r
+            }, numeric\r
+        return {\r
+            "status": "unchecked",\r
+            "detail": "There is no exact form, and two numerical methods didn't agree closely enough.",\r
+        }, numeric\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))\r
+        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"Integrating numerically over the surface, straight from what you typed, gives "\r
+                f"\${shown(numeric)}$, matching the exact answer.",\r
+            }, numeric\r
+    return {\r
+        "status": "failed",\r
+        "detail": f"Integrating numerically over the surface gives \${shown(numeric)}$, which doesn't match. "\r
+        "Treat this answer with caution.",\r
+    }, numeric\r
+\r
+\r
+SYMBOLS = {\r
+    "area": r"A = \\iint_S dS",\r
+    "scalar": r"\\iint_S f\\, dS",\r
+    "flux": r"\\iint_S \\mathbf{F} \\cdot d\\mathbf{S}",\r
+}\r
+\r
+\r
+def solve_surface(kind, position, u_bounds, v_bounds, integrand):\r
+    """The steps and the exact value (None when it could only be computed\r
+    numerically). Practice problems use it too."""\r
+    normal, length, steps = normal_steps(position, u_bounds, v_bounds, kind != "flux")\r
+    product, step = integrand_step(kind, position, integrand, normal, length, u_bounds, v_bounds)\r
+    if step is not None:\r
+        steps.append(step)\r
+    report("Integrating over the parameter rectangle…")\r
+    try:\r
+        iterated, iterated_steps, value = iterated_integral(product, U, V, u_bounds, v_bounds)\r
+    except InputError:\r
+        iterated, iterated_steps, value = None, [], None\r
+    if value is not None:\r
+        value = sympy.simplify(value)\r
+        steps.append(\r
+            make_step(\r
+                "Integrate over the parameter rectangle",\r
+                rf"$u$ runs from \${to_latex(u_bounds[0])}$ to \${to_latex(u_bounds[1])}$ and $v$ from "\r
+                rf"\${to_latex(v_bounds[0])}$ to \${to_latex(v_bounds[1])}$, so the surface integral is an "\r
+                r"ordinary double integral: $u$ inside, then $v$.",\r
+                [SYMBOLS[kind], iterated, latex_value(value)],\r
+                iterated_steps[1:],\r
+            )\r
+        )\r
+    else:\r
+        steps.append(\r
+            make_step(\r
+                "Numerical integration",\r
+                "No antiderivative was found with the textbook rules, so the double integral was computed "\r
+                "numerically.",\r
+                [],\r
+            )\r
+        )\r
+    return {"steps": steps, "value": value, "normal": normal}\r
+\r
+\r
+def surface_grid(position, u_bounds, v_bounds, count):\r
+    functions = [sympy.lambdify((U, V), component, modules="math") for component in position]\r
+    (a, b), (c, d) = ([float(sympy.N(bound)) for bound in side] for side in (u_bounds, v_bounds))\r
+    us = [a + (b - a) * i / (count - 1) for i in range(count)]\r
+    vs = [c + (d - c) * j / (count - 1) for j in range(count)]\r
+    return {\r
+        name: [[round(float(function(u, v)), 6) for u in us] for v in vs]\r
+        for name, function in zip(("x", "y", "z"), functions)\r
+    }\r
+\r
+\r
+def normal_arrows(normal, position, u_bounds, v_bounds):\r
+    """Unit normals at a few points, for showing a flux's orientation:\r
+    [x, y, z, n_x, n_y, n_z]."""\r
+    point_at = [sympy.lambdify((U, V), component, modules="math") for component in position]\r
+    normal_at = [sympy.lambdify((U, V), component, modules="math") for component in normal]\r
+    (a, b), (c, d) = ([float(sympy.N(bound)) for bound in side] for side in (u_bounds, v_bounds))\r
+    arrows = []\r
+    for i in range(NORMAL_GRID):\r
+        for j in range(NORMAL_GRID):\r
+            u = a + (b - a) * (i + 0.5) / NORMAL_GRID\r
+            v = c + (d - c) * (j + 0.5) / NORMAL_GRID\r
+            n = [float(f(u, v)) for f in normal_at]\r
+            size = sum(component**2 for component in n) ** 0.5\r
+            if size > 1e-9:\r
+                arrows.append([round(float(f(u, v)), 6) for f in point_at] + [round(c / size, 6) for c in n])\r
+    return arrows\r
+\r
+\r
+def surface_integral(request):\r
+    kind, position, u_bounds, v_bounds, integrand = parse_surface(request)\r
+    solved = solve_surface(kind, position, u_bounds, v_bounds, integrand)\r
+    report("Checking the answer numerically…")\r
+    check, numeric = value_check(kind, position, integrand, u_bounds, v_bounds, solved["value"])\r
+    value = solved["value"]\r
+    if value is not None:\r
+        answer = rf"{SYMBOLS[kind]} = {latex_value(value)}"\r
+    elif numeric is not None:\r
+        answer = rf"{SYMBOLS[kind]} \\approx {mpmath.nstr(numeric, 10)}"\r
+    else:\r
+        raise InputError("The integral couldn't be computed, even numerically.")\r
+    labels = {"area": "Surface area", "scalar": "Surface integral", "flux": "Flux"}\r
+    surface = (\r
+        rf"\\mathbf{{r}}(u, v) = {vector_latex(position)}, \\quad {to_latex(u_bounds[0])} \\le u \\le "\r
+        rf"{to_latex(u_bounds[1])}, \\quad {to_latex(v_bounds[0])} \\le v \\le {to_latex(v_bounds[1])}"\r
+    )\r
+    given = {\r
+        "area": "",\r
+        "scalar": rf"f = {to_latex(integrand)} \\quad" if kind == "scalar" else "",\r
+        "flux": rf"\\mathbf{{F}} = {vector_latex(integrand)} \\quad" if kind == "flux" else "",\r
+    }[kind]\r
+    return {\r
+        "ok": True,\r
+        "operation": "surface",\r
+        "kind": kind,\r
+        "problemLatex": f"{given}{surface}",\r
+        "results": [{"label": labels[kind], "latex": answer}],\r
+        "checks": [{"label": labels[kind], "check": check}],\r
+        "steps": solved["steps"],\r
+        "graph": {\r
+            "surface": surface_grid(position, u_bounds, v_bounds, GRID),\r
+            "normals": normal_arrows(solved["normal"], position, u_bounds, v_bounds) if kind == "flux" else None,\r
+        },\r
+    }\r
+\r
+\r
+# ------------------------------------------------------------------ the lesson picture\r
+\r
+\r
+def surface_picture(request):\r
+    """The lesson picture: the surface, and at each slider position (u, v) the\r
+    point, r_u, r_v, the normal r_u × r_v, and its length."""\r
+    _, position, u_bounds, v_bounds, _ = parse_surface({**request, "surfaceKind": "area"})\r
+    ru, rv = position.diff(U), position.diff(V)\r
+    normal = ru.cross(rv)\r
+    functions = [sympy.lambdify((U, V), list(vector), modules="math") for vector in (position, ru, rv, normal)]\r
+    (a, b), (c, d) = ([float(sympy.N(bound)) for bound in side] for side in (u_bounds, v_bounds))\r
+    us = [round(a + (b - a) * i / PICTURE_STEPS, 6) for i in range(PICTURE_STEPS + 1)]\r
+    vs = [round(c + (d - c) * j / PICTURE_STEPS, 6) for j in range(PICTURE_STEPS + 1)]\r
+\r
+    def at(u, v):\r
+        point, along_u, along_v, n = ([float(component) for component in f(u, v)] for f in functions)\r
+        return {\r
+            "point": [round(component, 6) for component in point],\r
+            "ru": [round(component, 6) for component in along_u],\r
+            "rv": [round(component, 6) for component in along_v],\r
+            "normal": [round(component, 6) for component in n],\r
+            "stretch": round(sum(component**2 for component in n) ** 0.5, 6),\r
+        }\r
+\r
+    try:\r
+        positions = [[at(u, v) for u in us] for v in vs]\r
+    except (ValueError, ZeroDivisionError, OverflowError, TypeError) as error:\r
+        raise InputError("The picture couldn't be drawn: the surface isn't defined everywhere.") from error\r
+    return {\r
+        "ok": True,\r
+        "operation": "surfacePicture",\r
+        "surface": surface_grid(position, u_bounds, v_bounds, GRID),\r
+        "us": us,\r
+        "vs": vs,\r
+        "positions": positions,\r
+        "steps": [round((b - a) / PICTURE_STEPS, 6), round((d - c) / PICTURE_STEPS, 6)],\r
+    }\r
 `,"./python/mathlab/tangent.py":`"""Tangent planes and linear approximation.
 
 For a graph z = f(x, y), the tangent plane at (a, b) is
