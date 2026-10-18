@@ -114,6 +114,7 @@ from mathlab.checks import check_derivative, check_with_constants, numeric_funct
 from mathlab.curves import analyze_curve, parse_curve_function, trace\r
 from mathlab.definite import definite_integral\r
 from mathlab.directional import direction_picture, directional_derivative, number\r
+from mathlab.curl_div import curl_divergence, curl_picture\r
 from mathlab.green import green, green_sweep\r
 from mathlab.line_integrals import line_integral, line_trace\r
 from mathlab.optimize import constraint_picture, optimize\r
@@ -333,6 +334,10 @@ OPERATIONS = {\r
     "green": green,\r
     # The Green's theorem lesson picture.\r
     "greenSweep": green_sweep,\r
+    # F = <P, Q> or <P, Q, R> as LaTeX from math boxes (R empty in the plane).\r
+    "curl": curl_divergence,\r
+    # The curl and divergence lesson picture, for a field in the plane.\r
+    "curlPicture": curl_picture,\r
     "practice": practice,\r
     "check": check,\r
     "solution": practice_solution,\r
@@ -548,6 +553,361 @@ def undefined_where_function_is_defined(function, antiderivative, variable=X):
             and real_value(lambda: antiderivative_numeric(mpmath.mpf(point))) is None
             for point in CHECK_POINTS
         )
+`,"./python/mathlab/curl_div.py":`"""Curl and divergence of a vector field F = ⟨P, Q, R⟩, or ⟨P, Q⟩ in the plane.\r
+\r
+The divergence ∇ · F = P_x + Q_y + R_z is a number at each point: how much F\r
+spreads out from it (a source if positive, a sink if negative). The curl\r
+∇ × F = ⟨R_y − Q_z, P_z − R_x, Q_x − P_y⟩ is a vector: its direction is the\r
+axis F turns around there, and its length how fast. A field in the plane is\r
+⟨P, Q, 0⟩ with P and Q free of z, so its curl is (Q_x − P_y) k, the integrand\r
+of Green's theorem.\r
+\r
+Both are checked against partial derivatives taken numerically, straight from\r
+the typed components.\r
+"""\r
+\r
+import math\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import CHECK_POINTS_2D, numeric_check, real_value\r
+from mathlab.expressions import X, Y, Z, InputError, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.line_integrals import defined_everywhere, field_arrows, potential_function\r
+from mathlab.parsing import parse_function\r
+from mathlab.steps import make_step, separate\r
+from mathlab.tangent import only_variables\r
+from mathlab.vectors import vector_latex\r
+\r
+CHECK_DIGITS = 30\r
+CHECK_TOLERANCE = mpmath.mpf("1e-10")\r
+# (x, y, z) points for checking a field in space.\r
+CHECK_POINTS_3D = tuple(\r
+    (x, y, z) for (x, y), z in zip(CHECK_POINTS_2D, (0.83, -1.47, 0.29, 1.91, -0.61, 2.43, -2.17))\r
+)\r
+# The Solver draws a field in the plane over this square.\r
+GRAPH_HALF_WIDTH = 2\r
+# The lesson picture: the point moves over [-2, 2] in steps of 0.25, with a\r
+# circle of this radius around it, and F at this many points on the circle\r
+# (the integrals around it use more).\r
+PICTURE_HALF_WIDTH = 2\r
+PICTURE_STEP = 0.25\r
+CIRCLE_RADIUS = 0.5\r
+RING_ARROWS = 8\r
+CIRCLE_POINTS = 64\r
+NAMES = ("P", "Q", "R")\r
+\r
+\r
+def parse_field(texts):\r
+    """F's components, and the variables they may use: ⟨P, Q⟩ in the plane\r
+    when R is empty, ⟨P, Q, R⟩ in space."""\r
+    texts = list(texts or [])\r
+    texts += [""] * (3 - len(texts))\r
+    space = isinstance(texts[2], str) and texts[2].strip() != ""\r
+    variables = (X, Y, Z) if space else (X, Y)\r
+    components = []\r
+    for text, name in zip(texts[: len(variables)], NAMES):\r
+        if not isinstance(text, str) or text.strip() == "":\r
+            raise InputError(f"Enter {name}.")\r
+        try:\r
+            component = parse_function(latex_to_text(text), (X, Y, Z))\r
+        except InputError as error:\r
+            raise InputError(f"{name}: {error}") from error\r
+        if not space and component.has(Z):\r
+            raise InputError("R is empty, so F is a field in the plane and P and Q can use only x and y.")\r
+        only_variables(component, variables, name)\r
+        components.append(component)\r
+    return sympy.Matrix(components), variables\r
+\r
+\r
+def partials_step(field, variables):\r
+    names = [to_latex(variable) for variable in variables]\r
+    rows = [\r
+        r", \\quad ".join(\r
+            rf"\\frac{{\\partial {name}}}{{\\partial {variable}}} = {to_latex(sympy.diff(component, symbol))}"\r
+            for variable, symbol in zip(names, variables)\r
+        )\r
+        for name, component in zip(NAMES, field)\r
+    ]\r
+    return make_step(\r
+        "Partial derivatives of the components",\r
+        r"Curl and divergence are built from the partial derivatives of $P$, $Q$"\r
+        + (r", and $R$" if len(variables) == 3 else "")\r
+        + r". Each treats the other variables as constants.",\r
+        [separate(*rows)],\r
+    )\r
+\r
+\r
+def divergence(field, variables):\r
+    """∇ · F and its step."""\r
+    terms = [sympy.diff(component, variable) for component, variable in zip(field, variables)]\r
+    value = tidy(sum(terms), variables)\r
+    symbolic = " + ".join(\r
+        rf"\\frac{{\\partial {name}}}{{\\partial {to_latex(variable)}}}" for name, variable in zip(NAMES, variables)\r
+    )\r
+    added = " + ".join(parenthesized(term) for term in terms)\r
+    step = make_step(\r
+        "Divergence",\r
+        r"$\\nabla \\cdot \\mathbf{F}$, like a dot product of $\\nabla = \\left\\langle \\frac{\\partial}{\\partial x}, "\r
+        r"\\frac{\\partial}{\\partial y}, \\frac{\\partial}{\\partial z} \\right\\rangle$ with $\\mathbf{F}$: add the "\r
+        r"derivative of each component in its own direction.",\r
+        [r"\\nabla \\cdot \\mathbf{F}", symbolic, added, to_latex(value)],\r
+    )\r
+    return value, step\r
+\r
+\r
+def tidy(value, variables):\r
+    """Simplified; a polynomial is expanded, as textbooks write xz + z, not z(x + 1)."""\r
+    simpler = sympy.simplify(value)\r
+    return sympy.expand(simpler) if simpler.is_polynomial(*variables) else simpler\r
+\r
+\r
+def parenthesized(value):\r
+    text = to_latex(value)\r
+    return rf"\\left({text}\\right)" if value.could_extract_minus_sign() or value.is_Add else text\r
+\r
+\r
+def curl(field, variables):\r
+    """∇ × F (a vector with three components, even in the plane) and its step."""\r
+    P, Q, R = (*field, sympy.Integer(0)) if len(variables) == 2 else field\r
+    parts = [\r
+        (sympy.diff(R, Y), sympy.diff(Q, Z)),\r
+        (sympy.diff(P, Z), sympy.diff(R, X)),\r
+        (sympy.diff(Q, X), sympy.diff(P, Y)),\r
+    ]\r
+    value = sympy.Matrix([tidy(first - second, variables) for first, second in parts])\r
+    differences = [rf"{parenthesized(first)} - {parenthesized(second)}" for first, second in parts]\r
+    determinant = (\r
+        r"\\begin{vmatrix} \\mathbf{i} & \\mathbf{j} & \\mathbf{k} \\\\ "\r
+        r"\\frac{\\partial}{\\partial x} & \\frac{\\partial}{\\partial y} & \\frac{\\partial}{\\partial z} \\\\ "\r
+        rf"{'P' if len(variables) == 3 else to_latex(P)} & {'Q' if len(variables) == 3 else to_latex(Q)} & "\r
+        rf"{'R' if len(variables) == 3 else '0'} \\end{{vmatrix}}"\r
+    )\r
+    if len(variables) == 2:\r
+        explanation = (\r
+            r"Think of $\\mathbf{F}$ as $\\langle P, Q, 0 \\rangle$, with $P$ and $Q$ free of $z$. Then only the "\r
+            r"$\\mathbf{k}$-component is left: $\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y}$, "\r
+            r"the integrand of Green's theorem."\r
+        )\r
+        math_parts = [\r
+            r"\\nabla \\times \\mathbf{F}",\r
+            determinant,\r
+            rf"\\left\\langle 0, 0, {differences[2]} \\right\\rangle",\r
+            vector_latex(value),\r
+        ]\r
+    else:\r
+        explanation = (\r
+            r"Expand the determinant like a cross product of $\\nabla$ with $\\mathbf{F}$: "\r
+            r"$\\nabla \\times \\mathbf{F} = \\left\\langle \\frac{\\partial R}{\\partial y} - \\frac{\\partial Q}{\\partial z}, "\r
+            r"\\frac{\\partial P}{\\partial z} - \\frac{\\partial R}{\\partial x}, "\r
+            r"\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y} \\right\\rangle$."\r
+        )\r
+        math_parts = [\r
+            r"\\nabla \\times \\mathbf{F}",\r
+            determinant,\r
+            rf"\\left\\langle {', '.join(differences)} \\right\\rangle",\r
+            vector_latex(value),\r
+        ]\r
+    return value, make_step("Curl", explanation, math_parts)\r
+\r
+\r
+def meaning(field, variables, div, rotation):\r
+    """What the answers say about F: the step, and a potential function when F\r
+    is conservative (None otherwise)."""\r
+    zero_curl = all(component == 0 for component in rotation)\r
+    everywhere = all(defined_everywhere(component) for component in field)\r
+    sentences = []\r
+    substeps = []\r
+    potential = None\r
+    if zero_curl and everywhere:\r
+        found = potential_function(field, variables)\r
+        if found is not None:\r
+            potential, substeps = found\r
+        sentences.append(\r
+            r"$\\nabla \\times \\mathbf{F} = \\mathbf{0}$ and $\\mathbf{F}$ is defined everywhere, so $\\mathbf{F}$ is "\r
+            r"irrotational and conservative: $\\mathbf{F} = \\nabla f$ for a potential function $f$"\r
+            + (", found below." if potential is not None else ".")\r
+        )\r
+    elif zero_curl:\r
+        sentences.append(\r
+            r"$\\nabla \\times \\mathbf{F} = \\mathbf{0}$, so $\\mathbf{F}$ is irrotational: it doesn't spin anything. "\r
+            r"It isn't defined everywhere, though, so it may still not be conservative."\r
+        )\r
+    else:\r
+        sentences.append(\r
+            r"$\\nabla \\times \\mathbf{F} \\ne \\mathbf{0}$, so $\\mathbf{F}$ spins a tiny paddle wheel somewhere "\r
+            r"and isn't conservative (a gradient field always has curl $\\mathbf{0}$)."\r
+        )\r
+    if div == 0:\r
+        sentences.append(r"$\\nabla \\cdot \\mathbf{F} = 0$, so $\\mathbf{F}$ is incompressible: no sources or sinks.")\r
+    else:\r
+        sentences.append(\r
+            r"$\\nabla \\cdot \\mathbf{F} \\ne 0$, so $\\mathbf{F}$ spreads out (or gathers in) somewhere"\r
+            + (\r
+                r", and it isn't the curl of any field, since $\\nabla \\cdot (\\nabla \\times \\mathbf{G}) = 0$ always."\r
+                if len(variables) == 3\r
+                else "."\r
+            )\r
+        )\r
+    step = make_step("What curl and divergence say", " ".join(sentences), [], substeps)\r
+    return step, potential\r
+\r
+\r
+def numerical_partials(field, variables, point):\r
+    """Every ∂(component)/∂(variable) at the point, numerically, from the typed field."""\r
+    functions = [sympy.lambdify(variables, component, modules="mpmath") for component in field]\r
+    orders = [tuple(1 if i == j else 0 for j in range(len(variables))) for i in range(len(variables))]\r
+    return [[mpmath.diff(function, tuple(point), order) for order in orders] for function in functions]\r
+\r
+\r
+def check(field, variables, exact, combine, what):\r
+    """Compare an exact answer (a list of expressions) with the same thing built\r
+    from numerical partial derivatives, at the check points."""\r
+    points = CHECK_POINTS_3D if len(variables) == 3 else CHECK_POINTS_2D\r
+    exact_functions = [sympy.lambdify(variables, value, modules="mpmath") for value in exact]\r
+    agreed = disagreed = 0\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        for point in points:\r
+            coordinates = [mpmath.mpf(coordinate) for coordinate in point]\r
+            try:\r
+                partials = numerical_partials(field, variables, coordinates)\r
+                numeric = combine(partials)\r
+            except (ValueError, ZeroDivisionError, TypeError, OverflowError):\r
+                continue\r
+            values = [real_value(lambda f=f: f(*coordinates)) for f in exact_functions]\r
+            numbers = [real_value(lambda n=n: n) for n in numeric]\r
+            if any(value is None for value in values + numbers):\r
+                continue\r
+            if all(abs(a - b) <= CHECK_TOLERANCE * max(1, abs(a)) for a, b in zip(values, numbers)):\r
+                agreed += 1\r
+            else:\r
+                disagreed += 1\r
+    return numeric_check(\r
+        agreed,\r
+        disagreed,\r
+        f"Matches the {what} built from numerical partial derivatives of the typed field at {{count}} test points.",\r
+        f"Doesn't match the {what} built from numerical partial derivatives. Treat this answer with caution.",\r
+    )\r
+\r
+\r
+def numerical_divergence(partials):\r
+    return [sum(partials[i][i] for i in range(len(partials)))]\r
+\r
+\r
+def numerical_curl(partials):\r
+    if len(partials) == 2:\r
+        return [0, 0, partials[1][0] - partials[0][1]]\r
+    return [\r
+        partials[2][1] - partials[1][2],\r
+        partials[0][2] - partials[2][0],\r
+        partials[1][0] - partials[0][1],\r
+    ]\r
+\r
+\r
+def solve_curl_divergence(field, variables):\r
+    """The steps, ∇ · F, ∇ × F, and a potential function (or None). Practice\r
+    problems use it too."""\r
+    first = partials_step(field, variables)\r
+    div, div_step = divergence(field, variables)\r
+    rotation, curl_step = curl(field, variables)\r
+    meaning_step, potential = meaning(field, variables, div, rotation)\r
+    return {\r
+        "steps": [first, div_step, curl_step, meaning_step],\r
+        "divergence": div,\r
+        "curl": rotation,\r
+        "potential": potential,\r
+    }\r
+\r
+\r
+def curl_divergence(request):\r
+    field, variables = parse_field(request.get("fieldLatex"))\r
+    solved = solve_curl_divergence(field, variables)\r
+    names = ", ".join(to_latex(variable) for variable in variables)\r
+    results = [\r
+        {"label": "Divergence", "latex": rf"\\nabla \\cdot \\mathbf{{F}} = {to_latex(solved['divergence'])}"},\r
+        {"label": "Curl", "latex": rf"\\nabla \\times \\mathbf{{F}} = {vector_latex(solved['curl'])}"},\r
+    ]\r
+    if solved["potential"] is not None:\r
+        results.append({"label": "Potential function", "latex": rf"f({names}) = {to_latex(solved['potential'])}"})\r
+    arrows = None\r
+    if len(variables) == 2:\r
+        corners = [-GRAPH_HALF_WIDTH, GRAPH_HALF_WIDTH]\r
+        arrows = field_arrows(field, variables, corners, corners)\r
+    return {\r
+        "ok": True,\r
+        "operation": "curl",\r
+        "fieldLatex": rf"\\mathbf{{F}}({names}) = {vector_latex(field)}",\r
+        "results": results,\r
+        "checks": [\r
+            {\r
+                "label": "Divergence",\r
+                "check": check(field, variables, [solved["divergence"]], numerical_divergence, "divergence"),\r
+            },\r
+            {"label": "Curl", "check": check(field, variables, list(solved["curl"]), numerical_curl, "curl")},\r
+        ],\r
+        "steps": solved["steps"],\r
+        "graph": None if arrows is None else {"arrows": arrows},\r
+    }\r
+\r
+\r
+# ------------------------------------------------------------------ the lesson picture\r
+\r
+\r
+def curl_picture(request):\r
+    """The lesson picture, for a field in the plane: arrows over a square, and\r
+    at every point the slider reaches, ∇ · F and (∇ × F) · k, the flux out of a\r
+    small circle around the point and the circulation around it (each divided\r
+    by the circle's area), and F at a few points on the circle."""\r
+    field, variables = parse_field(request.get("fieldLatex"))\r
+    if len(variables) != 2:\r
+        raise InputError("The picture is for fields in the plane.")\r
+    P, Q = (sympy.lambdify(variables, component, modules="math") for component in field)\r
+    div = sympy.lambdify(variables, divergence(field, variables)[0], modules="math")\r
+    spin = sympy.lambdify(variables, curl(field, variables)[0][2], modules="math")\r
+    count = round(2 * PICTURE_HALF_WIDTH / PICTURE_STEP) + 1\r
+    values = [round(-PICTURE_HALF_WIDTH + PICTURE_STEP * index, 6) for index in range(count)]\r
+    area = math.pi * CIRCLE_RADIUS**2\r
+\r
+    def at(x, y):\r
+        try:\r
+            flux = circulation = 0.0\r
+            # The trapezoid rule around a closed curve is very accurate.\r
+            for k in range(CIRCLE_POINTS):\r
+                angle = 2 * math.pi * k / CIRCLE_POINTS\r
+                c, s = math.cos(angle), math.sin(angle)\r
+                u, v = P(x + CIRCLE_RADIUS * c, y + CIRCLE_RADIUS * s), Q(x + CIRCLE_RADIUS * c, y + CIRCLE_RADIUS * s)\r
+                # n ds = ⟨cos, sin⟩ r dθ outward; T ds = ⟨−sin, cos⟩ r dθ.\r
+                flux += (u * c + v * s) * CIRCLE_RADIUS\r
+                circulation += (-u * s + v * c) * CIRCLE_RADIUS\r
+            step = 2 * math.pi / CIRCLE_POINTS\r
+            ring = []\r
+            for k in range(RING_ARROWS):\r
+                angle = 2 * math.pi * k / RING_ARROWS\r
+                px, py = x + CIRCLE_RADIUS * math.cos(angle), y + CIRCLE_RADIUS * math.sin(angle)\r
+                ring.append([round(px, 6), round(py, 6), round(P(px, py), 6), round(Q(px, py), 6)])\r
+            numbers = [div(x, y), spin(x, y), flux * step / area, circulation * step / area]\r
+        except (ValueError, ZeroDivisionError, OverflowError, TypeError):\r
+            return None\r
+        if not all(math.isfinite(number) for number in numbers):\r
+            return None\r
+        return {\r
+            "divergence": round(float(numbers[0]), 6),\r
+            "curl": round(float(numbers[1]), 6),\r
+            "flux": round(numbers[2], 6),\r
+            "circulation": round(numbers[3], 6),\r
+            "ring": ring,\r
+        }\r
+\r
+    corners = [-PICTURE_HALF_WIDTH, PICTURE_HALF_WIDTH]\r
+    return {\r
+        "ok": True,\r
+        "operation": "curlPicture",\r
+        "arrows": field_arrows(field, variables, corners, corners),\r
+        "values": values,\r
+        "radius": CIRCLE_RADIUS,\r
+        "points": [[at(x, y) for x in values] for y in values],\r
+    }\r
 `,"./python/mathlab/curves.py":`"""Parametric and polar curves: the slope, arc length, and area.
 
 A parametric curve is x = x(t), y = y(t) for a ≤ t ≤ b. A polar curve
@@ -6094,6 +6454,7 @@ import sympy\r
 \r
 from mathlab.checks import agree_numerically\r
 from mathlab.curves import arc_length, area, build_curve, slope_steps\r
+from mathlab.curl_div import solve_curl_divergence\r
 from mathlab.derivative_steps import Differentiation, derivative_with_steps\r
 from mathlab.directional import solve_directional\r
 from mathlab.double import iterated_integral\r
@@ -6582,6 +6943,41 @@ def green_problem(rng):\r
     )\r
 \r
 \r
+def curl_divergence_problem(rng):\r
+    """The divergence of a field in space at a point (a number), or the\r
+    divergence or curl of a field in the plane (a function of x and y)."""\r
+    a, b, c = rng.choice([1, 2, 3]), rng.choice([1, 2, 3]), rng.choice([-2, -1, 1, 2])\r
+    kind = rng.choice(["space", "divergence", "curl"])\r
+    if kind == "space":\r
+        field = sympy.Matrix([a * X**2 * Y, b * Y * Z, c * X * Z**2])\r
+        solved = solve_curl_divergence(field, (X, Y, Z))\r
+        point = tuple(rng.choice([-1, 1, 2]) for _ in range(3))\r
+        value = solved["divergence"].subs(dict(zip((X, Y, Z), point)))\r
+        return Problem(\r
+            rf"Find $\\nabla \\cdot \\mathbf{{F}}$ at $({', '.join(map(str, point))})$ for "\r
+            rf"$\\mathbf{{F}} = {vector_latex(field)}$.",\r
+            value,\r
+            (),\r
+            solved["steps"][:2],\r
+        )\r
+    field = sympy.Matrix([a * X * Y + c * Y**2, b * X**2 - Y])\r
+    solved = solve_curl_divergence(field, (X, Y))\r
+    if kind == "divergence":\r
+        return Problem(\r
+            rf"Find $\\nabla \\cdot \\mathbf{{F}}$ for $\\mathbf{{F}} = {vector_latex(field)}$.",\r
+            solved["divergence"],\r
+            (X, Y),\r
+            solved["steps"][:2],\r
+        )\r
+    return Problem(\r
+        rf"For $\\mathbf{{F}} = {vector_latex(field)}$, $\\nabla \\times \\mathbf{{F}} = \\langle 0, 0, g(x, y) \\rangle$. "\r
+        r"Find $g(x, y)$.",\r
+        solved["curl"][2],\r
+        (X, Y),\r
+        [solved["steps"][0], solved["steps"][2]],\r
+    )\r
+\r
+\r
 GENERATORS = {\r
     "vectors": vector_problem,\r
     "partial-derivatives": partial_derivative_problem,\r
@@ -6595,6 +6991,7 @@ GENERATORS = {\r
     "optimization": optimization_problem,\r
     "line-integrals": line_integral_problem,\r
     "greens-theorem": green_problem,\r
+    "curl-divergence": curl_divergence_problem,\r
 }\r
 \r
 \r
