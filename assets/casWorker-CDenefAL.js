@@ -115,6 +115,7 @@ from mathlab.curves import analyze_curve, parse_curve_function, trace\r
 from mathlab.definite import definite_integral\r
 from mathlab.directional import direction_picture, directional_derivative, number\r
 from mathlab.curl_div import curl_divergence, curl_picture\r
+from mathlab.divergence_theorem import divergence_theorem, flux_picture\r
 from mathlab.green import green, green_sweep\r
 from mathlab.surfaces import surface_integral, surface_picture\r
 from mathlab.line_integrals import line_integral, line_trace\r
@@ -344,6 +345,11 @@ OPERATIONS = {\r
     "surface": surface_integral,\r
     # The surface integrals lesson picture.\r
     "surfacePicture": surface_picture,\r
+    # F = <P, Q, R> in fieldLatex and a solid E described as for a triple\r
+    # integral (coordinates, order, and bounds).\r
+    "divergence": divergence_theorem,\r
+    # The divergence theorem lesson picture: spheres around the origin.\r
+    "fluxPicture": flux_picture,\r
     "practice": practice,\r
     "check": check,\r
     "solution": practice_solution,\r
@@ -2673,256 +2679,674 @@ def picture_surface(function, point):
     xs, ys, z = sample_square(as_numeric, point, PICTURE_HALF_WIDTH)
     value = float(sympy.N(function.subs({X: point[0], Y: point[1]})))
     return {"x": xs, "y": ys, "z": z, "point": [float(sympy.N(point[0])), float(sympy.N(point[1])), value]}
-`,"./python/mathlab/double.py":`"""Double integrals, as iterated integrals (Fubini's theorem).
-
-The inside integral is taken first, with the outside variable held constant;
-its bounds may depend on the outside variable, which describes a region that
-isn't a rectangle. The value is checked with a numerical double integration.
-"""
-
-import mpmath
-import sympy
-
-from mathlab.antiderivatives import find_antiderivative
-from mathlab.checks import numeric_function, plot_value, real_value
-from mathlab.definite import INFINITY, evaluate_between, parse_bound
-from mathlab.expressions import X, Y, InputError, to_latex
-from mathlab.latex_input import latex_to_text
-from mathlab.parsing import constants_in, parse_function
-from mathlab.progress import report
-from mathlab.region import real_number, simplify_on_region
-from mathlab.steps import make_step
-
-# The order of integration: (inside variable, outside variable).
-ORDERS = {"dy dx": (Y, X), "dx dy": (X, Y)}
-CHECK_DIGITS = 15
-CHECK_TOLERANCE = mpmath.mpf("1e-9")
-GRID_SIZE = 41
-OUTLINE_POINTS = 60
-
-
-def parse_inside_bound(text, name, inside, outside):
-    """An inside bound: a number or an expression in the outside variable."""
-    if not isinstance(text, str) or text.strip() == "":
-        raise InputError(f"Enter the {name} bound of the inside integral.")
-    if INFINITY.search(text):
-        raise InputError("Infinite bounds in a double integral aren't supported yet.")
-    try:
-        bound = parse_function(latex_to_text(text), (outside,))
-    except InputError as error:
-        raise InputError(f"The inside integral's {name} bound: {error}") from error
-    names = {str(symbol) for symbol in bound.free_symbols}
-    if str(inside) in names:
-        raise InputError(
-            f"The inside integral's bounds can depend on {outside} but not on {inside}, "
-            f"the variable it integrates."
-        )
-    if names - {str(outside)}:
-        raise InputError(
-            f"The inside integral's {name} bound can use only numbers and {outside}."
-        )
-    return bound
-
-
-def parse_outside_bound(text, name):
-    bound = parse_bound(text, f"outside integral's {name}")
-    if bound.is_infinite:
-        raise InputError("Infinite bounds in a double integral aren't supported yet.")
-    return bound
-
-
-def antiderivative_step(function, variable, antiderivative, steps):
-    return make_step(
-        "Find an antiderivative",
-        rf"Integrate with respect to \${to_latex(variable)}$. Any antiderivative works, because "
-        r"the constant cancels in the subtraction.",
-        [to_latex(sympy.Integral(function, variable)), f"{to_latex(antiderivative)} + C"],
-        steps,
-    )
-
-
-def numerical_check(function, inside, outside, inner_bounds, outer_bounds, value):
-    as_numeric = numeric_function(function, (inside, outside))
-    lower, upper = (numeric_function(bound, (outside,)) for bound in inner_bounds)
-    with mpmath.workdps(CHECK_DIGITS):
-        exact = real_value(lambda: sympy.N(value, CHECK_DIGITS))
-        try:
-            # real_number drops rounding-size imaginary parts at a curved edge,
-            # as from √(1 − x²) evaluated just past x = 1.
-            numeric = mpmath.quad(
-                lambda o: mpmath.quad(
-                    lambda i: real_number(as_numeric(i, o)),
-                    [real_number(lower(o)), real_number(upper(o))],
-                ),
-                [mpmath.mpf(str(sympy.N(bound, CHECK_DIGITS))) for bound in outer_bounds],
-            )
-        except Exception:  # Numerical integration fails in many ways; all mean "unchecked".
-            numeric = None
-        if exact is None or numeric is None or isinstance(numeric, mpmath.mpc):
-            return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}
-        shown = mpmath.nstr(numeric, 10).removesuffix(".0")
-        if abs(numeric - exact) <= CHECK_TOLERANCE * max(1, abs(exact)):
-            return {
-                "status": "verified",
-                "detail": f"A numerical double integration gives \${shown}$, matching the exact "
-                "answer.",
-            }
-        return {
-            "status": "failed",
-            "detail": f"A numerical double integration gives \${shown}$, which doesn't match. "
-            "Treat this answer with caution.",
-        }
-
-
-def graph_samples(function, inside, outside, inner_bounds, outer_bounds):
-    """The surface over a box around the region, which points are in the region,
-    and the region's outline, all in (x, y) coordinates."""
-    lower, upper = (numeric_function(bound, (outside,)) for bound in inner_bounds)
-    a, b = (float(bound) for bound in outer_bounds)
-    outside_points = [a + (b - a) * index / (OUTLINE_POINTS - 1) for index in range(OUTLINE_POINTS)]
-    edges = [
-        [plot_value(lambda o=o: lower(mpmath.mpf(o))) for o in outside_points],
-        [plot_value(lambda o=o: upper(mpmath.mpf(o))) for o in outside_points],
-    ]
-    if any(value is None for edge in edges for value in edge):
-        raise InputError(
-            "The inside integral's bounds aren't defined along the whole outside range."
-        )
-    inside_min = min(min(edge) for edge in edges)
-    inside_max = max(max(edge) for edge in edges)
-
-    def padded(low, high):
-        margin = max(0.1 * (high - low), 0.25)
-        return low - margin, high + margin
-
-    outside_range, inside_range = padded(a, b), padded(inside_min, inside_max)
-    if outside == X:
-        x_range, y_range = outside_range, inside_range
-    else:
-        x_range, y_range = inside_range, outside_range
-
-    def grid(low, high):
-        step = (high - low) / (GRID_SIZE - 1)
-        return [round(low + step * index, 6) for index in range(GRID_SIZE)]
-
-    xs, ys = grid(*x_range), grid(*y_range)
-    as_numeric = numeric_function(function, (X, Y))
-
-    def in_region(x, y):
-        o, i = (x, y) if outside == X else (y, x)
-        if not a - 1e-9 <= o <= b + 1e-9:
-            return False
-        low, high = (
-            plot_value(lambda bound=bound: bound(mpmath.mpf(o))) for bound in (lower, upper)
-        )
-        if low is None or high is None:
-            return False
-        return min(low, high) - 1e-9 <= i <= max(low, high) + 1e-9
-
-    def height(x, y):
-        return plot_value(lambda: as_numeric(mpmath.mpf(x), mpmath.mpf(y)))
-
-    z = [[height(x, y) for x in xs] for y in ys]
-    region = [[in_region(x, y) for x in xs] for y in ys]
-    # The outline: along the lower edge, up the far side, back along the upper edge.
-    path = [
-        *zip(outside_points, edges[0]),
-        *zip(reversed(outside_points), reversed(edges[1])),
-        (outside_points[0], edges[0][0]),
-    ]
-    if outside == X:
-        outline = {"x": [o for o, _ in path], "y": [i for _, i in path]}
-    else:
-        outline = {"x": [i for _, i in path], "y": [o for o, _ in path]}
-    return {"x": xs, "y": ys, "z": z, "region": region, "outline": outline}
-
-
-def double_integral(function, order, inner_texts, outer_texts):
-    if order not in ORDERS:
-        raise InputError("Choose the order of integration: dy dx or dx dy.")
-    inside, outside = ORDERS[order]
-    constants = constants_in(function, (X, Y))
-    if constants:
-        names = ", ".join(str(constant) for constant in constants)
-        raise InputError(
-            f"A double integral needs a function of x and y alone, so its answer is a number. "
-            f"Remove {names}."
-        )
-    inner_bounds = tuple(
-        parse_inside_bound(text, name, inside, outside)
-        for text, name in zip(inner_texts, ("lower", "upper"))
-    )
-    outer_bounds = tuple(
-        parse_outside_bound(text, name) for text, name in zip(outer_texts, ("lower", "upper"))
-    )
-    if (outer_bounds[1] - outer_bounds[0]).is_negative:
-        raise InputError("The outside integral's lower bound must be at most its upper bound.")
-
-    iterated, steps, value = iterated_integral(function, inside, outside, inner_bounds, outer_bounds)
-    equation = f"{iterated} = {to_latex(value)}"
-    if not value.is_Rational:
-        equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"
-    return {
-        "ok": True,
-        "operation": "double",
-        "equationLatex": equation,
-        "check": numerical_check(function, inside, outside, inner_bounds, outer_bounds, value),
-        "steps": steps,
-        "stepsNote": None,
-        "graph": graph_samples(function, inside, outside, inner_bounds, outer_bounds),
-    }
-
-
-def iterated_integral(function, inside, outside, inner_bounds, outer_bounds):
-    """The iterated integral's LaTeX, its steps, and its exact value: the inside
-    integral first, with the outside variable held constant, then the outside.
-    Practice problems use it too."""
-    report("Integrating the inside integral…")
-    inner_antiderivative, _, inner_steps, _ = find_antiderivative(function, inside)
-    inner_math, inner_value = evaluate_between(
-        function, inner_antiderivative, *inner_bounds, inside
-    )
-    # The result is used only inside the region, which can make it simpler.
-    simpler = simplify_on_region(inner_value, (outside,), (outer_bounds,))
-    if simpler != inner_value:
-        inner_math.append(to_latex(simpler))
-        inner_value = simpler
-    if inner_value.has(sympy.nan, sympy.zoo, sympy.oo, -sympy.oo):
-        raise InputError(
-            "The inside integral has no finite value everywhere on the region, so this double "
-            "integral is improper, which the Solver can't do yet."
-        )
-    report("Integrating the outside integral…")
-    outer_antiderivative, _, outer_steps, _ = find_antiderivative(inner_value, outside)
-    outer_math, value = evaluate_between(inner_value, outer_antiderivative, *outer_bounds, outside)
-
-    iterated = to_latex(sympy.Integral(function, (inside, *inner_bounds), (outside, *outer_bounds)))
-    inside_name, outside_name = to_latex(inside), to_latex(outside)
-    steps = [
-        make_step(
-            "Iterated integral",
-            rf"Write the double integral over the region $R$ as an iterated integral: integrate "
-            rf"with respect to \${inside_name}$ first, from \${to_latex(inner_bounds[0])}$ to "
-            rf"\${to_latex(inner_bounds[1])}$, then with respect to \${outside_name}$ from "
-            rf"\${to_latex(outer_bounds[0])}$ to \${to_latex(outer_bounds[1])}$.",
-            [rf"\\iint_{{R}} {to_latex(function)}\\, dA", iterated],
-        ),
-        make_step(
-            "Inside integral",
-            rf"Integrate with respect to \${inside_name}$, treating \${outside_name}$ as a constant, "
-            r"then subtract the antiderivative's values at the bounds.",
-            inner_math,
-            [antiderivative_step(function, inside, inner_antiderivative, inner_steps)],
-        ),
-        make_step(
-            "Outside integral",
-            rf"Integrate the result with respect to \${outside_name}$ and evaluate between its "
-            r"bounds.",
-            outer_math,
-            [antiderivative_step(inner_value, outside, outer_antiderivative, outer_steps)],
-        ),
-    ]
-    return iterated, steps, value
+`,"./python/mathlab/divergence_theorem.py":`"""The divergence theorem: the flux of F out through the boundary of a solid E\r
+equals the triple integral of its divergence over E,\r
+\r
+    ∬_{∂E} F · dS = ∭_E ∇ · F dV,\r
+\r
+with ∂E oriented outward and F smooth on all of E.\r
+\r
+E is described the way a triple integral describes it (rectangular,\r
+cylindrical, or spherical coordinates). Both sides are computed: the triple\r
+integral with the Solver's iterated integrals, and the flux face by face. The\r
+faces are where one variable is at one of its bounds; each is parametrized by\r
+the other two variables, and its normal is turned to point out of E.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.curl_div import divergence, parse_field\r
+from mathlab.curves import latex_value\r
+from mathlab.expressions import U, V, X, Y, Z, InputError, to_latex\r
+from mathlab.line_integrals import defined_everywhere\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step\r
+from mathlab.surfaces import independent_value, normal_arrows, solve_surface, surface_grid\r
+from mathlab.triple import (\r
+    COORDINATE_SYSTEMS,\r
+    ORDERS,\r
+    change_coordinates,\r
+    iterated_triple_integral,\r
+    numerical_check,\r
+    parse_bounds,\r
+    spelled,\r
+)\r
+from mathlab.vectors import vector_latex\r
+\r
+CHECK_DIGITS = 15\r
+CHECK_TOLERANCE = mpmath.mpf("1e-8")\r
+# Where a face's normal is compared with the way out of E, as fractions of\r
+# its parameter rectangle; the first point where they aren't perpendicular\r
+# decides.\r
+ORIENTATION_POINTS = ((0.37, 0.41), (0.61, 0.29), (0.23, 0.67), (0.83, 0.71))\r
+FACE_GRID = 25\r
+# The lesson picture: spheres of these radii around the origin.\r
+PICTURE_RADII = [round(0.1 * index, 1) for index in range(1, 16)]\r
+PICTURE_GRID = 25\r
+\r
+\r
+def parse_solid(request):\r
+    """The variables (innermost first), their bounds, and x, y, z in terms of\r
+    them, from a triple integral's description of E."""\r
+    coordinates = request.get("coordinates") or "rectangular"\r
+    system = COORDINATE_SYSTEMS.get(coordinates)\r
+    if system is None:\r
+        if coordinates != "rectangular":\r
+            raise InputError("Choose rectangular, cylindrical, or spherical coordinates.")\r
+        if request.get("order") not in ORDERS:\r
+            raise InputError("Choose the order of integration, such as dz dy dx.")\r
+        variables = ORDERS[request["order"]]\r
+        xyz = sympy.Matrix([X, Y, Z])\r
+    else:\r
+        variables = system["variables"]\r
+        xyz = sympy.Matrix(system["xyz"])\r
+    texts = (\r
+        (request.get("innerLower"), request.get("innerUpper")),\r
+        (request.get("middleLower"), request.get("middleUpper")),\r
+        (request.get("lower"), request.get("upper")),\r
+    )\r
+    bounds = parse_bounds(variables, texts)\r
+    return system, variables, bounds, xyz\r
+\r
+\r
+def plain(expression):\r
+    """A bound as plain text for a step's name: 2 - z, 1 - x^2, 2π."""\r
+    text = sympy.sstr(expression).replace("**", "^").replace("*", "")\r
+    for name, letter in (("theta", "θ"), ("phi", "φ"), ("rho", "ρ"), ("pi", "π")):\r
+        text = text.replace(name, letter)\r
+    return text\r
+\r
+\r
+def free_parameter(variable, low, high, outer):\r
+    """One free variable of a face as U: itself when its bounds are numbers, or\r
+    low + U (high - low) for 0 ≤ U ≤ 1 when they depend on the outer one."""\r
+    if not (low.has(outer) or high.has(outer)):\r
+        return U, (low, high)\r
+    return low + U * (high - low), (sympy.Integer(0), sympy.Integer(1))\r
+\r
+\r
+def raw_faces(variables, bounds, xyz):\r
+    """Each face (index of the fixed variable, which end, its bound, position\r
+    r(U, V), U's bounds, V's bounds), before orientation."""\r
+    q1, q2, q3 = variables\r
+    (low1, high1), (low2, high2), (a, b) = bounds\r
+    faces = []\r
+    for end, bound in (("low", low1), ("high", high1)):\r
+        # q1 at its bound; q2 inside (its bounds may use q3), q3 outside.\r
+        inner, inner_bounds = free_parameter(q2, low2.subs(q3, V), high2.subs(q3, V), V)\r
+        values = {q1: bound.subs({q2: inner, q3: V}, simultaneous=True), q2: inner, q3: V}\r
+        faces.append((0, end, bound, values, inner_bounds, (a, b)))\r
+    for end, bound in (("low", low2), ("high", high2)):\r
+        # q2 at its bound (a function of q3); q1 inside, q3 outside.\r
+        at = bound.subs(q3, V)\r
+        inner, inner_bounds = free_parameter(\r
+            q1, low1.subs({q2: at, q3: V}, simultaneous=True), high1.subs({q2: at, q3: V}, simultaneous=True), V\r
+        )\r
+        faces.append((1, end, bound, {q1: inner, q2: at, q3: V}, inner_bounds, (a, b)))\r
+    for end, bound in (("low", a), ("high", b)):\r
+        # q3 at its bound (a number); q1 inside (its bounds may use q2), q2 outside.\r
+        inner, inner_bounds = free_parameter(\r
+            q1, low1.subs({q2: V, q3: bound}, simultaneous=True), high1.subs({q2: V, q3: bound}, simultaneous=True), V\r
+        )\r
+        outer_bounds = (low2.subs(q3, bound), high2.subs(q3, bound))\r
+        faces.append((2, end, bound, {q1: inner, q2: V, q3: bound}, inner_bounds, outer_bounds))\r
+    return [\r
+        (index, end, bound, xyz.subs(values, simultaneous=True).applyfunc(sympy.simplify), values, ub, vb)\r
+        for index, end, bound, values, ub, vb in faces\r
+    ]\r
+\r
+\r
+def has_area(position, u_bounds, v_bounds):\r
+    if any(sympy.simplify(high - low) == 0 for low, high in (u_bounds, v_bounds)):\r
+        return False\r
+    normal = position.diff(U).cross(position.diff(V)).applyfunc(sympy.simplify)\r
+    return normal != sympy.zeros(3, 1)\r
+\r
+\r
+def outward(variables, xyz, index, end, position, values, u_bounds, v_bounds):\r
+    """Whether r_U × r_V points out of E: compared with the direction in which\r
+    the fixed variable increases, which leaves E at its upper bound and\r
+    enters it at its lower one."""\r
+    normal = position.diff(U).cross(position.diff(V))\r
+    increasing = xyz.diff(variables[index]).subs(values, simultaneous=True)\r
+    product = sympy.lambdify((U, V), normal.dot(increasing), modules="mpmath")\r
+    (u0, u1), (v0, v1) = ([float(sympy.N(bound)) for bound in side] for side in (u_bounds, v_bounds))\r
+    for fu, fv in ORIENTATION_POINTS:\r
+        try:\r
+            value = float(mpmath.re(product(u0 + fu * (u1 - u0), v0 + fv * (v1 - v0))))\r
+        except (ValueError, ZeroDivisionError, TypeError):\r
+            continue\r
+        if abs(value) > 1e-9:\r
+            return (value > 0) == (end == "high")\r
+    raise InputError("Couldn't tell which way is out of the solid on one of its faces.")\r
+\r
+\r
+def boundary_faces(variables, bounds, xyz):\r
+    """The faces with area, each as (name, position r(u, v), u's bounds, v's\r
+    bounds) with r_u × r_v pointing out of E. When the outermost variable goes\r
+    all the way around (θ from 0 to 2π), its two faces are the same half-plane\r
+    traced in opposite directions, and they cancel."""\r
+    faces = raw_faces(variables, bounds, xyz)\r
+    start, stop = faces[4], faces[5]\r
+    cancel = start[3] == stop[3] and start[5:] == stop[5:]\r
+    kept = []\r
+    for index, end, bound, position, values, u_bounds, v_bounds in faces:\r
+        if index == 2 and cancel:\r
+            continue\r
+        if not has_area(position, u_bounds, v_bounds):\r
+            continue\r
+        if not outward(variables, xyz, index, end, position, values, u_bounds, v_bounds):\r
+            position = position.subs({U: V, V: U}, simultaneous=True)\r
+            u_bounds, v_bounds = v_bounds, u_bounds\r
+        kept.append((f"{spelled(variables[index])} = {plain(bound)}", position, u_bounds, v_bounds))\r
+    return kept\r
+\r
+\r
+def face_flux(name, position, u_bounds, v_bounds, field):\r
+    """One face's flux: its step, the exact value (or None), and the value\r
+    computed numerically from the typed field."""\r
+    report(f"Finding the flux through the face {name}…")\r
+    solved = solve_surface("flux", position, u_bounds, v_bounds, field, general=False)\r
+    numeric = independent_value("flux", position, field, u_bounds, v_bounds)\r
+    value = solved["value"]\r
+    flux = r"\\iint \\mathbf{F} \\cdot d\\mathbf{S}"\r
+    math = [flux, latex_value(value)] if value is not None else [rf"{flux} \\approx {shown_number(numeric)}"]\r
+    step = make_step(\r
+        f"Through the face {name}",\r
+        rf"Parametrize the face: $\\mathbf{{r}}(u, v) = {vector_latex(position)}$ with "\r
+        rf"\${to_latex(u_bounds[0])} \\le u \\le {to_latex(u_bounds[1])}$ and "\r
+        rf"\${to_latex(v_bounds[0])} \\le v \\le {to_latex(v_bounds[1])}$, in the order that makes "\r
+        r"$\\mathbf{r}_u \\times \\mathbf{r}_v$ point out of $E$.",\r
+        math,\r
+        solved["steps"],\r
+    )\r
+    return step, value, numeric\r
+\r
+\r
+def triple_side(div, system, variables, bounds):\r
+    """∭_E ∇ · F dV: the step, the integrand in E's coordinates (None when\r
+    ∇ · F = 0), and the exact value."""\r
+    if div == 0:\r
+        step = make_step(\r
+            "Triple integral over E",\r
+            r"$\\nabla \\cdot \\mathbf{F} = 0$, so the triple integral is $0$.",\r
+            [r"\\iiint_E 0\\, dV", "0"],\r
+        )\r
+        return step, None, sympy.Integer(0)\r
+    substeps = []\r
+    integrand = div\r
+    if system:\r
+        change_step, integrand = change_coordinates(div, system)\r
+        substeps.append(change_step)\r
+    report("Integrating the divergence over the solid…")\r
+    iterated, steps, (_, _, value) = iterated_triple_integral(integrand, variables, bounds)\r
+    substeps.extend(steps[1:])\r
+    step = make_step(\r
+        "Triple integral over E",\r
+        r"Integrate $\\nabla \\cdot \\mathbf{F}$ over $E$ as an iterated integral, innermost first.",\r
+        [rf"\\iiint_E \\left({to_latex(div)}\\right) dV", iterated, latex_value(value)],\r
+        substeps,\r
+    )\r
+    return step, integrand, value\r
+\r
+\r
+def agrees(first, second):\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        expected = mpmath.mpf(str(sympy.N(first, CHECK_DIGITS))) if isinstance(first, sympy.Basic) else first\r
+        return abs(second - expected) <= CHECK_TOLERANCE * max(1, abs(expected))\r
+\r
+\r
+def shown_number(value):\r
+    return mpmath.nstr(value, 10).removesuffix(".0")\r
+\r
+\r
+def comparison(field, triple_value, flux_numeric):\r
+    """The last step, and the check that both sides agree (None when the\r
+    theorem doesn't apply because F isn't defined everywhere in E)."""\r
+    if flux_numeric is not None and agrees(triple_value, flux_numeric):\r
+        step = make_step(\r
+            "Compare flux and divergence",\r
+            r"The flux out through the boundary equals the triple integral of the divergence, as the "\r
+            r"divergence theorem says.",\r
+            [r"\\iint_{\\partial E} \\mathbf{F} \\cdot d\\mathbf{S}", r"\\iiint_E \\nabla \\cdot \\mathbf{F}\\, dV", latex_value(triple_value)],\r
+        )\r
+        check = {\r
+            "status": "verified",\r
+            "detail": f"The flux, computed numerically face by face from the typed field, is "\r
+            f"\${shown_number(flux_numeric)}$, equal to the triple integral, as the divergence theorem says.",\r
+        }\r
+        return step, check\r
+    if not all(defined_everywhere(component) for component in field):\r
+        step = make_step(\r
+            "Compare flux and divergence",\r
+            r"The two sides differ, so the divergence theorem doesn't apply here: it needs $\\mathbf{F}$ with "\r
+            r"continuous partial derivatives at every point of $E$, but $\\mathbf{F}$ isn't defined at some "\r
+            r"point inside $E$ (where a denominator is $0$, for example). The flux, computed directly, is the "\r
+            r"answer.",\r
+            [],\r
+        )\r
+        return step, None\r
+    step = make_step(\r
+        "Compare flux and divergence",\r
+        r"The two sides should be equal by the divergence theorem, but they differ. Treat these answers with "\r
+        r"caution.",\r
+        [],\r
+    )\r
+    check = {\r
+        "status": "failed",\r
+        "detail": "The flux, computed numerically, doesn't match the triple integral. Treat this answer with caution.",\r
+    }\r
+    return step, check\r
+\r
+\r
+def solid_latex(variables, bounds):\r
+    return ", \\\\quad ".join(\r
+        rf"{to_latex(low)} \\le {to_latex(variable)} \\le {to_latex(high)}"\r
+        for variable, (low, high) in zip(variables, bounds)\r
+    )\r
+\r
+\r
+def divergence_theorem(request):\r
+    field, field_variables = parse_field(request.get("fieldLatex"))\r
+    if len(field_variables) != 3:\r
+        raise InputError("The divergence theorem is for fields in space: enter R too.")\r
+    system, variables, bounds, xyz = parse_solid(request)\r
+    statement = make_step(\r
+        "Divergence theorem",\r
+        r"$E$ is a solid, $\\partial E$ its boundary surface with the normal pointing out of $E$, and "\r
+        r"$\\mathbf{F}$ is smooth on $E$. The flux out through the boundary is the total divergence inside.",\r
+        [r"\\iint_{\\partial E} \\mathbf{F} \\cdot d\\mathbf{S}", r"\\iiint_E \\nabla \\cdot \\mathbf{F}\\, dV"],\r
+    )\r
+    div, div_step = divergence(field, (X, Y, Z))\r
+    triple_step, integrand, triple_value = triple_side(div, system, variables, bounds)\r
+    faces = boundary_faces(variables, bounds, xyz)\r
+    if not faces:\r
+        raise InputError("The solid has no volume: check its bounds.")\r
+    face_steps, values, numerics = [], [], []\r
+    for name, position, u_bounds, v_bounds in faces:\r
+        step, value, numeric = face_flux(name, position, u_bounds, v_bounds, field)\r
+        face_steps.append(step)\r
+        values.append(value)\r
+        numerics.append(numeric)\r
+    exact_flux = None if any(value is None for value in values) else sympy.simplify(sum(values))\r
+    numeric_flux = None if any(numeric is None for numeric in numerics) else sum(numerics)\r
+    if exact_flux is not None:\r
+        added = " + ".join(rf"\\left({to_latex(value)}\\right)" for value in values)\r
+        flux_math = [r"\\iint_{\\partial E} \\mathbf{F} \\cdot d\\mathbf{S}", *([added] if len(values) > 1 else []), latex_value(exact_flux)]\r
+    else:\r
+        flux_math = [r"\\iint_{\\partial E} \\mathbf{F} \\cdot d\\mathbf{S}", rf"\\approx {mpmath.nstr(numeric_flux, 10)}"]\r
+    count = len(faces)\r
+    flux_step = make_step(\r
+        "Flux through the boundary",\r
+        rf"The long way, as a check: $\\partial E$ is made of {count} face{'s' if count > 1 else ''} with area. "\r
+        r"Find the outward flux through each and add.",\r
+        flux_math,\r
+        face_steps,\r
+    )\r
+    compare_step, compare_check = comparison(field, triple_value, numeric_flux)\r
+    report("Checking the answer numerically…")\r
+    checks = []\r
+    if integrand is not None:\r
+        checks.append({"label": "Triple integral", "check": numerical_check(integrand, variables, bounds, triple_value)})\r
+    checks.append({"label": "Flux", "check": flux_check(faces, field, exact_flux, numeric_flux)})\r
+    if compare_check is not None:\r
+        checks.append({"label": "Divergence theorem", "check": compare_check})\r
+    flux_shown = (\r
+        f"= {latex_value(exact_flux)}" if exact_flux is not None else rf"\\approx {mpmath.nstr(numeric_flux, 10)}"\r
+    )\r
+    return {\r
+        "ok": True,\r
+        "operation": "divergence",\r
+        "problemLatex": rf"\\mathbf{{F}} = {vector_latex(field)}, \\quad E: {solid_latex(variables, bounds)}",\r
+        "results": [\r
+            {"label": "Triple integral", "latex": rf"\\iiint_E \\nabla \\cdot \\mathbf{{F}}\\, dV = {latex_value(triple_value)}"},\r
+            {"label": "Flux out of E", "latex": rf"\\iint_{{\\partial E}} \\mathbf{{F}} \\cdot d\\mathbf{{S}} {flux_shown}"},\r
+        ],\r
+        "checks": checks,\r
+        "steps": [statement, div_step, triple_step, flux_step, compare_step],\r
+        "graph": {\r
+            "faces": [surface_grid(position, ub, vb, FACE_GRID) for _, position, ub, vb in faces],\r
+            "normals": [\r
+                arrow\r
+                for _, position, ub, vb in faces\r
+                for arrow in normal_arrows(position.diff(U).cross(position.diff(V)), position, ub, vb)\r
+            ],\r
+        },\r
+    }\r
+\r
+\r
+def flux_check(faces, field, exact, numeric):\r
+    if numeric is None:\r
+        return {"status": "unchecked", "detail": "The flux couldn't be checked numerically."}\r
+    if exact is not None:\r
+        if agrees(exact, numeric):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"Integrating numerically over each face, straight from the typed field, gives "\r
+                f"\${shown_number(numeric)}$ in all, matching the exact answer.",\r
+            }\r
+        return {\r
+            "status": "failed",\r
+            "detail": f"Integrating numerically over the faces gives \${shown_number(numeric)}$, which doesn't "\r
+            "match. Treat this answer with caution.",\r
+        }\r
+    others = [independent_value("flux", position, field, ub, vb, "tanh-sinh") for _, position, ub, vb in faces]\r
+    if all(other is not None for other in others) and agrees(numeric, sum(others)):\r
+        return {\r
+            "status": "verified",\r
+            "detail": f"Some faces have no exact form, so the flux was computed numerically: two different "\r
+            f"methods (Gauss–Legendre and tanh-sinh quadrature) agree on \${shown_number(numeric)}$.",\r
+        }\r
+    return {\r
+        "status": "unchecked",\r
+        "detail": "Some faces have no exact form, and two numerical methods didn't agree closely enough.",\r
+    }\r
+\r
+\r
+# ------------------------------------------------------------------ the lesson picture\r
+\r
+\r
+def flux_picture(request):\r
+    """The lesson picture: spheres of growing radius around the origin, and for\r
+    each the flux out of it, the triple integral of the divergence over the\r
+    ball inside, and F · n on the sphere, for coloring."""\r
+    field, field_variables = parse_field(request.get("fieldLatex"))\r
+    if len(field_variables) != 3:\r
+        raise InputError("The picture is for fields in space.")\r
+    radius = sympy.Symbol("s", positive=True)\r
+    rho = sympy.Symbol("rho", positive=True)\r
+    phi, theta = sympy.symbols("phi theta", real=True)\r
+    unit = sympy.Matrix([sympy.sin(phi) * sympy.cos(theta), sympy.sin(phi) * sympy.sin(theta), sympy.cos(phi)])\r
+\r
+    def on(point):\r
+        return field.subs({X: point[0], Y: point[1], Z: point[2]}, simultaneous=True)\r
+\r
+    outflow = sympy.simplify(on(radius * unit).dot(unit))\r
+    flux = sympy.integrate(outflow * radius**2 * sympy.sin(phi), (phi, 0, sympy.pi), (theta, 0, 2 * sympy.pi))\r
+    div = sympy.simplify(divergence(field, (X, Y, Z))[0].subs({X: rho * unit[0], Y: rho * unit[1], Z: rho * unit[2]}))\r
+    total = sympy.integrate(\r
+        div * rho**2 * sympy.sin(phi), (rho, 0, radius), (phi, 0, sympy.pi), (theta, 0, 2 * sympy.pi)\r
+    )\r
+    if flux.has(sympy.Integral) or total.has(sympy.Integral):\r
+        raise InputError("The picture needs a field whose flux SymPy can integrate exactly.")\r
+    color = sympy.lambdify((radius, phi, theta), outflow, modules="math")\r
+    phis = [sympy.pi * i / (PICTURE_GRID - 1) for i in range(PICTURE_GRID)]\r
+    thetas = [2 * sympy.pi * j / (PICTURE_GRID - 1) for j in range(PICTURE_GRID)]\r
+    angles = [[(float(p), float(t)) for p in phis] for t in thetas]\r
+    sphere = {\r
+        name: [[round(float(function(p, t)), 6) for p, t in row] for row in angles]\r
+        for name, function in zip(\r
+            ("x", "y", "z"),\r
+            (\r
+                lambda p, t: mpmath.sin(p) * mpmath.cos(t),\r
+                lambda p, t: mpmath.sin(p) * mpmath.sin(t),\r
+                lambda p, t: mpmath.cos(p),\r
+            ),\r
+        )\r
+    }\r
+    positions = []\r
+    for size in PICTURE_RADII:\r
+        positions.append(\r
+            {\r
+                "radius": size,\r
+                "flux": round(float(flux.subs(radius, size)), 6),\r
+                "volume": round(float(total.subs(radius, size)), 6),\r
+                "outflow": [[round(float(color(size, p, t)), 6) for p, t in row] for row in angles],\r
+            }\r
+        )\r
+    return {"ok": True, "operation": "fluxPicture", "sphere": sphere, "positions": positions}\r
+`,"./python/mathlab/double.py":`"""Double integrals, as iterated integrals (Fubini's theorem).\r
+\r
+The inside integral is taken first, with the outside variable held constant;\r
+its bounds may depend on the outside variable, which describes a region that\r
+isn't a rectangle. The value is checked with a numerical double integration.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.antiderivatives import find_antiderivative\r
+from mathlab.checks import numeric_function, plot_value, real_value\r
+from mathlab.definite import INFINITY, evaluate_between, parse_bound\r
+from mathlab.expressions import X, Y, InputError, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.parsing import constants_in, parse_function\r
+from mathlab.progress import report\r
+from mathlab.region import real_number, simplify_on_region\r
+from mathlab.steps import make_step\r
+\r
+# The order of integration: (inside variable, outside variable).\r
+ORDERS = {"dy dx": (Y, X), "dx dy": (X, Y)}\r
+CHECK_DIGITS = 15\r
+CHECK_TOLERANCE = mpmath.mpf("1e-9")\r
+GRID_SIZE = 41\r
+OUTLINE_POINTS = 60\r
+\r
+\r
+def parse_inside_bound(text, name, inside, outside):\r
+    """An inside bound: a number or an expression in the outside variable."""\r
+    if not isinstance(text, str) or text.strip() == "":\r
+        raise InputError(f"Enter the {name} bound of the inside integral.")\r
+    if INFINITY.search(text):\r
+        raise InputError("Infinite bounds in a double integral aren't supported yet.")\r
+    try:\r
+        bound = parse_function(latex_to_text(text), (outside,))\r
+    except InputError as error:\r
+        raise InputError(f"The inside integral's {name} bound: {error}") from error\r
+    names = {str(symbol) for symbol in bound.free_symbols}\r
+    if str(inside) in names:\r
+        raise InputError(\r
+            f"The inside integral's bounds can depend on {outside} but not on {inside}, "\r
+            f"the variable it integrates."\r
+        )\r
+    if names - {str(outside)}:\r
+        raise InputError(\r
+            f"The inside integral's {name} bound can use only numbers and {outside}."\r
+        )\r
+    return bound\r
+\r
+\r
+def parse_outside_bound(text, name):\r
+    bound = parse_bound(text, f"outside integral's {name}")\r
+    if bound.is_infinite:\r
+        raise InputError("Infinite bounds in a double integral aren't supported yet.")\r
+    return bound\r
+\r
+\r
+def antiderivative_step(function, variable, antiderivative, steps):\r
+    return make_step(\r
+        "Find an antiderivative",\r
+        rf"Integrate with respect to \${to_latex(variable)}$. Any antiderivative works, because "\r
+        r"the constant cancels in the subtraction.",\r
+        [to_latex(sympy.Integral(function, variable)), f"{to_latex(antiderivative)} + C"],\r
+        steps,\r
+    )\r
+\r
+\r
+def numerical_check(function, inside, outside, inner_bounds, outer_bounds, value):\r
+    as_numeric = numeric_function(function, (inside, outside))\r
+    lower, upper = (numeric_function(bound, (outside,)) for bound in inner_bounds)\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        exact = real_value(lambda: sympy.N(value, CHECK_DIGITS))\r
+        try:\r
+            # real_number drops rounding-size imaginary parts at a curved edge,\r
+            # as from √(1 − x²) evaluated just past x = 1.\r
+            numeric = mpmath.quad(\r
+                lambda o: mpmath.quad(\r
+                    lambda i: real_number(as_numeric(i, o)),\r
+                    [real_number(lower(o)), real_number(upper(o))],\r
+                ),\r
+                [mpmath.mpf(str(sympy.N(bound, CHECK_DIGITS))) for bound in outer_bounds],\r
+            )\r
+        except Exception:  # Numerical integration fails in many ways; all mean "unchecked".\r
+            numeric = None\r
+        if exact is None or numeric is None or isinstance(numeric, mpmath.mpc):\r
+            return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}\r
+        shown = mpmath.nstr(numeric, 10).removesuffix(".0")\r
+        if abs(numeric - exact) <= CHECK_TOLERANCE * max(1, abs(exact)):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"A numerical double integration gives \${shown}$, matching the exact "\r
+                "answer.",\r
+            }\r
+        return {\r
+            "status": "failed",\r
+            "detail": f"A numerical double integration gives \${shown}$, which doesn't match. "\r
+            "Treat this answer with caution.",\r
+        }\r
+\r
+\r
+def graph_samples(function, inside, outside, inner_bounds, outer_bounds):\r
+    """The surface over a box around the region, which points are in the region,\r
+    and the region's outline, all in (x, y) coordinates."""\r
+    lower, upper = (numeric_function(bound, (outside,)) for bound in inner_bounds)\r
+    a, b = (float(bound) for bound in outer_bounds)\r
+    outside_points = [a + (b - a) * index / (OUTLINE_POINTS - 1) for index in range(OUTLINE_POINTS)]\r
+    edges = [\r
+        [plot_value(lambda o=o: lower(mpmath.mpf(o))) for o in outside_points],\r
+        [plot_value(lambda o=o: upper(mpmath.mpf(o))) for o in outside_points],\r
+    ]\r
+    if any(value is None for edge in edges for value in edge):\r
+        raise InputError(\r
+            "The inside integral's bounds aren't defined along the whole outside range."\r
+        )\r
+    inside_min = min(min(edge) for edge in edges)\r
+    inside_max = max(max(edge) for edge in edges)\r
+\r
+    def padded(low, high):\r
+        margin = max(0.1 * (high - low), 0.25)\r
+        return low - margin, high + margin\r
+\r
+    outside_range, inside_range = padded(a, b), padded(inside_min, inside_max)\r
+    if outside == X:\r
+        x_range, y_range = outside_range, inside_range\r
+    else:\r
+        x_range, y_range = inside_range, outside_range\r
+\r
+    def grid(low, high):\r
+        step = (high - low) / (GRID_SIZE - 1)\r
+        return [round(low + step * index, 6) for index in range(GRID_SIZE)]\r
+\r
+    xs, ys = grid(*x_range), grid(*y_range)\r
+    as_numeric = numeric_function(function, (X, Y))\r
+\r
+    def in_region(x, y):\r
+        o, i = (x, y) if outside == X else (y, x)\r
+        if not a - 1e-9 <= o <= b + 1e-9:\r
+            return False\r
+        low, high = (\r
+            plot_value(lambda bound=bound: bound(mpmath.mpf(o))) for bound in (lower, upper)\r
+        )\r
+        if low is None or high is None:\r
+            return False\r
+        return min(low, high) - 1e-9 <= i <= max(low, high) + 1e-9\r
+\r
+    def height(x, y):\r
+        return plot_value(lambda: as_numeric(mpmath.mpf(x), mpmath.mpf(y)))\r
+\r
+    z = [[height(x, y) for x in xs] for y in ys]\r
+    region = [[in_region(x, y) for x in xs] for y in ys]\r
+    # The outline: along the lower edge, up the far side, back along the upper edge.\r
+    path = [\r
+        *zip(outside_points, edges[0]),\r
+        *zip(reversed(outside_points), reversed(edges[1])),\r
+        (outside_points[0], edges[0][0]),\r
+    ]\r
+    if outside == X:\r
+        outline = {"x": [o for o, _ in path], "y": [i for _, i in path]}\r
+    else:\r
+        outline = {"x": [i for _, i in path], "y": [o for o, _ in path]}\r
+    return {"x": xs, "y": ys, "z": z, "region": region, "outline": outline}\r
+\r
+\r
+def double_integral(function, order, inner_texts, outer_texts):\r
+    if order not in ORDERS:\r
+        raise InputError("Choose the order of integration: dy dx or dx dy.")\r
+    inside, outside = ORDERS[order]\r
+    constants = constants_in(function, (X, Y))\r
+    if constants:\r
+        names = ", ".join(str(constant) for constant in constants)\r
+        raise InputError(\r
+            f"A double integral needs a function of x and y alone, so its answer is a number. "\r
+            f"Remove {names}."\r
+        )\r
+    inner_bounds = tuple(\r
+        parse_inside_bound(text, name, inside, outside)\r
+        for text, name in zip(inner_texts, ("lower", "upper"))\r
+    )\r
+    outer_bounds = tuple(\r
+        parse_outside_bound(text, name) for text, name in zip(outer_texts, ("lower", "upper"))\r
+    )\r
+    if (outer_bounds[1] - outer_bounds[0]).is_negative:\r
+        raise InputError("The outside integral's lower bound must be at most its upper bound.")\r
+\r
+    iterated, steps, value = iterated_integral(function, inside, outside, inner_bounds, outer_bounds)\r
+    equation = f"{iterated} = {to_latex(value)}"\r
+    if not value.is_Rational:\r
+        equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"\r
+    return {\r
+        "ok": True,\r
+        "operation": "double",\r
+        "equationLatex": equation,\r
+        "check": numerical_check(function, inside, outside, inner_bounds, outer_bounds, value),\r
+        "steps": steps,\r
+        "stepsNote": None,\r
+        "graph": graph_samples(function, inside, outside, inner_bounds, outer_bounds),\r
+    }\r
+\r
+\r
+def iterated_integral(function, inside, outside, inner_bounds, outer_bounds, general=True):\r
+    """The iterated integral's LaTeX, its steps, and its exact value: the inside\r
+    integral first, with the outside variable held constant, then the outside.\r
+    Practice problems use it too. Without general, only the textbook rules\r
+    are tried, and InputError means they found no antiderivative."""\r
+    report("Integrating the inside integral…")\r
+    inner_antiderivative, _, inner_steps, _ = find_antiderivative(function, inside, general=general)\r
+    inner_math, inner_value = evaluate_between(\r
+        function, inner_antiderivative, *inner_bounds, inside\r
+    )\r
+    # The result is used only inside the region, which can make it simpler.\r
+    simpler = simplify_on_region(inner_value, (outside,), (outer_bounds,))\r
+    if simpler != inner_value:\r
+        inner_math.append(to_latex(simpler))\r
+        inner_value = simpler\r
+    if inner_value.has(sympy.nan, sympy.zoo, sympy.oo, -sympy.oo):\r
+        raise InputError(\r
+            "The inside integral has no finite value everywhere on the region, so this double "\r
+            "integral is improper, which the Solver can't do yet."\r
+        )\r
+    report("Integrating the outside integral…")\r
+    outer_antiderivative, _, outer_steps, _ = find_antiderivative(inner_value, outside, general=general)\r
+    outer_math, value = evaluate_between(inner_value, outer_antiderivative, *outer_bounds, outside)\r
+\r
+    iterated = to_latex(sympy.Integral(function, (inside, *inner_bounds), (outside, *outer_bounds)))\r
+    inside_name, outside_name = to_latex(inside), to_latex(outside)\r
+    steps = [\r
+        make_step(\r
+            "Iterated integral",\r
+            rf"Write the double integral over the region $R$ as an iterated integral: integrate "\r
+            rf"with respect to \${inside_name}$ first, from \${to_latex(inner_bounds[0])}$ to "\r
+            rf"\${to_latex(inner_bounds[1])}$, then with respect to \${outside_name}$ from "\r
+            rf"\${to_latex(outer_bounds[0])}$ to \${to_latex(outer_bounds[1])}$.",\r
+            [rf"\\iint_{{R}} {to_latex(function)}\\, dA", iterated],\r
+        ),\r
+        make_step(\r
+            "Inside integral",\r
+            rf"Integrate with respect to \${inside_name}$, treating \${outside_name}$ as a constant, "\r
+            r"then subtract the antiderivative's values at the bounds.",\r
+            inner_math,\r
+            [antiderivative_step(function, inside, inner_antiderivative, inner_steps)],\r
+        ),\r
+        make_step(\r
+            "Outside integral",\r
+            rf"Integrate the result with respect to \${outside_name}$ and evaluate between its "\r
+            r"bounds.",\r
+            outer_math,\r
+            [antiderivative_step(inner_value, outside, outer_antiderivative, outer_steps)],\r
+        ),\r
+    ]\r
+    return iterated, steps, value\r
 `,"./python/mathlab/expressions.py":`"""Shared symbols, the input error, and printing math as LaTeX."""\r
 \r
 import sympy\r
@@ -6463,7 +6887,8 @@ import sympy\r
 \r
 from mathlab.checks import agree_numerically\r
 from mathlab.curves import arc_length, area, build_curve, slope_steps\r
-from mathlab.curl_div import solve_curl_divergence\r
+from mathlab.curl_div import divergence, solve_curl_divergence\r
+from mathlab.divergence_theorem import triple_side\r
 from mathlab.derivative_steps import Differentiation, derivative_with_steps\r
 from mathlab.directional import solve_directional\r
 from mathlab.double import iterated_integral\r
@@ -7015,6 +7440,38 @@ def surface_problem(rng):\r
     )\r
 \r
 \r
+def divergence_problem(rng):\r
+    """The flux out of a box or a ball, by the divergence theorem: the hints\r
+    are the divergence and the triple integral, the quick way."""\r
+    if rng.choice(["box", "ball"]) == "box":\r
+        a, b, c = rng.choice([1, 2]), rng.choice([1, 2, 3]), rng.choice([1, 2])\r
+        field = rng.choice(\r
+            [\r
+                sympy.Matrix([X**2, Y**2, Z**2]),\r
+                sympy.Matrix([X * Y, Y * Z, Z * X]),\r
+                sympy.Matrix([2 * X, X * Y, Z]),\r
+            ]\r
+        )\r
+        system, variables = None, (Z, Y, X)\r
+        bounds = [(sympy.Integer(0), sympy.Integer(c)), (sympy.Integer(0), sympy.Integer(b)), (sympy.Integer(0), sympy.Integer(a))]\r
+        solid = rf"the box $0 \\le x \\le {a}$, $0 \\le y \\le {b}$, $0 \\le z \\le {c}$"\r
+    else:\r
+        k, radius = rng.choice([1, 2, 3]), rng.choice([1, 2])\r
+        field = sympy.Matrix([k * X, k * Y, k * Z])\r
+        system = COORDINATE_SYSTEMS["spherical"]\r
+        variables = system["variables"]\r
+        bounds = [(sympy.Integer(0), sympy.Integer(radius)), (sympy.Integer(0), sympy.pi), (sympy.Integer(0), 2 * sympy.pi)]\r
+        solid = rf"the ball $x^2 + y^2 + z^2 \\le {radius**2}$"\r
+    div, div_step = divergence(field, (X, Y, Z))\r
+    triple_step, _, value = triple_side(div, system, variables, bounds)\r
+    return Problem(\r
+        rf"Use the divergence theorem to find the flux of $\\mathbf{{F}} = {vector_latex(field)}$ out of {solid}.",\r
+        value,\r
+        (),\r
+        [div_step, triple_step],\r
+    )\r
+\r
+\r
 GENERATORS = {\r
     "vectors": vector_problem,\r
     "partial-derivatives": partial_derivative_problem,\r
@@ -7030,6 +7487,7 @@ GENERATORS = {\r
     "greens-theorem": green_problem,\r
     "curl-divergence": curl_divergence_problem,\r
     "surface-integrals": surface_problem,\r
+    "divergence-theorem": divergence_problem,\r
 }\r
 \r
 \r
@@ -8045,7 +8503,9 @@ def integrand_step(kind, position, integrand, normal, length, u_bounds, v_bounds
         )\r
         return product, step\r
     field = on_surface(integrand, position)\r
-    product = simplify_on_rectangle(sympy.expand(field.dot(normal)), u_bounds, v_bounds)\r
+    product = sympy.expand(field.dot(normal))\r
+    if not has_nonlinear_functions(product):\r
+        product = simplify_on_rectangle(product, u_bounds, v_bounds)\r
     step = make_step(\r
         "Field on the surface",\r
         r"Put $x(u, v)$, $y(u, v)$, $z(u, v)$ into $\\mathbf{F}$ and dot it with the normal: "\r
@@ -8063,6 +8523,20 @@ def integrand_step(kind, position, integrand, normal, length, u_bounds, v_bounds
 def parenthesized(value):\r
     text = to_latex(value)\r
     return rf"\\left({text}\\right)" if value.is_Add else text\r
+\r
+\r
+def has_nonlinear_functions(expression):\r
+    """Whether e^(...), sin(...), or another function is applied to something\r
+    that isn't linear in u and v, like e^(v u²) or sin(uv). Such integrands\r
+    almost never have an iterated antiderivative, and simplifying and trying\r
+    the rules on Stewart's e^(xz²) took 19 seconds before giving up; they\r
+    are integrated numerically instead."""\r
+    for node in sympy.preorder_traversal(expression):\r
+        if isinstance(node, sympy.Function) and node.has(U, V):\r
+            argument = node.args[0]\r
+            if not (argument.is_polynomial(U, V) and sympy.Poly(argument, U, V).total_degree() <= 1):\r
+                return True\r
+    return False\r
 \r
 \r
 def numerical_integral(as_numeric, u_bounds, v_bounds, method):\r
@@ -8140,18 +8614,22 @@ SYMBOLS = {\r
 }\r
 \r
 \r
-def solve_surface(kind, position, u_bounds, v_bounds, integrand):\r
+def solve_surface(kind, position, u_bounds, v_bounds, integrand, general=True):\r
     """The steps and the exact value (None when it could only be computed\r
-    numerically). Practice problems use it too."""\r
+    numerically). Practice problems use it too; general=False tries only the\r
+    textbook rules, for callers that would rather fall back to a number than\r
+    wait on SymPy's slower general algorithms."""\r
     normal, length, steps = normal_steps(position, u_bounds, v_bounds, kind != "flux")\r
     product, step = integrand_step(kind, position, integrand, normal, length, u_bounds, v_bounds)\r
     if step is not None:\r
         steps.append(step)\r
     report("Integrating over the parameter rectangle…")\r
-    try:\r
-        iterated, iterated_steps, value = iterated_integral(product, U, V, u_bounds, v_bounds)\r
-    except InputError:\r
-        iterated, iterated_steps, value = None, [], None\r
+    iterated, iterated_steps, value = None, [], None\r
+    if not has_nonlinear_functions(product):\r
+        try:\r
+            iterated, iterated_steps, value = iterated_integral(product, U, V, u_bounds, v_bounds, general)\r
+        except InputError:\r
+            pass\r
     if value is not None:\r
         value = sympy.simplify(value)\r
         steps.append(\r
