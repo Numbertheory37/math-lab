@@ -117,6 +117,7 @@ from mathlab.directional import direction_picture, directional_derivative, numbe
 from mathlab.curl_div import curl_divergence, curl_picture\r
 from mathlab.divergence_theorem import divergence_theorem, flux_picture\r
 from mathlab.green import green, green_sweep\r
+from mathlab.stokes import cap_picture, stokes\r
 from mathlab.surfaces import surface_integral, surface_picture\r
 from mathlab.line_integrals import line_integral, line_trace\r
 from mathlab.optimize import constraint_picture, optimize\r
@@ -350,6 +351,11 @@ OPERATIONS = {\r
     "divergence": divergence_theorem,\r
     # The divergence theorem lesson picture: spheres around the origin.\r
     "fluxPicture": flux_picture,\r
+    # F = <P, Q, R> in fieldLatex and a surface r(u, v) as for a surface\r
+    # integral; the boundary curve is found from the surface.\r
+    "stokes": stokes,\r
+    # The Stokes' theorem lesson picture: caps over the unit circle.\r
+    "capPicture": cap_picture,\r
     "practice": practice,\r
     "check": check,\r
     "solution": practice_solution,\r
@@ -7472,6 +7478,29 @@ def divergence_problem(rng):\r
     )\r
 \r
 \r
+def stokes_problem(rng):\r
+    """The flux of a curl through a hemisphere, by Stokes' theorem: the hints\r
+    are the line integral around the boundary circle, the quick way."""\r
+    a, b, radius = rng.choice([1, 2, 3]), rng.choice([1, 2, 3]), rng.choice([1, 2])\r
+    field = rng.choice(\r
+        [\r
+            sympy.Matrix([-a * Y, b * X, Z]),\r
+            sympy.Matrix([-a * Y + Z, b * X, X * Y]),\r
+            sympy.Matrix([-a * Y * sympy.exp(Z), b * X, sympy.sin(X * Y)]),\r
+        ]\r
+    )\r
+    circle = sympy.Matrix([radius * sympy.cos(T), radius * sympy.sin(T), 0])\r
+    solved = solve_line_integral("vector", circle, (sympy.Integer(0), 2 * sympy.pi), (X, Y, Z), field)\r
+    return Problem(\r
+        rf"Use Stokes' theorem to find $\\iint_S (\\nabla \\times \\mathbf{{F}}) \\cdot d\\mathbf{{S}}$ for "\r
+        rf"$\\mathbf{{F}} = {vector_latex(field)}$, where $S$ is the hemisphere $x^2 + y^2 + z^2 = {radius**2}$, "\r
+        r"$z \\ge 0$, with the upward normal. (Its boundary is a circle in the $xy$-plane.)",\r
+        solved["value"],\r
+        (),\r
+        solved["steps"],\r
+    )\r
+\r
+\r
 GENERATORS = {\r
     "vectors": vector_problem,\r
     "partial-derivatives": partial_derivative_problem,\r
@@ -7488,6 +7517,7 @@ GENERATORS = {\r
     "curl-divergence": curl_divergence_problem,\r
     "surface-integrals": surface_problem,\r
     "divergence-theorem": divergence_problem,\r
+    "stokes-theorem": stokes_problem,\r
 }\r
 \r
 \r
@@ -8292,6 +8322,375 @@ def make_step(rule, explanation, math_parts, substeps=()):
         "math": equation_latex(math_parts),
         "substeps": [substep for substep in substeps if substep is not None],
     }
+`,"./python/mathlab/stokes.py":`"""Stokes' theorem: the circulation of F around the boundary curve C of a\r
+surface S equals the flux of its curl through S,\r
+\r
+    ∮_C F · dr = ∬_S (∇ × F) · dS,\r
+\r
+with C traced so that, walking along it with your head along the normal, S\r
+is on your left (the right-hand rule), and F smooth on all of S.\r
+\r
+S is a parametric surface r(u, v) over a rectangle, oriented by r_u × r_v.\r
+Its boundary is the rectangle's four edges carried onto the surface,\r
+counterclockwise in the (u, v) plane, which is the orientation Stokes'\r
+theorem needs. Edges that shrink to a point, like a sphere's pole, are left\r
+out, and so are two edges that are the same curve traced both ways, like the\r
+seam where v = 0 and v = 2π meet.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.curl_div import curl, parse_field\r
+from mathlab.curves import latex_value, numerical_integral\r
+from mathlab.expressions import T, U, V, X, Y, Z, InputError, to_latex\r
+from mathlab.line_integrals import (\r
+    GRAPH_POINTS,\r
+    along_curve,\r
+    curve_samples,\r
+    defined_everywhere,\r
+    gentle,\r
+    independent_integrand,\r
+    integrate_along,\r
+    parenthesized,\r
+)\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step\r
+from mathlab.surfaces import independent_value, normal_arrows, parse_surface, solve_surface, surface_grid\r
+from mathlab.vectors import vector_latex\r
+\r
+CHECK_DIGITS = 15\r
+CHECK_TOLERANCE = mpmath.mpf("1e-8")\r
+SURFACE_GRID = 31\r
+# The lesson picture: caps z = h(1 - x² - y²) over the unit disk.\r
+CAP_HEIGHTS = [round(-1.5 + 0.25 * index, 2) for index in range(13)]\r
+CAP_GRID = 25\r
+\r
+\r
+def boundary_edges(position, u_bounds, v_bounds):\r
+    """The boundary curve, piece by piece: (name, position r(t), interval),\r
+    counterclockwise around the (u, v) rectangle."""\r
+    (a, b), (c, d) = u_bounds, v_bounds\r
+    edges = [\r
+        ("v", c, position.subs({U: T, V: c}, simultaneous=True), (a, b)),\r
+        ("u", b, position.subs({U: b, V: T}, simultaneous=True), (c, d)),\r
+        ("v", d, position.subs({U: T, V: d}, simultaneous=True), (b, a)),\r
+        ("u", a, position.subs({U: a, V: T}, simultaneous=True), (d, c)),\r
+    ]\r
+    edges = [(name, value, curve.applyfunc(sympy.simplify), interval) for name, value, curve, interval in edges]\r
+    # Opposite edges that are the same curve are traced in opposite\r
+    # directions, so their integrals cancel.\r
+    cancelled = set()\r
+    for first, second in ((0, 2), (1, 3)):\r
+        if (edges[first][2] - edges[second][2]).applyfunc(sympy.simplify) == sympy.zeros(3, 1):\r
+            cancelled |= {first, second}\r
+    kept = []\r
+    for index, (name, value, curve, interval) in enumerate(edges):\r
+        if index in cancelled:\r
+            continue\r
+        if curve.diff(T).applyfunc(sympy.simplify) == sympy.zeros(3, 1):\r
+            continue  # A single point, like a sphere's pole.\r
+        kept.append((f"{name} = {sympy.sstr(value).replace('*', '').replace('pi', 'π')}", curve, interval))\r
+    return kept\r
+\r
+\r
+def edge_step(number, name, field, curve, interval):\r
+    """∫ F · dr along one edge: the step, the exact value (or None), and the\r
+    numerical value."""\r
+    low, high = interval\r
+    velocity = curve.diff(T)\r
+    on_curve = along_curve(field, (X, Y, Z), curve).applyfunc(gentle)\r
+    integrand = gentle(sympy.expand(on_curve.dot(velocity)))\r
+    direction = "increasing" if (high - low).is_positive else "decreasing"\r
+    explanation = (\r
+        rf"The edge \${name.replace('π', r'\\pi')}$ of the parameter rectangle: $\\mathbf{{r}}(t) = "\r
+        rf"{vector_latex(curve)}$, with $t$ {direction} from \${to_latex(low)}$ to \${to_latex(high)}$, which "\r
+        r"goes around the rectangle counterclockwise. Then $\\mathbf{F}(\\mathbf{r}(t)) \\cdot \\mathbf{r}'(t)$ is "\r
+        r"the integrand."\r
+    )\r
+    piece = rf"\\int_{{C_{number}}} \\mathbf{{F}} \\cdot d\\mathbf{{r}}"\r
+    if integrand == 0:\r
+        return make_step(f"Around the edge {name}", explanation, [piece, "0"]), sympy.Integer(0), mpmath.mpf(0)\r
+    report(f"Integrating along the edge {name}…")\r
+    substeps, value, numeric = integrate_along(integrand, interval)\r
+    shown = latex_value(value) if value is not None else rf"\\approx {mpmath.nstr(numeric, 10)}"\r
+    step = make_step(\r
+        f"Around the edge {name}",\r
+        explanation,\r
+        [piece, to_latex(sympy.Integral(integrand, (T, low, high))), shown],\r
+        substeps,\r
+    )\r
+    return step, value, numeric\r
+\r
+\r
+def line_side(field, edges):\r
+    steps, values, numerics = [], [], []\r
+    for number, (name, curve, interval) in enumerate(edges, start=1):\r
+        step, value, numeric = edge_step(number, name, field, curve, interval)\r
+        steps.append(step)\r
+        values.append(value)\r
+        numerics.append(numeric)\r
+    exact = None if any(value is None for value in values) else sympy.simplify(sum(values))\r
+    numeric = None if any(value is None for value in numerics) else sum(numerics)\r
+    symbol = r"\\oint_C \\mathbf{F} \\cdot d\\mathbf{r}"\r
+    if exact is not None:\r
+        added = " + ".join(parenthesized(value) for value in values)\r
+        math = [symbol, *([added] if len(values) > 1 else []), latex_value(exact)]\r
+    else:\r
+        math = [rf"{symbol} \\approx {mpmath.nstr(numeric, 10)}"]\r
+    count = len(edges)\r
+    step = make_step(\r
+        "Line integral around the boundary",\r
+        rf"The other side: $C$, the boundary of $S$, is made of {count} piece{'s' if count > 1 else ''}. Integrate "\r
+        r"$\\mathbf{F} \\cdot d\\mathbf{r}$ along each and add.",\r
+        math,\r
+        steps,\r
+    )\r
+    return step, exact, numeric\r
+\r
+\r
+def line_numeric(field, edges, method="tanh-sinh"):\r
+    """∮ F · dr computed numerically from the typed field, or None."""\r
+    total = mpmath.mpf(0)\r
+    for _, curve, interval in edges:\r
+        value = numerical_integral(independent_integrand("vector", field, (X, Y, Z), curve), list(interval), method)\r
+        if value is None:\r
+            return None\r
+        total += value\r
+    return total\r
+\r
+\r
+def agrees(first, second):\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        expected = mpmath.mpf(str(sympy.N(first, CHECK_DIGITS))) if isinstance(first, sympy.Basic) else first\r
+        return abs(second - expected) <= CHECK_TOLERANCE * max(1, abs(expected))\r
+\r
+\r
+def shown_number(value):\r
+    return mpmath.nstr(value, 10).removesuffix(".0")\r
+\r
+\r
+def value_check(exact, numeric, other, what):\r
+    """exact (or None) against numeric, computed independently; other is a\r
+    second numerical method, used when there is no exact value."""\r
+    if numeric is None:\r
+        return {"status": "unchecked", "detail": f"The {what} couldn't be checked numerically."}\r
+    if exact is not None:\r
+        if agrees(exact, numeric):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"Computing the {what} numerically, straight from what you typed, gives "\r
+                f"\${shown_number(numeric)}$, matching the exact answer.",\r
+            }\r
+        return {\r
+            "status": "failed",\r
+            "detail": f"Computing the {what} numerically gives \${shown_number(numeric)}$, which doesn't match. "\r
+            "Treat this answer with caution.",\r
+        }\r
+    if other is not None and agrees(numeric, other):\r
+        return {\r
+            "status": "verified",\r
+            "detail": f"There is no exact form, so the {what} was computed numerically: two different methods "\r
+            f"(Gauss–Legendre and tanh-sinh quadrature) agree on \${shown_number(numeric)}$.",\r
+        }\r
+    return {\r
+        "status": "unchecked",\r
+        "detail": f"There is no exact form for the {what}, and two numerical methods didn't agree closely enough.",\r
+    }\r
+\r
+\r
+def comparison(field, surface_numeric, line_numeric_value, exact):\r
+    """The last step, and the check that both sides agree (None when the\r
+    theorem doesn't apply because F isn't defined everywhere on S). The sides\r
+    are compared as computed numerically from the typed field; exact, when\r
+    either side has an exact value, is what the step shows."""\r
+    if (\r
+        surface_numeric is not None\r
+        and line_numeric_value is not None\r
+        and agrees(surface_numeric, line_numeric_value)\r
+    ):\r
+        step = make_step(\r
+            "Compare circulation and curl",\r
+            r"The circulation around $C$ equals the flux of the curl through $S$, as Stokes' theorem says.",\r
+            [\r
+                r"\\oint_C \\mathbf{F} \\cdot d\\mathbf{r}",\r
+                r"\\iint_S (\\nabla \\times \\mathbf{F}) \\cdot d\\mathbf{S}",\r
+                latex_value(exact) if exact is not None else rf"\\approx {shown_number(line_numeric_value)}",\r
+            ],\r
+        )\r
+        check = {\r
+            "status": "verified",\r
+            "detail": f"Both sides, each computed numerically from what you typed, are "\r
+            f"\${shown_number(line_numeric_value)}$, as Stokes' theorem says.",\r
+        }\r
+        return step, check\r
+    if not all(defined_everywhere(component) for component in field):\r
+        step = make_step(\r
+            "Compare circulation and curl",\r
+            r"The two sides differ, so Stokes' theorem doesn't apply here: it needs $\\mathbf{F}$ with continuous "\r
+            r"partial derivatives at every point of $S$, but $\\mathbf{F}$ isn't defined somewhere on $S$ (where a "\r
+            r"denominator is $0$, for example). The line integral, computed directly, is the circulation.",\r
+            [],\r
+        )\r
+        return step, None\r
+    step = make_step(\r
+        "Compare circulation and curl",\r
+        r"The two sides should be equal by Stokes' theorem, but they differ. Treat these answers with caution.",\r
+        [],\r
+    )\r
+    check = {\r
+        "status": "failed",\r
+        "detail": "The line integral doesn't match the flux of the curl. Treat this answer with caution.",\r
+    }\r
+    return step, check\r
+\r
+\r
+def stokes(request):\r
+    _, position, u_bounds, v_bounds, field = parse_surface({**request, "surfaceKind": "flux"})\r
+    statement = make_step(\r
+        "Stokes' theorem",\r
+        r"$C$ is the boundary of the surface $S$, traced so that $S$ is on the left when you walk along $C$ "\r
+        r"with your head pointing along the normal (the right-hand rule). The circulation around $C$ equals "\r
+        r"the flux of the curl through $S$.",\r
+        [r"\\oint_C \\mathbf{F} \\cdot d\\mathbf{r}", r"\\iint_S (\\nabla \\times \\mathbf{F}) \\cdot d\\mathbf{S}"],\r
+    )\r
+    rotation, curl_step = curl(field, (X, Y, Z))\r
+    report("Finding the flux of the curl through the surface…")\r
+    solved = solve_surface("flux", position, u_bounds, v_bounds, rotation, general=False)\r
+    surface_exact = solved["value"]\r
+    surface_numeric = independent_value("flux", position, rotation, u_bounds, v_bounds)\r
+    surface_math = (\r
+        [r"\\iint_S (\\nabla \\times \\mathbf{F}) \\cdot d\\mathbf{S}", latex_value(surface_exact)]\r
+        if surface_exact is not None\r
+        else [rf"\\iint_S (\\nabla \\times \\mathbf{{F}}) \\cdot d\\mathbf{{S}} \\approx {shown_number(surface_numeric)}"]\r
+    )\r
+    surface_step = make_step(\r
+        "Flux of the curl through S",\r
+        r"A surface integral of the field $\\nabla \\times \\mathbf{F}$, with the normal $\\mathbf{r}_u \\times \\mathbf{r}_v$.",\r
+        surface_math,\r
+        solved["steps"],\r
+    )\r
+    edges = boundary_edges(position, u_bounds, v_bounds)\r
+    line_step, line_exact, line_numeric_value = line_side(field, edges)\r
+    report("Checking the answer numerically…")\r
+    line_independent = line_numeric(field, edges)\r
+    if surface_exact is None and line_exact is not None and surface_numeric is not None:\r
+        # The exact line integral, found separately, checks the decimal; a\r
+        # second numerical method took 15 seconds on Stewart's hemisphere.\r
+        surface_check = {\r
+            "status": "verified" if agrees(line_exact, surface_numeric) else "failed",\r
+            "detail": f"There is no exact form, so the flux of the curl was computed numerically: "\r
+            f"\${shown_number(surface_numeric)}$, "\r
+            + (\r
+                "matching the exact line integral around $C$, found separately."\r
+                if agrees(line_exact, surface_numeric)\r
+                else "which doesn't match the line integral. Treat this answer with caution."\r
+            ),\r
+        }\r
+    else:\r
+        surface_check = value_check(\r
+            surface_exact,\r
+            surface_numeric,\r
+            None\r
+            if surface_exact is not None\r
+            else independent_value("flux", position, rotation, u_bounds, v_bounds, "tanh-sinh"),\r
+            "flux of the curl",\r
+        )\r
+    line_check = value_check(\r
+        line_exact,\r
+        line_independent,\r
+        None if line_exact is not None else line_numeric(field, edges, "gauss-legendre"),\r
+        "line integral",\r
+    )\r
+    compare_step, compare_check = comparison(\r
+        field, surface_numeric, line_independent, line_exact if line_exact is not None else surface_exact\r
+    )\r
+    checks = [{"label": "Line integral", "check": line_check}, {"label": "Flux of the curl", "check": surface_check}]\r
+    if compare_check is not None:\r
+        checks.append({"label": "Stokes' theorem", "check": compare_check})\r
+    line_shown = f"= {latex_value(line_exact)}" if line_exact is not None else rf"\\approx {shown_number(line_numeric_value)}"\r
+    surface_shown = (\r
+        f"= {latex_value(surface_exact)}" if surface_exact is not None else rf"\\approx {shown_number(surface_numeric)}"\r
+    )\r
+    curves = []\r
+    for _, curve, interval in edges:\r
+        _, coordinates = curve_samples(curve, interval, GRAPH_POINTS)\r
+        curves.append(coordinates)\r
+    return {\r
+        "ok": True,\r
+        "operation": "stokes",\r
+        "problemLatex": rf"\\mathbf{{F}} = {vector_latex(field)}, \\quad S: \\mathbf{{r}}(u, v) = {vector_latex(position)}, "\r
+        rf"\\quad {to_latex(u_bounds[0])} \\le u \\le {to_latex(u_bounds[1])}, \\quad {to_latex(v_bounds[0])} \\le v \\le "\r
+        rf"{to_latex(v_bounds[1])}",\r
+        "results": [\r
+            {"label": "Line integral around C", "latex": rf"\\oint_C \\mathbf{{F}} \\cdot d\\mathbf{{r}} {line_shown}"},\r
+            {\r
+                "label": "Flux of the curl",\r
+                "latex": rf"\\iint_S (\\nabla \\times \\mathbf{{F}}) \\cdot d\\mathbf{{S}} {surface_shown}",\r
+            },\r
+        ],\r
+        "checks": checks,\r
+        "steps": [statement, curl_step, surface_step, line_step, compare_step],\r
+        "graph": {\r
+            "surface": surface_grid(position, u_bounds, v_bounds, SURFACE_GRID),\r
+            "normals": normal_arrows(solved["normal"], position, u_bounds, v_bounds),\r
+            "boundary": curves,\r
+        },\r
+    }\r
+\r
+\r
+# ------------------------------------------------------------------ the lesson picture\r
+\r
+\r
+def cap_picture(request):\r
+    """The lesson picture: caps z = h(1 - x² - y²) over the unit disk, all with\r
+    the unit circle as their boundary. For each height h, the cap, (∇ × F) · n\r
+    on it for coloring, and the flux of the curl through it; and the\r
+    circulation around the circle, the same for every cap."""\r
+    field, variables = parse_field(request.get("fieldLatex"))\r
+    if len(variables) != 3:\r
+        raise InputError("The picture is for fields in space.")\r
+    height = sympy.Symbol("h", real=True)\r
+    rho, theta = sympy.symbols("rho theta", real=True)\r
+    cap = sympy.Matrix([rho * sympy.cos(theta), rho * sympy.sin(theta), height * (1 - rho**2)])\r
+    normal = cap.diff(rho).cross(cap.diff(theta))\r
+    rotation = curl(field, (X, Y, Z))[0]\r
+    integrand = sympy.expand(rotation.subs({X: cap[0], Y: cap[1], Z: cap[2]}, simultaneous=True).dot(normal))\r
+    flux = sympy.integrate(integrand, (rho, 0, 1), (theta, 0, 2 * sympy.pi))\r
+    circle = sympy.Matrix([sympy.cos(T), sympy.sin(T), 0])\r
+    work = sympy.simplify(along_curve(field, (X, Y, Z), circle).dot(circle.diff(T)))\r
+    circulation = sympy.integrate(work, (T, 0, 2 * sympy.pi))\r
+    if flux.has(sympy.Integral) or circulation.has(sympy.Integral):\r
+        raise InputError("The picture needs a field whose integrals SymPy can do exactly.")\r
+    unit = normal / sympy.sqrt(normal.dot(normal))\r
+    color = sympy.lambdify(\r
+        (height, rho, theta),\r
+        rotation.subs({X: cap[0], Y: cap[1], Z: cap[2]}, simultaneous=True).dot(unit),\r
+        modules="math",\r
+    )\r
+    rhos = [0.02 + 0.98 * i / (CAP_GRID - 1) for i in range(CAP_GRID)]\r
+    thetas = [2 * mpmath.pi * j / (CAP_GRID - 1) for j in range(CAP_GRID)]\r
+    positions = []\r
+    for h in CAP_HEIGHTS:\r
+        surface = {\r
+            "x": [[round(r * float(mpmath.cos(t)), 6) for r in rhos] for t in thetas],\r
+            "y": [[round(r * float(mpmath.sin(t)), 6) for r in rhos] for t in thetas],\r
+            "z": [[round(h * (1 - r * r), 6) for r in rhos] for t in thetas],\r
+        }\r
+        positions.append(\r
+            {\r
+                "height": h,\r
+                "surface": surface,\r
+                "spin": [[round(float(color(h, r, float(t))), 6) for r in rhos] for t in thetas],\r
+                "flux": round(float(flux.subs(height, h)), 6),\r
+            }\r
+        )\r
+    return {\r
+        "ok": True,\r
+        "operation": "capPicture",\r
+        "circulation": round(float(circulation), 6),\r
+        "positions": positions,\r
+    }\r
 `,"./python/mathlab/surfaces.py":`"""Parametric surfaces r(u, v) = ⟨x(u, v), y(u, v), z(u, v)⟩ over a rectangle\r
 a ≤ u ≤ b, c ≤ v ≤ d, and integrals over them.\r
 \r
