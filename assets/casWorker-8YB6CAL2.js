@@ -6908,7 +6908,16 @@ from mathlab.space_curves import build_space_curve, curvature_steps, velocity_st
 from mathlab.surfaces import solve_surface\r
 from mathlab.tangent import solve_graph\r
 from mathlab.triple import COORDINATE_SYSTEMS, ORDERS, change_coordinates, iterated_triple_integral\r
-from mathlab.vectors import angle_result, dot_product_step, length, length_step, projection_results, vector_latex\r
+from mathlab.vectors import (\r
+    angle_result,\r
+    cross_product_step,\r
+    dot_product_step,\r
+    length,\r
+    length_step,\r
+    parallelogram_step,\r
+    projection_results,\r
+    vector_latex,\r
+)\r
 \r
 # Answers within this relative distance count as correct, so a decimal with\r
 # four significant digits is accepted for an answer like arccos(1/3).\r
@@ -7501,6 +7510,44 @@ def stokes_problem(rng):\r
     )\r
 \r
 \r
+def cross_product_problem(rng):\r
+    """A component of a × b, the area of the parallelogram they span, or the\r
+    area of a triangle from its corners."""\r
+    a, b = nonzero_vector(rng), nonzero_vector(rng)\r
+    while a.cross(b) == sympy.zeros(3, 1):\r
+        b = nonzero_vector(rng)  # Parallel vectors span no area.\r
+    cross, cross_step = cross_product_step(a, b)\r
+    vectors = rf"$\\mathbf{{a}} = {vector_latex(a)}$ and $\\mathbf{{b}} = {vector_latex(b)}$"\r
+    kind = rng.choice(["component", "area", "triangle"])\r
+    if kind == "component":\r
+        index = rng.choice([0, 1, 2])\r
+        name = ("first", "second", "third")[index]\r
+        return Problem(\r
+            rf"Find the {name} component of $\\mathbf{{a}} \\times \\mathbf{{b}}$ for {vectors}.",\r
+            cross[index],\r
+            (),\r
+            [cross_step],\r
+        )\r
+    area, area_step = parallelogram_step(cross)\r
+    if kind == "area":\r
+        return Problem(\r
+            rf"Find the area of the parallelogram with sides {vectors}.",\r
+            area,\r
+            (),\r
+            [cross_step, area_step],\r
+        )\r
+    corner = sympy.Matrix([rng.randint(-3, 3) for _ in range(3)])\r
+    points = [corner, corner + a, corner + b]\r
+    names = ", ".join(f"{label}{tuple(int(c) for c in point)}" for label, point in zip("PQR", points))\r
+    return Problem(\r
+        rf"Find the area of the triangle with vertices \${names}$. (Hint: $\\overrightarrow{{PQ}} = {vector_latex(a)}$ "\r
+        rf"and $\\overrightarrow{{PR}} = {vector_latex(b)}$.)",\r
+        area / 2,\r
+        (),\r
+        [cross_step, area_step],\r
+    )\r
+\r
+\r
 GENERATORS = {\r
     "vectors": vector_problem,\r
     "partial-derivatives": partial_derivative_problem,\r
@@ -7518,6 +7565,7 @@ GENERATORS = {\r
     "surface-integrals": surface_problem,\r
     "divergence-theorem": divergence_problem,\r
     "stokes-theorem": stokes_problem,\r
+    "cross-product": cross_product_problem,\r
 }\r
 \r
 \r
@@ -9876,165 +9924,235 @@ def triple_integral(function, order, bound_texts, coordinates="rectangular"):
         "steps": steps,
         "stepsNote": None,
     }
-`,"./python/mathlab/vectors.py":`"""Vectors in 3D: length, dot product, angle, and projection, with steps."""
-
-import math
-
-import sympy
-
-from mathlab.expressions import InputError, factor_latex, to_latex
-from mathlab.parsing import parse_function
-from mathlab.steps import make_step
-
-
-def parse_vector(components, name):
-    """Three components, each a number like 2, -1/2, or sqrt(3), as exact values."""
-    if not isinstance(components, list) or len(components) != 3:
-        raise InputError(f"Enter three components for {name}.")
-    values = []
-    for text in components:
-        if not isinstance(text, str) or not text.strip():
-            raise InputError(f"Fill in every component of {name}.")
-        value = parse_function(text, variables=())
-        if value.free_symbols:
-            raise InputError(f"The components of {name} must be numbers, like 2, -1/2, or sqrt(3).")
-        values.append(value)
-    return sympy.Matrix(values)
-
-
-def vector_latex(vector):
-    return rf"\\langle {', '.join(to_latex(component) for component in vector)} \\rangle"
-
-
-def length(vector):
-    return sympy.sqrt(sympy.expand(vector.dot(vector)))
-
-
-def degrees(angle):
-    return f"{math.degrees(float(angle)):.4g}"
-
-
-def length_step(vector, name):
-    squares = " + ".join(f"{factor_latex(component)}^{{2}}" for component in vector)
-    return make_step(
-        f"Length of {name}",
-        rf"The length is the square root of the sum of the squared components: "
-        rf"$|\\mathbf{{v}}| = \\sqrt{{v_1^2 + v_2^2 + v_3^2}}$.",
-        [rf"|\\mathbf{{{name}}}|", rf"\\sqrt{{{squares}}}", to_latex(length(vector))],
-    )
-
-
-def dot_product_step(a, b):
-    products = " + ".join(f"{factor_latex(x)} {factor_latex(y)}" for x, y in zip(a, b))
-    return make_step(
-        "Dot product",
-        r"Multiply matching components and add: "
-        r"$\\mathbf{a} \\cdot \\mathbf{b} = a_1 b_1 + a_2 b_2 + a_3 b_3$.",
-        [r"\\mathbf{a} \\cdot \\mathbf{b}", products, to_latex(sympy.simplify(a.dot(b)))],
-    )
-
-
-def angle_result(a, b, dot):
-    """The angle between a and b, or a note when it is undefined."""
-    if length(a) == 0 or length(b) == 0:
-        return None, make_step(
-            "Angle",
-            "A zero vector has no direction, so the angle between the vectors is undefined.",
-            [],
-        )
-    cosine = sympy.radsimp(sympy.simplify(dot / (length(a) * length(b))))
-    angle = sympy.acos(cosine)
-    if dot == 0:
-        note = r" Because $\\mathbf{a} \\cdot \\mathbf{b} = 0$, the vectors are perpendicular."
-    elif abs(cosine) == 1:
-        note = " Because the cosine is ±1, the vectors are parallel."
-    else:
-        note = ""
-    step = make_step(
-        "Angle between the vectors",
-        r"From $\\mathbf{a} \\cdot \\mathbf{b} = |\\mathbf{a}| |\\mathbf{b}| \\cos\\theta$, "
-        rf"$\\cos\\theta = \\frac{{\\mathbf{{a}} \\cdot \\mathbf{{b}}}}{{|\\mathbf{{a}}| |\\mathbf{{b}}|}}$.{note}",
-        [
-            r"\\cos\\theta",
-            rf"\\frac{{{to_latex(dot)}}}{{{factor_latex(length(a))} \\cdot {factor_latex(length(b))}}}",
-            to_latex(cosine),
-        ],
-        [
-            make_step(
-                "Solve for the angle",
-                r"Take the inverse cosine; $\\theta$ is between $0$ and $\\pi$.",
-                [r"\\theta", to_latex(angle), rf"{degrees(angle)}^\\circ"],
-            )
-        ],
-    )
-    return angle, step
-
-
-def projection_results(a, b, dot):
-    """The scalar and vector projections of a onto b, or None if b is zero."""
-    length_b = length(b)
-    if length_b == 0:
-        return None
-    scalar = sympy.radsimp(dot / length_b)
-    vector = (dot / length_b**2) * b
-    step = make_step(
-        "Projection of a onto b",
-        r"The part of $\\mathbf{a}$ that points along $\\mathbf{b}$. The scalar projection is "
-        r"$\\operatorname{comp}_{\\mathbf{b}} \\mathbf{a} = \\frac{\\mathbf{a} \\cdot \\mathbf{b}}{|\\mathbf{b}|}$, "
-        r"and the vector projection is "
-        r"$\\operatorname{proj}_{\\mathbf{b}} \\mathbf{a} = \\frac{\\mathbf{a} \\cdot \\mathbf{b}}{|\\mathbf{b}|^2} \\mathbf{b}$.",
-        [
-            r"\\operatorname{proj}_{\\mathbf{b}} \\mathbf{a}",
-            rf"\\frac{{{to_latex(dot)}}}{{{factor_latex(length_b)}^{{2}}}} {vector_latex(b)}",
-            vector_latex(vector),
-        ],
-    )
-    return scalar, vector, step
-
-
-def analyze_vectors(a, b):
-    dot = sympy.simplify(a.dot(b))
-    angle, angle_step = angle_result(a, b, dot)
-    projection = projection_results(a, b, dot)
-    results = [
-        {"label": "Length of a", "latex": rf"|\\mathbf{{a}}| = {to_latex(length(a))}"},
-        {"label": "Length of b", "latex": rf"|\\mathbf{{b}}| = {to_latex(length(b))}"},
-        {"label": "Dot product", "latex": rf"\\mathbf{{a}} \\cdot \\mathbf{{b}} = {to_latex(dot)}"},
-    ]
-    if angle is not None:
-        results.append(
-            {"label": "Angle", "latex": rf"\\theta = {to_latex(angle)} \\approx {degrees(angle)}^\\circ"}
-        )
-    steps = [length_step(a, "a"), length_step(b, "b"), dot_product_step(a, b), angle_step]
-    projection_vector = None
-    if projection is not None:
-        scalar, projection_vector, projection_step = projection
-        results.append(
-            {
-                "label": "Scalar projection",
-                "latex": rf"\\operatorname{{comp}}_{{\\mathbf{{b}}}} \\mathbf{{a}} = {to_latex(scalar)}",
-            }
-        )
-        results.append(
-            {
-                "label": "Vector projection",
-                "latex": rf"\\operatorname{{proj}}_{{\\mathbf{{b}}}} \\mathbf{{a}} = {vector_latex(projection_vector)}",
-            }
-        )
-        steps.append(projection_step)
-    return {
-        "ok": True,
-        "operation": "vectors",
-        "aLatex": rf"\\mathbf{{a}} = {vector_latex(a)}",
-        "bLatex": rf"\\mathbf{{b}} = {vector_latex(b)}",
-        "results": results,
-        "steps": steps,
-        "arrows": {
-            "a": [float(component) for component in a],
-            "b": [float(component) for component in b],
-            "projection": None if projection_vector is None else [float(c) for c in projection_vector],
-        },
-    }
+`,"./python/mathlab/vectors.py":`"""Vectors in 3D: length, dot product, angle, and projection, with steps."""\r
+\r
+import math\r
+\r
+import sympy\r
+\r
+from mathlab.expressions import InputError, factor_latex, to_latex\r
+from mathlab.parsing import parse_function\r
+from mathlab.steps import make_step\r
+\r
+\r
+def parse_vector(components, name):\r
+    """Three components, each a number like 2, -1/2, or sqrt(3), as exact values."""\r
+    if not isinstance(components, list) or len(components) != 3:\r
+        raise InputError(f"Enter three components for {name}.")\r
+    values = []\r
+    for text in components:\r
+        if not isinstance(text, str) or not text.strip():\r
+            raise InputError(f"Fill in every component of {name}.")\r
+        value = parse_function(text, variables=())\r
+        if value.free_symbols:\r
+            raise InputError(f"The components of {name} must be numbers, like 2, -1/2, or sqrt(3).")\r
+        values.append(value)\r
+    return sympy.Matrix(values)\r
+\r
+\r
+def vector_latex(vector):\r
+    return rf"\\langle {', '.join(to_latex(component) for component in vector)} \\rangle"\r
+\r
+\r
+def length(vector):\r
+    return sympy.sqrt(sympy.expand(vector.dot(vector)))\r
+\r
+\r
+def degrees(angle):\r
+    return f"{math.degrees(float(angle)):.4g}"\r
+\r
+\r
+def length_step(vector, name):\r
+    squares = " + ".join(f"{factor_latex(component)}^{{2}}" for component in vector)\r
+    return make_step(\r
+        f"Length of {name}",\r
+        rf"The length is the square root of the sum of the squared components: "\r
+        rf"$|\\mathbf{{v}}| = \\sqrt{{v_1^2 + v_2^2 + v_3^2}}$.",\r
+        [rf"|\\mathbf{{{name}}}|", rf"\\sqrt{{{squares}}}", to_latex(length(vector))],\r
+    )\r
+\r
+\r
+def dot_product_step(a, b):\r
+    products = " + ".join(f"{factor_latex(x)} {factor_latex(y)}" for x, y in zip(a, b))\r
+    return make_step(\r
+        "Dot product",\r
+        r"Multiply matching components and add: "\r
+        r"$\\mathbf{a} \\cdot \\mathbf{b} = a_1 b_1 + a_2 b_2 + a_3 b_3$.",\r
+        [r"\\mathbf{a} \\cdot \\mathbf{b}", products, to_latex(sympy.simplify(a.dot(b)))],\r
+    )\r
+\r
+\r
+def angle_result(a, b, dot):\r
+    """The angle between a and b, or a note when it is undefined."""\r
+    if length(a) == 0 or length(b) == 0:\r
+        return None, make_step(\r
+            "Angle",\r
+            "A zero vector has no direction, so the angle between the vectors is undefined.",\r
+            [],\r
+        )\r
+    cosine = sympy.radsimp(sympy.simplify(dot / (length(a) * length(b))))\r
+    angle = sympy.acos(cosine)\r
+    if dot == 0:\r
+        note = r" Because $\\mathbf{a} \\cdot \\mathbf{b} = 0$, the vectors are perpendicular."\r
+    elif abs(cosine) == 1:\r
+        note = " Because the cosine is ±1, the vectors are parallel."\r
+    else:\r
+        note = ""\r
+    step = make_step(\r
+        "Angle between the vectors",\r
+        r"From $\\mathbf{a} \\cdot \\mathbf{b} = |\\mathbf{a}| |\\mathbf{b}| \\cos\\theta$, "\r
+        rf"$\\cos\\theta = \\frac{{\\mathbf{{a}} \\cdot \\mathbf{{b}}}}{{|\\mathbf{{a}}| |\\mathbf{{b}}|}}$.{note}",\r
+        [\r
+            r"\\cos\\theta",\r
+            rf"\\frac{{{to_latex(dot)}}}{{{factor_latex(length(a))} \\cdot {factor_latex(length(b))}}}",\r
+            to_latex(cosine),\r
+        ],\r
+        [\r
+            make_step(\r
+                "Solve for the angle",\r
+                r"Take the inverse cosine; $\\theta$ is between $0$ and $\\pi$.",\r
+                [r"\\theta", to_latex(angle), rf"{degrees(angle)}^\\circ"],\r
+            )\r
+        ],\r
+    )\r
+    return angle, step\r
+\r
+\r
+def projection_results(a, b, dot):\r
+    """The scalar and vector projections of a onto b, or None if b is zero."""\r
+    length_b = length(b)\r
+    if length_b == 0:\r
+        return None\r
+    scalar = sympy.radsimp(dot / length_b)\r
+    vector = (dot / length_b**2) * b\r
+    step = make_step(\r
+        "Projection of a onto b",\r
+        r"The part of $\\mathbf{a}$ that points along $\\mathbf{b}$. The scalar projection is "\r
+        r"$\\operatorname{comp}_{\\mathbf{b}} \\mathbf{a} = \\frac{\\mathbf{a} \\cdot \\mathbf{b}}{|\\mathbf{b}|}$, "\r
+        r"and the vector projection is "\r
+        r"$\\operatorname{proj}_{\\mathbf{b}} \\mathbf{a} = \\frac{\\mathbf{a} \\cdot \\mathbf{b}}{|\\mathbf{b}|^2} \\mathbf{b}$.",\r
+        [\r
+            r"\\operatorname{proj}_{\\mathbf{b}} \\mathbf{a}",\r
+            rf"\\frac{{{to_latex(dot)}}}{{{factor_latex(length_b)}^{{2}}}} {vector_latex(b)}",\r
+            vector_latex(vector),\r
+        ],\r
+    )\r
+    return scalar, vector, step\r
+\r
+\r
+def cross_product_step(a, b):\r
+    """a × b from the determinant, one component at a time."""\r
+    cross = a.cross(b)\r
+    components = [(1, 2), (2, 0), (0, 1)]\r
+    written = ", ".join(\r
+        rf"{factor_latex(a[i])} \\cdot {factor_latex(b[j])} - {factor_latex(a[j])} \\cdot {factor_latex(b[i])}"\r
+        for i, j in components\r
+    )\r
+    step = make_step(\r
+        "Cross product",\r
+        r"Expand the determinant along its first row: each component of $\\mathbf{a} \\times \\mathbf{b}$ "\r
+        r"crosses out its own column and takes the 2 by 2 determinant of what is left, with the middle "\r
+        r"one's sign flipped: $\\langle a_2 b_3 - a_3 b_2,\\ a_3 b_1 - a_1 b_3,\\ a_1 b_2 - a_2 b_1 \\rangle$.",\r
+        [\r
+            r"\\mathbf{a} \\times \\mathbf{b}",\r
+            r"\\begin{vmatrix} \\mathbf{i} & \\mathbf{j} & \\mathbf{k} \\\\ "\r
+            + " & ".join(to_latex(component) for component in a)\r
+            + r" \\\\ "\r
+            + " & ".join(to_latex(component) for component in b)\r
+            + r" \\end{vmatrix}",\r
+            rf"\\left\\langle {written} \\right\\rangle",\r
+            vector_latex(cross),\r
+        ],\r
+    )\r
+    return cross, step\r
+\r
+\r
+def parallelogram_step(cross):\r
+    area = length(cross)\r
+    squares = " + ".join(f"{factor_latex(component)}^{{2}}" for component in cross)\r
+    return area, make_step(\r
+        "Area of the parallelogram",\r
+        r"$|\\mathbf{a} \\times \\mathbf{b}| = |\\mathbf{a}| |\\mathbf{b}| \\sin\\theta$ is the area of the "\r
+        r"parallelogram with sides $\\mathbf{a}$ and $\\mathbf{b}$ (base $|\\mathbf{a}|$, height "\r
+        r"$|\\mathbf{b}| \\sin\\theta$). The triangle with those sides has half of it.",\r
+        [r"|\\mathbf{a} \\times \\mathbf{b}|", rf"\\sqrt{{{squares}}}", to_latex(area)],\r
+    )\r
+\r
+\r
+def cross_check(a, b, cross, dot):\r
+    """a × b must be perpendicular to a and to b, with |a × b|² equal to\r
+    |a|²|b|² - (a · b)² (that is, |a|²|b|² sin²θ): three facts computed\r
+    separately from the typed vectors."""\r
+    perpendicular = sympy.simplify(cross.dot(a)) == 0 and sympy.simplify(cross.dot(b)) == 0\r
+    squared = sympy.simplify(cross.dot(cross))\r
+    expected = sympy.simplify(a.dot(a) * b.dot(b) - dot**2)\r
+    if perpendicular and sympy.simplify(squared - expected) == 0:\r
+        return {\r
+            "status": "verified",\r
+            "detail": rf"$\\mathbf{{a}} \\times \\mathbf{{b}}$ is perpendicular to both vectors (its dot products "\r
+            rf"with $\\mathbf{{a}}$ and $\\mathbf{{b}}$ are $0$), and $|\\mathbf{{a}} \\times \\mathbf{{b}}|^2 = "\r
+            rf"{to_latex(squared)}$ equals $|\\mathbf{{a}}|^2 |\\mathbf{{b}}|^2 - (\\mathbf{{a}} \\cdot \\mathbf{{b}})^2$, "\r
+            r"as the cross product must.",\r
+        }\r
+    return {\r
+        "status": "failed",\r
+        "detail": "The cross product isn't perpendicular to both vectors, or its length is wrong. "\r
+        "Treat this answer with caution.",\r
+    }\r
+\r
+\r
+def analyze_vectors(a, b):\r
+    dot = sympy.simplify(a.dot(b))\r
+    angle, angle_step = angle_result(a, b, dot)\r
+    projection = projection_results(a, b, dot)\r
+    results = [\r
+        {"label": "Length of a", "latex": rf"|\\mathbf{{a}}| = {to_latex(length(a))}"},\r
+        {"label": "Length of b", "latex": rf"|\\mathbf{{b}}| = {to_latex(length(b))}"},\r
+        {"label": "Dot product", "latex": rf"\\mathbf{{a}} \\cdot \\mathbf{{b}} = {to_latex(dot)}"},\r
+    ]\r
+    if angle is not None:\r
+        results.append(\r
+            {"label": "Angle", "latex": rf"\\theta = {to_latex(angle)} \\approx {degrees(angle)}^\\circ"}\r
+        )\r
+    steps = [length_step(a, "a"), length_step(b, "b"), dot_product_step(a, b), angle_step]\r
+    projection_vector = None\r
+    if projection is not None:\r
+        scalar, projection_vector, projection_step = projection\r
+        results.append(\r
+            {\r
+                "label": "Scalar projection",\r
+                "latex": rf"\\operatorname{{comp}}_{{\\mathbf{{b}}}} \\mathbf{{a}} = {to_latex(scalar)}",\r
+            }\r
+        )\r
+        results.append(\r
+            {\r
+                "label": "Vector projection",\r
+                "latex": rf"\\operatorname{{proj}}_{{\\mathbf{{b}}}} \\mathbf{{a}} = {vector_latex(projection_vector)}",\r
+            }\r
+        )\r
+        steps.append(projection_step)\r
+    cross, cross_step = cross_product_step(a, b)\r
+    area, area_step = parallelogram_step(cross)\r
+    results.append({"label": "Cross product", "latex": rf"\\mathbf{{a}} \\times \\mathbf{{b}} = {vector_latex(cross)}"})\r
+    results.append(\r
+        {"label": "Area of the parallelogram", "latex": rf"|\\mathbf{{a}} \\times \\mathbf{{b}}| = {to_latex(area)}"}\r
+    )\r
+    steps.extend([cross_step, area_step])\r
+    return {\r
+        "ok": True,\r
+        "operation": "vectors",\r
+        "aLatex": rf"\\mathbf{{a}} = {vector_latex(a)}",\r
+        "bLatex": rf"\\mathbf{{b}} = {vector_latex(b)}",\r
+        "results": results,\r
+        "checks": [{"label": "Cross product", "check": cross_check(a, b, cross, dot)}],\r
+        "steps": steps,\r
+        "arrows": {\r
+            "a": [float(component) for component in a],\r
+            "b": [float(component) for component in b],\r
+            "projection": None if projection_vector is None else [float(c) for c in projection_vector],\r
+            "cross": [float(component) for component in cross],\r
+        },\r
+    }\r
 `}),t=`/home/pyodide/python`;function n(n){for(let[r,i]of Object.entries(e)){let e=`${t}/${r.replace(`./python/`,``)}`;n.FS.mkdirTree(e.slice(0,e.lastIndexOf(`/`))),n.FS.writeFile(e,i)}return n.pyimport(`sys`).path.insert(0,t),n.pyimport(`mathlab.calculus`).run_request}const r=`https://cdn.jsdelivr.net/pyodide/v314.0.7/full/`;function i(e){self.postMessage(e)}async function a(){i({type:`progress`,message:`Downloading Python…`});let{loadPyodide:e}=await import(
 /* @vite-ignore */
 `${r}pyodide.mjs`),t=await e({indexURL:r});return i({type:`progress`,message:`Loading SymPy…`}),await t.loadPackage(`sympy`),n(t)}const o=a();o.then(()=>i({type:`ready`}),e=>i({type:`loadFailed`,error:String(e)})),self.onmessage=async e=>{let{id:t,...n}=e.data,r;try{let e=await o,a=e=>i({type:`solveProgress`,id:t,message:e});r=JSON.parse(e(JSON.stringify({...n,format:`latex`}),a))}catch(e){r={ok:!1,error:`The math engine failed: ${String(e)}`}}i({type:`response`,id:t,response:r})};
