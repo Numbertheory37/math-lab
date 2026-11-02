@@ -135,6 +135,7 @@ from mathlab.riemann import riemann_sum\r
 from mathlab.solid import solid_picture\r
 from mathlab.space_curves import analyze_space_curve, space_trace\r
 from mathlab.triple import triple_integral\r
+from mathlab.planes import analyze_plane\r
 from mathlab.vectors import analyze_vectors, parse_vector\r
 \r
 GRAPH_X_MIN = -10.0\r
@@ -280,6 +281,8 @@ OPERATIONS = {\r
     "vectors": lambda request: analyze_vectors(\r
         parse_vector(request.get("a"), "a"), parse_vector(request.get("b"), "b")\r
     ),\r
+    # The plane through three points P, Q, R, typed like vector components.\r
+    "plane": lambda request: analyze_plane(request.get("points")),\r
     "slices": lambda request: slices(\r
         parse_function(expression_text(request), (X, Y)), parse_point(request.get("point"))\r
     ),\r
@@ -3352,6 +3355,20 @@ def iterated_integral(function, inside, outside, inner_bounds, outer_bounds, gen
             [antiderivative_step(inner_value, outside, outer_antiderivative, outer_steps)],\r
         ),\r
     ]\r
+    # The double integrals lesson's key formula these steps use, for the\r
+    # "Learn it" link: Fubini's theorem on a rectangle, or the region's type\r
+    # when the inside bounds are curves.\r
+    if {inside, outside} == {X, Y}:\r
+        # Practice problems may pass plain numbers as bounds.\r
+        curved = any(sympy.sympify(bound).has(outside) for bound in inner_bounds)\r
+        if not curved:\r
+            formula = "Fubini's theorem (rectangle)"\r
+        elif inside == Y:\r
+            formula = "Type I region"\r
+        else:\r
+            formula = "Type II region"\r
+        for step in steps:\r
+            step["formulas"] = [formula]\r
     return iterated, steps, value\r
 `,"./python/mathlab/expressions.py":`"""Shared symbols, the input error, and printing math as LaTeX."""\r
 \r
@@ -6881,6 +6898,242 @@ def parse_function(text, variables=(X,)):
 def constants_in(function, variables):
     """The letters in function other than its variables, sorted by name."""
     return sorted(function.free_symbols - set(variables), key=lambda symbol: symbol.name)
+`,"./python/mathlab/planes.py":`"""Lines and planes in space: the plane through three points, from a normal\r
+vector made by the cross product, and the line through two of them."""\r
+\r
+import sympy\r
+\r
+from mathlab.expressions import X, Y, Z, InputError, factor_latex, to_latex\r
+from mathlab.parsing import parse_function\r
+from mathlab.steps import make_step, separate\r
+from mathlab.vectors import vector_latex\r
+\r
+POINT_NAMES = ("P", "Q", "R")\r
+\r
+\r
+def parse_point3(coordinates, name):\r
+    """A point's three coordinates, each a number like 2, -1/2, or sqrt(3)."""\r
+    if not isinstance(coordinates, list) or len(coordinates) != 3:\r
+        raise InputError(f"Enter three coordinates for {name}.")\r
+    values = []\r
+    for text in coordinates:\r
+        if not isinstance(text, str) or not text.strip():\r
+            raise InputError(f"Fill in every coordinate of {name}.")\r
+        value = parse_function(text, variables=())\r
+        if value.free_symbols:\r
+            raise InputError(f"The coordinates of {name} must be numbers, like 2, -1/2, or sqrt(3).")\r
+        values.append(value)\r
+    return sympy.Matrix(values)\r
+\r
+\r
+def parse_points(points):\r
+    if not isinstance(points, list) or len(points) != 3:\r
+        raise InputError("Enter three points, P, Q, and R.")\r
+    return [parse_point3(point, name) for point, name in zip(points, POINT_NAMES)]\r
+\r
+\r
+def point_latex(point):\r
+    return f"({', '.join(to_latex(coordinate) for coordinate in point)})"\r
+\r
+\r
+def signed_sum(terms):\r
+    """Terms (coefficient, body) as LaTeX like 6x - 10y + 7z: zero terms are\r
+    left out, a coefficient of 1 isn't written, and minus signs go between."""\r
+    parts = []\r
+    for coefficient, body in terms:\r
+        coefficient = sympy.simplify(coefficient)\r
+        if coefficient == 0:\r
+            continue\r
+        negative = coefficient.could_extract_minus_sign()\r
+        size = -coefficient if negative else coefficient\r
+        written = body if size == 1 and body else f"{factor_latex(size)}{body}"\r
+        if not parts:\r
+            parts.append(f"-{written}" if negative else written)\r
+        else:\r
+            parts.append(f" - {written}" if negative else f" + {written}")\r
+    return "".join(parts) or "0"\r
+\r
+\r
+def tidy(coefficients):\r
+    """The plane's coefficients a, b, c, d scaled to small whole numbers when\r
+    they are rational, with the first nonzero of a, b, c positive. Returns\r
+    the new coefficients and the number they were divided by."""\r
+    divisor = sympy.Integer(1)\r
+    if all(value.is_rational for value in coefficients):\r
+        denominators = sympy.ilcm(*[sympy.fraction(value)[1] for value in coefficients])\r
+        whole = [value * denominators for value in coefficients]\r
+        common = sympy.igcd(*[int(value) for value in whole if value != 0])\r
+        divisor = sympy.Rational(common, denominators)\r
+    leading = next(value for value in coefficients[:3] if value != 0)\r
+    if leading.could_extract_minus_sign():\r
+        divisor = -divisor\r
+    return [sympy.simplify(value / divisor) for value in coefficients], divisor\r
+\r
+\r
+def plane_equation_latex(a, b, c, d):\r
+    return rf"{signed_sum([(a, 'x'), (b, 'y'), (c, 'z')])} = {to_latex(d)}"\r
+\r
+\r
+def vectors_step(p, q, r):\r
+    def difference(name, point):\r
+        written = ", ".join(\r
+            rf"{to_latex(end)} - {factor_latex(start)}" for end, start in zip(point, p)\r
+        )\r
+        return (\r
+            rf"\\overrightarrow{{P{name}}} = {name} - P = \\langle {written} \\rangle = "\r
+            rf"{vector_latex(point - p)}"\r
+        )\r
+\r
+    return make_step(\r
+        "Two vectors in the plane",\r
+        r"Arrows from $P$ to the other two points lie in the plane. Subtract coordinates: "\r
+        r"$\\overrightarrow{PQ} = Q - P$ and $\\overrightarrow{PR} = R - P$.",\r
+        [separate(difference("Q", q), difference("R", r))],\r
+    )\r
+\r
+\r
+def normal_step(pq, pr):\r
+    normal = pq.cross(pr)\r
+    written = ", ".join(\r
+        rf"{factor_latex(pq[i])} \\cdot {factor_latex(pr[j])} - {factor_latex(pq[j])} \\cdot {factor_latex(pr[i])}"\r
+        for i, j in [(1, 2), (2, 0), (0, 1)]\r
+    )\r
+    step = make_step(\r
+        "Normal vector from three points",\r
+        r"The cross product is perpendicular to both arrows, so it is perpendicular to the plane: "\r
+        r"a normal vector $\\mathbf{n} = \\overrightarrow{PQ} \\times \\overrightarrow{PR}$.",\r
+        [\r
+            r"\\mathbf{n}",\r
+            r"\\begin{vmatrix} \\mathbf{i} & \\mathbf{j} & \\mathbf{k} \\\\ "\r
+            + " & ".join(to_latex(component) for component in pq)\r
+            + r" \\\\ "\r
+            + " & ".join(to_latex(component) for component in pr)\r
+            + r" \\end{vmatrix}",\r
+            rf"\\left\\langle {written} \\right\\rangle",\r
+            vector_latex(normal),\r
+        ],\r
+    )\r
+    return normal, step\r
+\r
+\r
+def point_normal_steps(normal, p):\r
+    a, b, c = normal\r
+    d = sympy.simplify(normal.dot(p))\r
+    point_normal = signed_sum(\r
+        [\r
+            (a, rf"\\left({to_latex(X - p[0])}\\right)"),\r
+            (b, rf"\\left({to_latex(Y - p[1])}\\right)"),\r
+            (c, rf"\\left({to_latex(Z - p[2])}\\right)"),\r
+        ]\r
+    )\r
+    steps = [\r
+        make_step(\r
+            "Point-normal equation",\r
+            r"A point $(x, y, z)$ is on the plane exactly when the arrow from $P$ to it is perpendicular "\r
+            r"to $\\mathbf{n}$: $\\mathbf{n} \\cdot \\langle x - x_0, y - y_0, z - z_0 \\rangle = 0$, with "\r
+            r"$P = (x_0, y_0, z_0)$.",\r
+            [f"{point_normal} = 0"],\r
+        ),\r
+        make_step(\r
+            "Expand the equation",\r
+            r"Multiply out and move the constants to the right: $ax + by + cz = d$, where "\r
+            r"$d = \\mathbf{n} \\cdot P$.",\r
+            [plane_equation_latex(a, b, c, d)],\r
+        ),\r
+    ]\r
+    (a2, b2, c2, d2), divisor = tidy([a, b, c, d])\r
+    if divisor != 1:\r
+        steps.append(\r
+            make_step(\r
+                "Divide by a common factor",\r
+                rf"Divide both sides by \${to_latex(divisor)}$. Any nonzero multiple of a normal vector is "\r
+                r"also a normal vector, so this is the same plane, with smaller numbers.",\r
+                [plane_equation_latex(a2, b2, c2, d2)],\r
+            )\r
+        )\r
+    return (a2, b2, c2, d2), steps\r
+\r
+\r
+def line_coordinates(p, pq):\r
+    """Each coordinate of P + t PQ in textbook order, like 3 - 4t."""\r
+    return [signed_sum([(start, ""), (step, "t")]) for start, step in zip(p, pq)]\r
+\r
+\r
+def line_step(p, pq):\r
+    x, y, z = line_coordinates(p, pq)\r
+    return make_step(\r
+        "Line through P and Q",\r
+        r"A line is a point plus multiples of a direction: start at $P$ and move along "\r
+        r"$\\overrightarrow{PQ}$, so $t = 0$ gives $P$ and $t = 1$ gives $Q$.",\r
+        [\r
+            separate(\r
+                rf"\\mathbf{{r}}(t) = {vector_latex(p)} + t\\,{vector_latex(pq)}",\r
+                rf"x = {x}, \\quad y = {y}, \\quad z = {z}",\r
+            )\r
+        ],\r
+    )\r
+\r
+\r
+def plane_check(coefficients, points):\r
+    """Each typed point, put into the final equation, must give d: computed\r
+    from the points themselves, not from the steps that built the equation."""\r
+    a, b, c, d = coefficients\r
+    substitutions = []\r
+    for name, point in zip(POINT_NAMES, points):\r
+        value = sympy.simplify(a * point[0] + b * point[1] + c * point[2])\r
+        if sympy.simplify(value - d) != 0:\r
+            return {\r
+                "status": "failed",\r
+                "detail": f"{name} doesn't satisfy the equation. Treat this answer with caution.",\r
+            }\r
+        substituted = signed_sum(\r
+            [\r
+                (a, rf"\\left({to_latex(point[0])}\\right)"),\r
+                (b, rf"\\left({to_latex(point[1])}\\right)"),\r
+                (c, rf"\\left({to_latex(point[2])}\\right)"),\r
+            ]\r
+        )\r
+        substitutions.append(rf"\${name}$: \${substituted} = {to_latex(value)}$")\r
+    return {\r
+        "status": "verified",\r
+        "detail": f"All three points satisfy \${plane_equation_latex(a, b, c, d)}$. "\r
+        + "; ".join(substitutions)\r
+        + ".",\r
+    }\r
+\r
+\r
+def analyze_plane(points):\r
+    p, q, r = parse_points(points)\r
+    pq, pr = q - p, r - p\r
+    normal, normal_part = normal_step(pq, pr)\r
+    if normal == sympy.zeros(3, 1):\r
+        raise InputError(\r
+            "The three points lie on one line, so they don't pick out a single plane: every plane "\r
+            "containing that line passes through them. Move one point off the line."\r
+        )\r
+    coefficients, equation_steps = point_normal_steps(normal, p)\r
+    a, b, c, d = coefficients\r
+    return {\r
+        "ok": True,\r
+        "operation": "plane",\r
+        "pointsLatex": ", \\\\quad ".join(\r
+            f"{name} = {point_latex(point)}" for name, point in zip(POINT_NAMES, (p, q, r))\r
+        ),\r
+        "results": [\r
+            {"label": "Normal vector", "latex": rf"\\mathbf{{n}} = {vector_latex(normal)}"},\r
+            {"label": "Plane through P, Q, R", "latex": plane_equation_latex(a, b, c, d)},\r
+            {\r
+                "label": "Line through P and Q",\r
+                "latex": rf"\\mathbf{{r}}(t) = \\langle {', '.join(line_coordinates(p, pq))} \\rangle",\r
+            },\r
+        ],\r
+        "checks": [{"label": "Plane", "check": plane_check(coefficients, (p, q, r))}],\r
+        "steps": [vectors_step(p, q, r), normal_part, *equation_steps, line_step(p, pq)],\r
+        "picture": {\r
+            "points": [[float(coordinate) for coordinate in point] for point in (p, q, r)],\r
+            "normal": [float(component) for component in (a, b, c)],\r
+        },\r
+    }\r
 `,"./python/mathlab/practice.py":`"""Practice problems for the lessons, and checking a student's answer.\r
 \r
 A problem is built from its lesson and a seed. Checking rebuilds the same\r
@@ -6904,6 +7157,16 @@ from mathlab.latex_input import latex_to_text\r
 from mathlab.line_integrals import solve_line_integral\r
 from mathlab.optimize import solve_critical, solve_lagrange\r
 from mathlab.parsing import parse_function\r
+from mathlab.planes import (\r
+    line_step,\r
+    normal_step,\r
+    plane_equation_latex,\r
+    point_latex,\r
+    point_normal_steps,\r
+    signed_sum,\r
+    vectors_step,\r
+)\r
+from mathlab.steps import make_step, separate\r
 from mathlab.space_curves import build_space_curve, curvature_steps, velocity_steps\r
 from mathlab.surfaces import solve_surface\r
 from mathlab.tangent import solve_graph\r
@@ -7548,6 +7811,56 @@ def cross_product_problem(rng):\r
     )\r
 \r
 \r
+def small_point(rng):\r
+    return sympy.Matrix([rng.randint(-4, 4) for _ in range(3)])\r
+\r
+\r
+def lines_and_planes_problem(rng):\r
+    """The constant d of the plane through three points, or where the line\r
+    through two points crosses the xy-plane."""\r
+    p, q = small_point(rng), small_point(rng)\r
+    while q == p:\r
+        q = small_point(rng)\r
+    pq = q - p\r
+    named = lambda name, point: rf"{name}{point_latex(point)}"  # noqa: E731\r
+    if rng.choice(["plane", "line"]) == "plane" or pq[2] == 0:\r
+        r = small_point(rng)\r
+        while pq.cross(r - p) == sympy.zeros(3, 1):\r
+            r = small_point(rng)  # Three points on one line give no single plane.\r
+        normal, normal_part = normal_step(pq, r - p)\r
+        (a, b, c, d), equation_steps = point_normal_steps(normal, p)\r
+        left = plane_equation_latex(a, b, c, 0).removesuffix(" = 0")\r
+        return Problem(\r
+            rf"The plane through \${named('P', p)}$, \${named('Q', q)}$, and \${named('R', r)}$ has an "\r
+            rf"equation of the form \${left} = d$. Find $d$.",\r
+            d,\r
+            (),\r
+            [vectors_step(p, q, r), normal_part, *equation_steps],\r
+        )\r
+    t_value = -p[2] / pq[2]\r
+    crossing = p + t_value * pq\r
+    return Problem(\r
+        rf"Where does the line through \${named('P', p)}$ and \${named('Q', q)}$ cross the $xy$-plane "\r
+        r"($z = 0$)? Find the $x$-coordinate of that point.",\r
+        crossing[0],\r
+        (),\r
+        [\r
+            line_step(p, pq),\r
+            make_step(\r
+                "Where the line meets the plane",\r
+                r"Points on the $xy$-plane have $z = 0$, so set the line's $z$-coordinate to $0$, solve "\r
+                r"for $t$, and put that $t$ into $x$.",\r
+                [\r
+                    separate(\r
+                        rf"{signed_sum([(p[2], ''), (pq[2], 't')])} = 0 \\implies t = {to_latex(t_value)}",\r
+                        rf"x = {to_latex(crossing[0])}",\r
+                    )\r
+                ],\r
+            ),\r
+        ],\r
+    )\r
+\r
+\r
 GENERATORS = {\r
     "vectors": vector_problem,\r
     "partial-derivatives": partial_derivative_problem,\r
@@ -7566,6 +7879,7 @@ GENERATORS = {\r
     "divergence-theorem": divergence_problem,\r
     "stokes-theorem": stokes_problem,\r
     "cross-product": cross_product_problem,\r
+    "lines-and-planes": lines_and_planes_problem,\r
 }\r
 \r
 \r
