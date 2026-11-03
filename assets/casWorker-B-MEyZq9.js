@@ -929,1083 +929,1084 @@ def curl_picture(request):\r
         "radius": CIRCLE_RADIUS,\r
         "points": [[at(x, y) for x in values] for y in values],\r
     }\r
-`,"./python/mathlab/curves.py":`"""Parametric and polar curves: the slope, arc length, and area.
-
-A parametric curve is x = x(t), y = y(t) for a ≤ t ≤ b. A polar curve
-r = r(θ) is the parametric curve x = r cos θ, y = r sin θ with θ as the
-parameter, so both use the same slope and length formulas. Their areas
-differ: ∫ y dx under a parametric curve, ½∫ r² dθ inside a polar one.
-
-Arc length integrands, √((dx/dt)² + (dy/dt)²), rarely have antiderivatives,
-so only the textbook rules are tried (the general algorithms can run for
-minutes); textbook examples are built so that the square root simplifies,
-often with a half-angle identity. When no exact length is found, it is
-computed numerically and labeled that way.
-"""
-
-import mpmath
-import sympy
-
-from mathlab.antiderivatives import find_antiderivative
-from mathlab.checks import numeric_function
-from mathlab.definite import evaluate_between, parse_bound
-from mathlab.double import antiderivative_step
-from mathlab.expressions import THETA, T, InputError, to_latex
-from mathlab.latex_input import latex_to_text
-from mathlab.parsing import constants_in, parse_function
-from mathlab.progress import report
-from mathlab.region import real_number
-from mathlab.steps import make_step, separate
-
-CHECK_DIGITS = 15
-CHECK_TOLERANCE = mpmath.mpf("1e-9")
-GRAPH_POINTS = 401
-# An exact arc length is tried only for integrands with at most this many
-# operations. Textbook ones are short once simplified (measured: 4 for a
-# cycloid arch's 2|sin(t/2)|, 9 for the cardioid's, at most 9 in all); the
-# speed of ⟨1 + t³, te⁻ᵗ, sin 2t⟩ has 15, and the textbook rules spent six
-# seconds on it before failing.
-EXACT_LENGTH_LIMIT = 12
-
-
-def parse_curve_function(text, name, parameter):
-    if not isinstance(text, str) or text.strip() == "":
-        raise InputError(f"Enter {name}.")
-    try:
-        function = parse_function(latex_to_text(text), (parameter,))
-    except InputError as error:
-        raise InputError(f"{name}: {error}") from error
-    constants = constants_in(function, (parameter,))
-    if constants:
-        raise InputError(
-            f"{name} must use only {to_text(parameter)}, so the answers are numbers. "
-            f"Remove {', '.join(str(constant) for constant in constants)}."
-        )
-    return function
-
-
-def to_text(parameter):
-    return "θ" if parameter == THETA else "t"
-
-
-def parse_interval(lower_text, upper_text, parameter):
-    low, high = (
-        parse_bound(text, f"{name} {to_text(parameter)}")
-        for text, name in ((lower_text, "starting"), (upper_text, "ending"))
-    )
-    if low.is_infinite or high.is_infinite:
-        raise InputError("The interval must be finite, so the curve has a beginning and an end.")
-    if not (high - low).is_positive:
-        raise InputError(f"The starting {to_text(parameter)} must be less than the ending one.")
-    return low, high
-
-
-def latex_value(value):
-    """value in LaTeX, with a decimal after it when it isn't a whole number or fraction."""
-    text = to_latex(value)
-    if not value.is_Rational:
-        number = sympy.N(value, 15)
-        if number.is_real:
-            text += rf" \\approx {mpmath.nstr(mpmath.mpf(str(number)), 6)}"
-    return text
-
-
-# ---------------------------------------------------------------- the slope
-
-
-def slope_steps(curve):
-    """dy/dx and d²y/dx², and the slope at the chosen point if there is one."""
-    p, dxdt, dydt = curve["parameter"], curve["dxdt"], curve["dydt"]
-    name = to_latex(p)
-    slope = sympy.simplify(dydt / dxdt)
-    if curve["kind"] == "polar":
-        r, drdtheta = curve["r"], sympy.diff(curve["r"], p)
-        slope_step = make_step(
-            "Slope of a polar curve",
-            r"A polar curve is the parametric curve $x = r\\cos\\theta$, $y = r\\sin\\theta$, with "
-            r"$\\theta$ as the parameter. Differentiate both with the product rule, then divide.",
-            [
-                r"\\frac{dy}{dx} = \\frac{dy/d\\theta}{dx/d\\theta} = "
-                r"\\frac{\\frac{dr}{d\\theta}\\sin\\theta + r\\cos\\theta}"
-                r"{\\frac{dr}{d\\theta}\\cos\\theta - r\\sin\\theta}",
-                rf"\\frac{{\\left({to_latex(drdtheta)}\\right)\\sin\\theta + \\left({to_latex(r)}\\right)\\cos\\theta}}"
-                rf"{{\\left({to_latex(drdtheta)}\\right)\\cos\\theta - \\left({to_latex(r)}\\right)\\sin\\theta}}",
-                to_latex(slope),
-            ],
-        )
-    else:
-        slope_step = make_step(
-            "Slope of a parametric curve",
-            rf"By the chain rule, $\\frac{{dy}}{{d{name}}} = \\frac{{dy}}{{dx}} \\cdot \\frac{{dx}}{{d{name}}}$, "
-            rf"so wherever $\\frac{{dx}}{{d{name}}} \\ne 0$, divide.",
-            [
-                rf"\\frac{{dy}}{{dx}} = \\frac{{dy/d{name}}}{{dx/d{name}}}",
-                rf"\\frac{{{to_latex(dydt)}}}{{{to_latex(dxdt)}}}",
-                to_latex(slope),
-            ],
-        )
-    second = sympy.simplify(sympy.diff(slope, p) / dxdt)
-    second_step = make_step(
-        "Second derivative of a parametric curve",
-        rf"$\\frac{{d^2y}}{{dx^2}}$ is the derivative of $\\frac{{dy}}{{dx}}$ with respect to $x$, "
-        rf"so differentiate the slope with respect to \${name}$ and divide by "
-        rf"$\\frac{{dx}}{{d{name}}}$ again.",
-        [
-            rf"\\frac{{d^2y}}{{dx^2}} = \\frac{{\\frac{{d}}{{d{name}}}\\left(\\frac{{dy}}{{dx}}\\right)}}{{dx/d{name}}}",
-            to_latex(second),
-        ],
-    )
-    results = [
-        {"label": "Slope", "latex": rf"\\frac{{dy}}{{dx}} = {to_latex(slope)}"},
-        {"label": "Second derivative", "latex": rf"\\frac{{d^2y}}{{dx^2}} = {to_latex(second)}"},
-    ]
-    steps = [slope_step, second_step]
-    if curve["at"] is not None:
-        step, result = tangent_at(curve, curve["at"])
-        steps.append(step)
-        results.append(result)
-    return steps, results
-
-
-def tangent_at(curve, at):
-    p = curve["parameter"]
-    name = to_latex(p)
-    x0, y0 = (sympy.simplify(coordinate.subs(p, at)) for coordinate in (curve["x"], curve["y"]))
-    dx0, dy0 = (sympy.simplify(derivative.subs(p, at)) for derivative in (curve["dxdt"], curve["dydt"]))
-    curve["point"] = (x0, y0, dx0, dy0)
-    point = rf"\\left({to_latex(x0)}, {to_latex(y0)}\\right)"
-    at_text = rf"{name} = {to_latex(at)}"
-    if dx0 == 0 and dy0 == 0:
-        explanation = rf"Both $\\frac{{dx}}{{d{name}}}$ and $\\frac{{dy}}{{d{name}}}$ are $0$ here, so the formula gives $\\frac{{0}}{{0}}$ and doesn't decide the slope."
-        latex = r"\\frac{dy}{dx} \\text{ is undefined } \\left(\\tfrac{0}{0}\\right)"
-    elif dx0 == 0:
-        explanation = rf"$\\frac{{dx}}{{d{name}}} = 0$ but $\\frac{{dy}}{{d{name}}} \\ne 0$: the curve moves straight up or down here, so the tangent is vertical."
-        latex = r"\\text{vertical tangent}"
-    else:
-        value = sympy.simplify(dy0 / dx0)
-        explanation = (
-            rf"Substitute \${to_latex(at)}$ for \${name}$ in $\\frac{{dy}}{{dx}}$. The curve is at "
-            rf"\${point}$ there."
-        )
-        latex = rf"\\frac{{dy}}{{dx}} = {latex_value(value)}"
-        if value == 0:
-            explanation += " The slope is $0$, so the tangent is horizontal."
-    # One chain: the slope at the point, the quotient of the rates there, its value.
-    math = (
-        [
-            rf"\\left.\\frac{{dy}}{{dx}}\\right|_{{{at_text}}}",
-            rf"\\frac{{{to_latex(dy0)}}}{{{to_latex(dx0)}}}",
-            latex_value(sympy.simplify(dy0 / dx0)),
-        ]
-        if dx0 != 0
-        else [latex]
-    )
-    step = make_step("Slope at a point", explanation, math)
-    return step, {"label": "Slope at the point", "latex": rf"{at_text}: \\quad {latex}"}
-
-
-# ------------------------------------------------------------ the arc length
-
-
-def half_angle_form(speed_squared, parameter):
-    """(c, g, identity) with √(speed²) = c |g|, from a half-angle identity, or None.
-
-    1 − cos u = 2 sin²(u/2), 1 + cos u = 2 cos²(u/2), and
-    1 ± sin u = (sin(u/2) ± cos(u/2))², each times a positive constant A.
-    """
-    a = sympy.Wild("a", exclude=[parameter])
-    b = sympy.Wild("b", exclude=[parameter])
-    u = sympy.Wild("u")
-    for trig in (sympy.cos, sympy.sin):
-        match = sympy.expand(speed_squared).match(a + b * trig(u))
-        if not match or match[b] == 0 or not match[u].has(parameter) or not match[a].is_positive:
-            continue
-        amount, coefficient, angle = match[a], match[b], match[u]
-        half = angle / 2
-        if trig is sympy.cos and coefficient == -amount:
-            return sympy.sqrt(2 * amount), sympy.sin(half), rf"1 - \\cos u = 2\\sin^2\\frac{{u}}{{2}}"
-        if trig is sympy.cos and coefficient == amount:
-            return sympy.sqrt(2 * amount), sympy.cos(half), rf"1 + \\cos u = 2\\cos^2\\frac{{u}}{{2}}"
-        if trig is sympy.sin and coefficient == amount:
-            return (
-                sympy.sqrt(amount),
-                sympy.sin(half) + sympy.cos(half),
-                r"1 + \\sin u = \\left(\\sin\\frac{u}{2} + \\cos\\frac{u}{2}\\right)^2",
-            )
-        if trig is sympy.sin and coefficient == -amount:
-            return (
-                sympy.sqrt(amount),
-                sympy.sin(half) - sympy.cos(half),
-                r"1 - \\sin u = \\left(\\sin\\frac{u}{2} - \\cos\\frac{u}{2}\\right)^2",
-            )
-    return None
-
-
-def sign_change_points(integrand, parameter, low, high):
-    """Where the inside of each |·| in integrand is 0 strictly between low and high."""
-    points = set()
-    for absolute in integrand.atoms(sympy.Abs):
-        zeros = sympy.solveset(absolute.args[0], parameter, sympy.Interval.open(low, high))
-        if zeros is sympy.S.EmptySet:
-            continue  # No sign change inside the interval.
-        if not isinstance(zeros, sympy.FiniteSet):
-            return None
-        points.update(zeros)
-    return sorted(points, key=lambda point: float(sympy.N(point)))
-
-
-def without_absolute_values(integrand, parameter, low, high):
-    """integrand on (low, high), where no |·| inside changes sign, without the |·|."""
-    middle = (low + high) / 2
-    replacements = {}
-    for absolute in integrand.atoms(sympy.Abs):
-        inside = absolute.args[0]
-        sign = 1 if float(sympy.N(inside.subs(parameter, middle))) >= 0 else -1
-        replacements[absolute] = sign * inside
-    return integrand.xreplace(replacements)
-
-
-def integrate_piece(integrand, parameter, low, high, general=False):
-    """∫ integrand from low to high: the step and the value. Without general,
-    only the textbook rules are tried, and InputError means they found no
-    antiderivative."""
-    antiderivative, _, steps, _ = find_antiderivative(integrand, parameter, general=general)
-    math, value = evaluate_between(integrand, antiderivative, low, high, parameter)
-    step = make_step(
-        "Fundamental Theorem of Calculus",
-        r"Find an antiderivative and subtract its values at the ends of the interval.",
-        math,
-        [antiderivative_step(integrand, parameter, antiderivative, steps)],
-    )
-    return step, value
-
-
-def arc_length(curve):
-    """The arc length: its step, its result for display, its check, and its exact
-    value (None when it was only computed numerically)."""
-    p, (low, high) = curve["parameter"], curve["interval"]
-    name = to_latex(p)
-    if curve["kind"] == "polar":
-        r = curve["r"]
-        speed_squared = sympy.simplify(r**2 + sympy.diff(r, p) ** 2)
-        formula = (
-            rf"L = \\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} \\sqrt{{r^2 + \\left(\\frac{{dr}}{{d\\theta}}\\right)^2}}\\, d\\theta"
-        )
-        explanation = (
-            r"For a polar curve, $\\left(\\frac{dx}{d\\theta}\\right)^2 + \\left(\\frac{dy}{d\\theta}\\right)^2 "
-            r"= r^2 + \\left(\\frac{dr}{d\\theta}\\right)^2$, so the length is the integral of its square "
-            r"root."
-        )
-    elif curve["kind"] == "space":
-        speed_squared = sympy.simplify(curve["dxdt"] ** 2 + curve["dydt"] ** 2 + curve["dzdt"] ** 2)
-        formula = (
-            rf"L = \\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} |\\mathbf{{r}}'({name})|\\, d{name} = "
-            rf"\\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} \\sqrt{{x'^2 + y'^2 + z'^2}}\\, d{name}"
-        )
-        explanation = (
-            rf"Over a short time $d{name}$ the point moves $\\sqrt{{dx^2 + dy^2 + dz^2}}$ (the "
-            rf"Pythagorean theorem in space), so the length is the integral of the speed "
-            rf"$|\\mathbf{{r}}'({name})|$."
-        )
-    else:
-        speed_squared = sympy.simplify(curve["dxdt"] ** 2 + curve["dydt"] ** 2)
-        formula = (
-            rf"L = \\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} \\sqrt{{\\left(\\frac{{dx}}{{d{name}}}\\right)^2 + \\left(\\frac{{dy}}{{d{name}}}\\right)^2}}\\, d{name}"
-        )
-        explanation = (
-            rf"Over a short time $d{name}$ the point moves $\\sqrt{{dx^2 + dy^2}}$ (the Pythagorean "
-            rf"theorem), so the length is the integral of its speed, $\\sqrt{{\\left(\\frac{{dx}}{{d{name}}}\\right)^2 + \\left(\\frac{{dy}}{{d{name}}}\\right)^2}}$."
-        )
-    substeps = []
-    integrand = sympy.sqrt(speed_squared)
-    form = half_angle_form(speed_squared, p)
-    if form is not None:
-        constant, inside, identity = form
-        integrand = constant * sympy.Abs(inside)
-        substeps.append(
-            make_step(
-                "Half-angle identity",
-                rf"Use \${identity}$ to write the expression under the root as a perfect square. "
-                r"The root of a square is an absolute value: $\\sqrt{g^2} = |g|$.",
-                [rf"\\sqrt{{{to_latex(speed_squared)}}}", to_latex(integrand)],
-            )
-        )
-    else:
-        # Textbook curves are often built so that the speed squared is a
-        # perfect square, like e^(2t) + e^(-2t) + 2 = (e^t + e^(-t))², which
-        # factoring reveals. SymPy's simplify writes that one as
-        # 2 cosh(2t) + 2, so it is also factored in exponentials.
-        factored = min(
-            (
-                sympy.sqrt(sympy.factor(form))
-                for form in (speed_squared, speed_squared.rewrite(sympy.exp))
-            ),
-            key=sympy.count_ops,
-        )
-        if sympy.count_ops(factored) < sympy.count_ops(integrand):
-            integrand = factored
-            substeps.append(
-                make_step(
-                    "Perfect square",
-                    r"The expression under the root factors into a perfect square (times a square), "
-                    r"so the root simplifies: $\\sqrt{g^2} = |g|$, which is just $g$ where $g > 0$.",
-                    [rf"\\sqrt{{{to_latex(speed_squared)}}}", to_latex(integrand)],
-                )
-            )
-    math = [formula, to_latex(sympy.Integral(integrand, (p, low, high)))]
-    points = sign_change_points(integrand, p, low, high)
-    ends = [low, *(points or []), high]
-    value = None
-    # Long integrands are left to numerical integration: the textbook rules can
-    # spend many seconds on them and practically never succeed.
-    if points is not None and sympy.count_ops(integrand) <= EXACT_LENGTH_LIMIT:
-        piece_steps = []
-        if points:
-            piece_steps.append(
-                make_step(
-                    "Split where the sign changes",
-                    r"$|g| = g$ where $g \\ge 0$ and $|g| = -g$ where $g < 0$, so split the interval "
-                    rf"where the expression inside $|\\cdot|$ is $0$: at \${', '.join(to_latex(point) for point in points)}$.",
-                    [],
-                )
-            )
-        try:
-            pieces = []
-            for piece_low, piece_high in zip(ends, ends[1:]):
-                piece = without_absolute_values(integrand, p, piece_low, piece_high)
-                step, piece_value = integrate_piece(piece, p, piece_low, piece_high)
-                piece_steps.append(step)
-                pieces.append(piece_value)
-            value = sympy.simplify(sum(pieces))
-            math.append(latex_value(value))
-            substeps.extend(piece_steps)
-        except InputError:
-            value = None
-    as_numeric = numeric_function(sympy.sqrt(speed_squared), (p,))
-    # Integrated piece by piece too: across a kink, where |g| turns at 0,
-    # numerical integration loses accuracy.
-    numeric = numerical_integral(as_numeric, ends)
-    if value is None:
-        if numeric is None:
-            raise InputError("The arc length couldn't be computed, even numerically.")
-        shown = mpmath.nstr(numeric, 10)
-        math.append(rf"\\approx {shown}")
-        note = (
-            "No antiderivative was found with the textbook rules (most arc length integrals "
-            "have none), so the length was computed numerically."
-        )
-        substeps.append(make_step("Numerical integration", note, []))
-        check = numerical_cross_check(as_numeric, ends, numeric, shown)
-        result = rf"L \\approx {shown}"
-    else:
-        check = compare("integration", numeric, value)
-        result = rf"L = {latex_value(value)}"
-    step = make_step("Arc length", explanation, math, substeps)
-    return step, {"label": "Arc length", "latex": result}, check, value
-
-
-# ------------------------------------------------------------------ the area
-
-
-def area(curve):
-    """The area: its step, its result for display, its check, and its exact value."""
-    p, (low, high) = curve["parameter"], curve["interval"]
-    name = to_latex(p)
-    if curve["kind"] == "polar":
-        integrand = sympy.simplify(curve["r"] ** 2 / 2)
-        rule = "Area of a polar region"
-        explanation = (
-            r"The region swept by the radius from $\\theta = a$ to $\\theta = b$ is made of thin "
-            r"sectors, each of area $\\frac{1}{2} r^2 \\, d\\theta$ (a circle's sector of angle "
-            r"$d\\theta$), so $A = \\frac{1}{2}\\int_a^b r^2 \\, d\\theta$."
-        )
-        formula = rf"A = \\frac{{1}}{{2}}\\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} r^2 \\, d\\theta"
-        label = "Area swept by the radius"
-    else:
-        integrand = sympy.simplify(curve["y"] * curve["dxdt"])
-        rule = "Area under a parametric curve"
-        explanation = (
-            rf"The area between a curve and the $x$-axis is $\\int y\\, dx$. With $dx = \\frac{{dx}}{{d{name}}}\\, d{name}$ "
-            rf"it becomes an integral in \${name}$. It is a signed area: it counts as negative "
-            r"where the curve runs right to left or below the axis."
-        )
-        formula = rf"A = \\int y \\, dx = \\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} y \\, \\frac{{dx}}{{d{name}}} \\, d{name}"
-        label = "Area under the curve"
-    # Area integrands are polynomials and powers of trig functions, which the
-    # general algorithms handle quickly.
-    step, value = integrate_piece(integrand, p, low, high, general=True)
-    value = sympy.simplify(value)
-    as_numeric = numeric_function(integrand, (p,))
-    check = compare("integration", numerical_integral(as_numeric, [low, high]), value)
-    step = make_step(
-        rule,
-        explanation,
-        [formula, to_latex(sympy.Integral(integrand, (p, low, high))), latex_value(value)],
-        [step],
-    )
-    return step, {"label": label, "latex": rf"A = {latex_value(value)}"}, check, value
-
-
-# ------------------------------------------------------------------ checking
-
-
-def numerical_integral(as_numeric, points, method="tanh-sinh"):
-    """The integral of as_numeric over [points[0], points[-1]], one piece between
-    each pair of neighboring points, by mpmath's tanh-sinh or Gauss-Legendre
-    quadrature."""
-    with mpmath.workdps(CHECK_DIGITS):
-        try:
-            value = mpmath.quad(
-                lambda point: real_number(as_numeric(point)),
-                [mpmath.mpf(str(sympy.N(point, CHECK_DIGITS))) for point in points],
-                method=method,
-            )
-        except Exception:  # Numerical integration fails in many ways; all mean "no value".
-            return None
-    return None if isinstance(value, mpmath.mpc) else value
-
-
-def numerical_cross_check(as_numeric, points, numeric, shown):
-    """A length with no exact form is checked by computing it again with a
-    different method: tanh-sinh and Gauss-Legendre quadrature place their points
-    and weigh them differently, so a mistake in one is very unlikely to repeat
-    in the other."""
-    other = numerical_integral(as_numeric, points, method="gauss-legendre")
-    if other is not None and abs(other - numeric) <= CHECK_TOLERANCE * max(1, abs(numeric)):
-        return {
-            "status": "verified",
-            "detail": f"There is no exact form, so the length was computed numerically: two "
-            f"different methods (tanh-sinh and Gauss–Legendre quadrature) agree on \${shown}$.",
-        }
-    return {
-        "status": "unchecked",
-        "detail": "There is no exact form, and two different numerical methods didn't agree "
-        "closely enough to confirm the decimal.",
-    }
-
-
-def compare(kind, numeric, exact):
-    if numeric is None:
-        return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}
-    with mpmath.workdps(CHECK_DIGITS):
-        expected = mpmath.mpmathify(sympy.N(exact, CHECK_DIGITS))
-        shown = mpmath.nstr(numeric, 10).removesuffix(".0")
-        if isinstance(expected, mpmath.mpc):
-            return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}
-        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):
-            return {
-                "status": "verified",
-                "detail": f"A numerical {kind} gives \${shown}$, matching the exact answer.",
-            }
-    return {
-        "status": "failed",
-        "detail": f"A numerical {kind} gives \${shown}$, which doesn't match. Treat this answer with caution.",
-    }
-
-
-# ------------------------------------------------------------------ the graph
-
-
-def graph_samples(curve):
-    p, (low, high) = curve["parameter"], curve["interval"]
-    x_at, y_at = (numeric_function(coordinate, (p,)) for coordinate in (curve["x"], curve["y"]))
-    a, b = float(sympy.N(low)), float(sympy.N(high))
-    parameters = [a + (b - a) * index / (GRAPH_POINTS - 1) for index in range(GRAPH_POINTS)]
-
-    def value(function, point):
-        try:
-            number = real_number(mpmath.mpmathify(function(mpmath.mpf(point))))
-        except Exception:  # Undefined points raise many error types; all mean "no point here".
-            return None
-        if isinstance(number, mpmath.mpc) or not mpmath.isfinite(number):
-            return None
-        return round(float(number), 6)
-
-    xs = [value(x_at, point) for point in parameters]
-    ys = [value(y_at, point) for point in parameters]
-    graph = {"x": xs, "y": ys, "point": None, "tangent": None, "kind": curve["kind"]}
-    if curve.get("point"):
-        x0, y0, dx0, dy0 = (float(sympy.N(part)) for part in curve["point"])
-        graph["point"] = [x0, y0]
-        speed = (dx0**2 + dy0**2) ** 0.5
-        if speed > 0:
-            # A tangent segment as long as a fifth of the curve's width or height.
-            spread = max(
-                (max(v for v in values if v is not None) - min(v for v in values if v is not None))
-                for values in (xs, ys)
-            )
-            reach = 0.2 * spread / speed
-            graph["tangent"] = {
-                "x": [x0 - reach * dx0, x0 + reach * dx0],
-                "y": [y0 - reach * dy0, y0 + reach * dy0],
-            }
-    return graph
-
-
-# ------------------------------------------------- the lesson picture: a trace
-
-TRACE_STEPS = 120
-
-
-def trace(request):
-    """A point moving along the curve: for each of TRACE_STEPS + 1 parameter
-    values, the point, its velocity (dx/dt, dy/dt), and the length traced and
-    area swept so far, computed numerically piece by piece."""
-    curve = curve_from_request(request)
-    p, (low, high) = curve["parameter"], curve["interval"]
-    functions = {
-        name: numeric_function(curve[name], (p,)) for name in ("x", "y", "dxdt", "dydt")
-    }
-    speed = numeric_function(sympy.sqrt(curve["dxdt"] ** 2 + curve["dydt"] ** 2), (p,))
-    if curve["kind"] == "polar":
-        sweep = numeric_function(curve["r"] ** 2 / 2, (p,))
-    else:
-        sweep = numeric_function(curve["y"] * curve["dxdt"], (p,))
-    a, b = float(sympy.N(low)), float(sympy.N(high))
-    parameters = [a + (b - a) * index / TRACE_STEPS for index in range(TRACE_STEPS + 1)]
-
-    def number(function, point):
-        try:
-            value = real_number(mpmath.mpmathify(function(mpmath.mpf(point))))
-        except Exception:  # Undefined points raise many error types; all mean "no value".
-            return None
-        if isinstance(value, mpmath.mpc) or not mpmath.isfinite(value):
-            return None
-        return round(float(value), 6)
-
-    length = area_so_far = 0.0
-    samples = []
-    for index, point in enumerate(parameters):
-        if index > 0:
-            piece = [parameters[index - 1], point]
-            length += float(numerical_integral(speed, piece) or 0)
-            area_so_far += float(numerical_integral(sweep, piece) or 0)
-        samples.append(
-            {
-                "parameter": round(point, 6),
-                **{name: number(function, point) for name, function in functions.items()},
-                "length": round(length, 6),
-                "area": round(area_so_far, 6),
-            }
-        )
-    return {
-        "ok": True,
-        "operation": "trace",
-        "kind": curve["kind"],
-        "samples": samples,
-        "curve": graph_samples(curve),
-    }
-
-
-# ---------------------------------------------------------------- the request
-
-
-def build_curve(kind, x, y, r, interval, at=None):
-    """Everything the steps need about a curve. For a polar curve, x and y are
-    r cos θ and r sin θ; the parameter is θ for a polar curve and t otherwise."""
-    parameter = THETA if kind == "polar" else T
-    return {
-        "kind": kind,
-        "parameter": parameter,
-        "x": x,
-        "y": y,
-        "r": r,
-        "dxdt": sympy.diff(x, parameter),
-        "dydt": sympy.diff(y, parameter),
-        "interval": interval,
-        "at": at,
-        "point": None,
-    }
-
-
-def curve_from_request(request):
-    """The curve a request describes: its kind, its function(s) as LaTeX, its
-    interval, and an optional parameter value for a tangent."""
-    kind = request.get("curveKind")
-    if kind not in ("parametric", "polar"):
-        raise InputError("Choose a parametric curve or a polar curve.")
-    parameter = THETA if kind == "polar" else T
-    if kind == "polar":
-        r = parse_curve_function(request.get("expression"), "r(θ)", parameter)
-        x, y = r * sympy.cos(parameter), r * sympy.sin(parameter)
-    else:
-        r = None
-        x = parse_curve_function(request.get("xExpression"), "x(t)", parameter)
-        y = parse_curve_function(request.get("yExpression"), "y(t)", parameter)
-    low, high = parse_interval(request.get("lower"), request.get("upper"), parameter)
-    at_text = request.get("at")
-    at = None
-    if isinstance(at_text, str) and at_text.strip():
-        at = parse_bound(at_text, f"tangent's {to_text(parameter)}")
-        if at.is_infinite:
-            raise InputError(f"The tangent's {to_text(parameter)} must be a number.")
-    return build_curve(kind, x, y, r, (low, high), at)
-
-
-def analyze_curve(request):
-    curve = curve_from_request(request)
-    parameter, (low, high) = curve["parameter"], curve["interval"]
-    if curve["kind"] == "polar":
-        curve_latex = rf"r = {to_latex(curve['r'])}"
-    else:
-        curve_latex = rf"x = {to_latex(curve['x'])}, \\quad y = {to_latex(curve['y'])}"
-    name = to_latex(parameter)
-    report("Finding the slope…")
-    steps, results = slope_steps(curve)
-    report("Finding the arc length…")
-    length_step, length_result, length_check, _ = arc_length(curve)
-    report("Finding the area…")
-    area_step, area_result, area_check, _ = area(curve)
-    return {
-        "ok": True,
-        "operation": "curve",
-        "curveLatex": rf"{curve_latex}, \\quad {to_latex(low)} \\le {name} \\le {to_latex(high)}",
-        "results": [*results, length_result, area_result],
-        "checks": [
-            {"label": "Arc length", "check": length_check},
-            {"label": "Area", "check": area_check},
-        ],
-        "steps": [*steps, length_step, area_step],
-        "graph": graph_samples(curve),
-    }
-`,"./python/mathlab/definite.py":`"""Definite integrals, proper and improper.
-
-A proper integral is F(b) − F(a) by the Fundamental Theorem of Calculus. An
-improper one (an infinite bound, or a point where f breaks down) is split so
-each piece has one problem end, and that end becomes a limit; the integral
-converges only if every limit is finite. Answers are checked independently:
-convergent values against a high-precision numerical integration, divergence
-against SymPy's own definite integration.
-"""
-
-import re
-
-import mpmath
-import sympy
-from sympy import AccumBounds
-from sympy.calculus.util import continuous_domain
-
-from mathlab.antiderivatives import find_antiderivative
-from mathlab.checks import numeric_function, plot_value, real_value
-from mathlab.expressions import X, InputError, to_latex
-from mathlab.latex_input import latex_to_text
-from mathlab.parsing import constants_in, parse_function
-from mathlab.progress import report
-from mathlab.steps import make_step
-
-CHECK_DIGITS = 30
-# The exact answer and the numerical integration must agree this closely.
-CHECK_TOLERANCE = mpmath.mpf("1e-10")
-GRAPH_POINT_COUNT = 401
-# How far the graph reaches toward an infinite bound.
-GRAPH_REACH = 10
-# The moving bound in a limit.
-T = sympy.Symbol("t", real=True)
-SIGNED_INFINITY = re.compile(r"^\\s*([+-]?)\\s*(\\\\infty|∞|oo|inf|infinity)\\s*$", re.IGNORECASE)
-INFINITY = re.compile(r"\\\\infty|∞|\\b(oo|inf|infinity)\\b", re.IGNORECASE)
-
-
-def parse_bound(text, name):
-    """A bound typed in the math box: an exact real number, ∞, or −∞."""
-    if not isinstance(text, str) or text.strip() == "":
-        raise InputError(f"Enter the {name} bound.")
-    infinite = SIGNED_INFINITY.match(text)
-    if infinite:
-        return -sympy.oo if infinite.group(1) == "-" else sympy.oo
-    if INFINITY.search(text):
-        raise InputError(f"The {name} bound: use ∞ or −∞ on its own, or a number.")
-    try:
-        bound = parse_function(latex_to_text(text), ())
-    except InputError as error:
-        raise InputError(f"The {name} bound: {error}") from error
-    if bound.free_symbols or bound.is_real is not True or bound.is_finite is not True:
-        raise InputError(
-            f"The {name} bound must be a number (like 0, 1/2, π, or π/2), ∞, or −∞."
-        )
-    return bound
-
-
-def bound_text(bound):
-    """A bound for plain text, like 1, π/2, ∞, or −∞."""
-    if bound == sympy.oo:
-        return "∞"
-    if bound == -sympy.oo:
-        return "−∞"
-    return str(bound).replace("pi", "π").replace("-", "−")
-
-
-def problem_points(function, low, high):
-    """The finite points of [low, high] where f isn't continuous, in order."""
-    report("Looking for points where the function breaks down…")
-    interval = sympy.Interval(low, high)
-    try:
-        gaps = sympy.Complement(interval, continuous_domain(function, X, interval))
-    except Exception:  # SymPy can't always tell; the independent check still guards the answer.
-        return []
-    if gaps == sympy.S.EmptySet:
-        return []
-    if not isinstance(gaps, sympy.FiniteSet):
-        raise InputError(
-            f"The function isn't defined, as a real number, on part of the interval from "
-            f"{bound_text(low)} to {bound_text(high)}, so this integral has no value."
-        )
-    return sorted(gaps, key=float)
-
-
-def regular_point_between(start, end):
-    """A point strictly inside (start, end), for splitting a piece in two."""
-    if start == -sympy.oo and end == sympy.oo:
-        return sympy.Integer(0)
-    if start == -sympy.oo:
-        return end - 1
-    if end == sympy.oo:
-        return start + 1
-    return (start + end) / 2
-
-
-def split_into_pieces(low, high, points):
-    """Pieces of [low, high], each with at most one problem end."""
-    cuts = [low, *[point for point in points if low < point < high], high]
-
-    def is_problem(end):
-        return end.is_infinite or end in points
-
-    pieces = []
-    for start, end in zip(cuts, cuts[1:]):
-        if is_problem(start) and is_problem(end):
-            middle = regular_point_between(start, end)
-            pieces += [(start, middle), (middle, end)]
-        else:
-            pieces.append((start, end))
-    return pieces
-
-
-def endpoint_value(antiderivative, point, direction, variable=X):
-    """F at a regular end, approaching from inside the piece if F isn't defined right there."""
-    value = antiderivative.subs(variable, point)
-    if value.has(sympy.nan, sympy.zoo) or value.is_finite is False:
-        value = sympy.limit(antiderivative, variable, point, direction)
-    return value
-
-
-def subtracted_latex(value):
-    """A value after a minus sign, in parentheses when it is a sum or negative."""
-    latex = to_latex(value)
-    if isinstance(value, sympy.Add) or value.could_extract_minus_sign():
-        return rf"\\left({latex}\\right)"
-    return latex
-
-
-def limit_of(antiderivative, point, direction):
-    """The one-sided limit of F at a problem end, or why it doesn't exist.
-
-    Returns (value, reason): reason is None for a finite limit; otherwise it
-    says why the piece diverges, and value is ±∞, or None if the limit
-    doesn't exist.
-    """
-    if point.is_infinite:
-        value = sympy.limit(antiderivative, X, point)
-    else:
-        value = sympy.limit(antiderivative, X, point, direction)
-    if isinstance(value, sympy.Limit) or value.has(sympy.Limit):
-        raise InputError("SymPy couldn't work out a limit this integral needs.")
-    if isinstance(value, AccumBounds) or value.has(sympy.nan, sympy.zoo):
-        return None, "$F(t)$ keeps oscillating and has no limit"
-    if value.is_infinite:
-        return value, rf"$F(t) \\to {to_latex(value)}$"
-    return value, None
-
-
-def limit_latex(point, direction):
-    target = to_latex(point) if point.is_infinite else f"{to_latex(point)}^{{{direction}}}"
-    return rf"\\lim_{{t \\to {target}}}"
-
-
-def improper_piece(function, antiderivative, start, end, points):
-    """One piece with a problem end: the step, and its value (None if it diverges)."""
-    upper_is_problem = end.is_infinite or end in points
-    moving, fixed = (end, start) if upper_is_problem else (start, end)
-    direction = "-" if upper_is_problem else "+"
-    side = "upper" if upper_is_problem else "lower"
-    lim = limit_latex(moving, direction)
-    target = lim.removeprefix(r"\\lim_{").removesuffix("}")
-    if moving.is_infinite:
-        reason = (
-            rf"The {side} bound is \${to_latex(moving)}$, so replace it with $t$ and let "
-            rf"\${target}$."
-        )
-    else:
-        reason = (
-            rf"$f$ breaks down at $x = {to_latex(moving)}$, the {side} end of this piece, so "
-            rf"replace that end with $t$ and let \${target}$."
-        )
-    fixed_value = endpoint_value(antiderivative, fixed, "+" if upper_is_problem else "-")
-    limit_value, divergence = limit_of(antiderivative, moving, direction)
-
-    at_t = to_latex(antiderivative.subs(X, T))
-    if upper_is_problem:
-        inner = sympy.Integral(function, (X, start, T))
-        bracket = rf"\\left[{to_latex(antiderivative)}\\right]_{{{to_latex(start)}}}^{{t}}"
-        difference = rf"\\left({at_t} - {subtracted_latex(fixed_value)}\\right)"
-    else:
-        inner = sympy.Integral(function, (X, T, end))
-        bracket = rf"\\left[{to_latex(antiderivative)}\\right]_{{t}}^{{{to_latex(end)}}}"
-        at_t_subtracted = subtracted_latex(antiderivative.subs(X, T))
-        difference = rf"\\left({to_latex(fixed_value)} - {at_t_subtracted}\\right)"
-    math = [
-        to_latex(sympy.Integral(function, (X, start, end))),
-        f"{lim} {to_latex(inner)}",
-        f"{lim} {bracket}",
-        f"{lim} {difference}",
-    ]
-    if limit_value is None:
-        piece_value = None
-        math.append(r"\\text{does not exist}")
-    elif upper_is_problem:
-        piece_value = sympy.simplify(limit_value - fixed_value)
-    else:
-        piece_value = sympy.simplify(fixed_value - limit_value)
-    if piece_value is not None:
-        math.append(to_latex(piece_value))
-    if divergence is None:
-        verdict = "The limit is finite, so this piece converges."
-    else:
-        verdict = rf"As \${target}$, {divergence}, so this piece diverges."
-    step = make_step("Improper integral", f"{reason} {verdict}", math)
-    # A diverging piece has no value to add.
-    return step, (piece_value if divergence is None else None)
-
-
-def evaluate_between(function, antiderivative, low, high, variable=X):
-    """F(high) − F(low), written out: the equation's parts and the value.
-
-    The bounds may contain other variables, as an inner integral's do.
-    """
-    at_high = endpoint_value(antiderivative, high, "-", variable)
-    at_low = endpoint_value(antiderivative, low, "+", variable)
-    value = sympy.simplify(at_high - at_low)
-    difference = f"{to_latex(at_high)} - {subtracted_latex(at_low)}"
-    math = [
-        to_latex(sympy.Integral(function, (variable, low, high))),
-        rf"\\left[{to_latex(antiderivative)}\\right]_{{{to_latex(low)}}}^{{{to_latex(high)}}}",
-        difference,
-    ]
-    if to_latex(value) != difference:
-        math.append(to_latex(value))
-    return math, value
-
-
-def proper_step(function, antiderivative, low, high):
-    """F(high) − F(low), for an interval where f is continuous: the step and the value."""
-    math, value = evaluate_between(function, antiderivative, low, high)
-    step = make_step(
-        "Fundamental Theorem of Calculus",
-        r"Evaluate the antiderivative at the upper bound and subtract its value at the lower "
-        r"bound: $\\int_a^b f(x)\\,dx = F(b) - F(a)$.",
-        math,
-    )
-    return step, value
-
-
-def mpmath_point(point):
-    if point == sympy.oo:
-        return mpmath.inf
-    if point == -sympy.oo:
-        return -mpmath.inf
-    return mpmath.mpf(str(sympy.N(point, CHECK_DIGITS)))
-
-
-def sympy_definite(function, low, high):
-    """SymPy's own definite integration, as an independent opinion, or None."""
-    try:
-        result = sympy.integrate(function, (X, low, high))
-    except Exception:  # Its algorithms fail in many ways; all mean "no opinion".
-        return None
-    return None if result.has(sympy.Integral) else result
-
-
-def check_convergent(function, cuts, value, low, high):
-    with mpmath.workdps(CHECK_DIGITS):
-        exact = real_value(lambda: sympy.N(value, CHECK_DIGITS))
-        try:
-            numeric = mpmath.quad(numeric_function(function), [mpmath_point(cut) for cut in cuts])
-        except Exception:  # Numerical integration fails in many ways; all mean "unchecked".
-            numeric = None
-        if exact is not None and numeric is not None and not isinstance(numeric, mpmath.mpc):
-            shown = mpmath.nstr(numeric, 10).removesuffix(".0")
-            if abs(numeric - exact) <= CHECK_TOLERANCE * max(1, abs(exact)):
-                return {
-                    "status": "verified",
-                    "detail": f"A high-precision numerical integration gives \${shown}$, "
-                    "matching the exact answer.",
-                }
-            if low.is_finite and high.is_finite:
-                return {
-                    "status": "failed",
-                    "detail": f"A numerical integration gives \${shown}$, which doesn't match. "
-                    "Treat this answer with caution.",
-                }
-    # Numerical integration over an infinite interval can struggle (slow, oscillating
-    # integrands), so ask SymPy's own definite integration instead.
-    other = sympy_definite(function, low, high)
-    if other is not None and other.is_finite and sympy.simplify(other - value) == 0:
-        return {
-            "status": "verified",
-            "detail": "SymPy's own definite integration, a different method, gives the same value.",
-        }
-    return {"status": "unchecked", "detail": "The value couldn't be confirmed by a second method."}
-
-
-def check_divergent(function, low, high):
-    other = sympy_definite(function, low, high)
-    if other is not None and (other.is_infinite or other.has(sympy.nan, sympy.zoo, AccumBounds)):
-        return {
-            "status": "verified",
-            "detail": "SymPy's own definite integration, a different method, also finds no "
-            "finite value.",
-        }
-    if other is not None and other.is_finite:
-        return {
-            "status": "failed",
-            "detail": f"SymPy's own definite integration gives \${to_latex(other)}$, which "
-            "disagrees. Treat this answer with caution.",
-        }
-    return {
-        "status": "unchecked",
-        "detail": "A divergent integral has no value to check numerically; the limits in the "
-        "steps show why it diverges.",
-    }
-
-
-def graph_samples(function, low, high):
-    """f around the interval, with the part of it that fits on the graph for shading."""
-    if low.is_finite and high.is_finite:
-        margin = max(0.25 * float(high - low), 0.5)
-        start, end = float(low) - margin, float(high) + margin
-    elif low.is_finite:
-        start, end = float(low) - 0.5, float(low) + GRAPH_REACH
-    elif high.is_finite:
-        start, end = float(high) - GRAPH_REACH, float(high) + 0.5
-    else:
-        start, end = -GRAPH_REACH, GRAPH_REACH
-    shade_from = float(low) if low.is_finite else start
-    shade_to = float(high) if high.is_finite else end
-    step = (end - start) / (GRAPH_POINT_COUNT - 1)
-    points = [start + step * index for index in range(GRAPH_POINT_COUNT)]
-    # Include the shading's ends, so it starts and stops exactly there.
-    xs = sorted({round(point, 6) for point in [*points, shade_from, shade_to]})
-    as_numeric = numeric_function(function)
-    values = [plot_value(lambda point=point: as_numeric(mpmath.mpf(point))) for point in xs]
-    return {"x": xs, "input": values, "area": [round(shade_from, 6), round(shade_to, 6)]}
-
-
-def graph_note(low, high, converges):
-    note = (
-        f"Shaded: the region between f(x) and the x-axis from {bound_text(low)} to "
-        f"{bound_text(high)}"
-    )
-    if low.is_infinite or high.is_infinite:
-        note += ", which goes on past the edge of the graph"
-    note += ". The integral adds the area above the axis and subtracts the area below it."
-    if not converges:
-        note += " Here that total has no finite value, so the integral diverges."
-    return note
-
-
-def definite_integral(function, lower_text, upper_text):
-    lower = parse_bound(lower_text, "lower")
-    upper = parse_bound(upper_text, "upper")
-    constants = constants_in(function, (X,))
-    if constants:
-        names = ", ".join(str(constant) for constant in constants)
-        raise InputError(
-            f"A definite integral needs a function of x alone, so its answer is a number. "
-            f"Remove {names}, or use Integrate for an antiderivative with constants."
-        )
-    reversed_bounds = (upper - lower).is_negative is True
-    low, high = (upper, lower) if reversed_bounds else (lower, upper)
-    integral = to_latex(sympy.Integral(function, (X, lower, upper)))
-    if low == high:
-        return result(integral, function, low, high, [], sympy.Integer(0), [low, high], False)
-
-    points = problem_points(function, low, high)
-    antiderivative, _, antiderivative_steps, _ = find_antiderivative(function)
-    steps = []
-    if reversed_bounds:
-        steps.append(
-            make_step(
-                "Swap the bounds",
-                r"Integrating from the larger bound to the smaller one gives the negative: "
-                r"$\\int_a^b f(x)\\,dx = -\\int_b^a f(x)\\,dx$.",
-                [integral, f"-{to_latex(sympy.Integral(function, (X, low, high)))}"],
-            )
-        )
-    steps.append(
-        make_step(
-            "Find an antiderivative",
-            r"Any antiderivative works, because the constant $C$ cancels in the subtraction, "
-            r"so take $C = 0$.",
-            [to_latex(sympy.Integral(function, X)), f"{to_latex(antiderivative)} + C"],
-            antiderivative_steps,
-        )
-    )
-
-    report("Evaluating the antiderivative at the bounds…")
-    pieces = split_into_pieces(low, high, points)
-    cuts = [low, *[end for _, end in pieces]]
-    if len(pieces) == 1 and not (low.is_infinite or high.is_infinite or points):
-        step, value = proper_step(function, antiderivative, low, high)
-        steps.append(step)
-        return result(integral, function, low, high, steps, value, cuts, reversed_bounds)
-
-    if len(pieces) > 1:
-        where = ", ".join(f"$x = {to_latex(point)}$" for point in cuts[1:-1])
-        steps.append(
-            make_step(
-                "Split the integral",
-                f"The integral is improper at more than one place, so split it at {where}. "
-                "It converges only if every piece converges.",
-                [
-                    to_latex(sympy.Integral(function, (X, low, high))),
-                    " + ".join(to_latex(sympy.Integral(function, (X, a, b))) for a, b in pieces),
-                ],
-            )
-        )
-    values = []
-    for start, end in pieces:
-        if (end.is_infinite or end in points) or (start.is_infinite or start in points):
-            step, value = improper_piece(function, antiderivative, start, end, points)
-        else:
-            step, value = proper_step(function, antiderivative, start, end)
-        steps.append(step)
-        values.append(value)
-    total = None if any(value is None for value in values) else sympy.simplify(sum(values))
-    return result(integral, function, low, high, steps, total, cuts, reversed_bounds)
-
-
-def result(integral, function, low, high, steps, value, cuts, reversed_bounds):
-    """The response: value is None when the integral diverges."""
-    converges = value is not None
-    if converges:
-        shown = -value if reversed_bounds else value
-        equation = f"{integral} = {to_latex(shown)}"
-        if not shown.is_Rational:
-            equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(shown, 15))), 6)}"
-        check = check_convergent(function, cuts, value, low, high)
-    else:
-        equation = rf"{integral} \\text{{ diverges}}"
-        check = check_divergent(function, low, high)
-    return {
-        "ok": True,
-        "operation": "definite",
-        "equationLatex": equation,
-        "converges": converges,
-        "check": check,
-        "steps": steps,
-        "stepsNote": None,
-        "graph": graph_samples(function, low, high),
-        "graphNote": graph_note(low, high, converges),
-    }
+`,"./python/mathlab/curves.py":`"""Parametric and polar curves: the slope, arc length, and area.\r
+\r
+A parametric curve is x = x(t), y = y(t) for a ≤ t ≤ b. A polar curve\r
+r = r(θ) is the parametric curve x = r cos θ, y = r sin θ with θ as the\r
+parameter, so both use the same slope and length formulas. Their areas\r
+differ: ∫ y dx under a parametric curve, ½∫ r² dθ inside a polar one.\r
+\r
+Arc length integrands, √((dx/dt)² + (dy/dt)²), rarely have antiderivatives,\r
+so only the textbook rules are tried (the general algorithms can run for\r
+minutes); textbook examples are built so that the square root simplifies,\r
+often with a half-angle identity. When no exact length is found, it is\r
+computed numerically and labeled that way.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.antiderivatives import find_antiderivative\r
+from mathlab.checks import numeric_function\r
+from mathlab.definite import evaluate_between, parse_bound\r
+from mathlab.double import antiderivative_step\r
+from mathlab.expressions import THETA, T, InputError, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.parsing import constants_in, parse_function\r
+from mathlab.progress import report\r
+from mathlab.region import real_number\r
+from mathlab.steps import make_step, separate\r
+\r
+CHECK_DIGITS = 15\r
+CHECK_TOLERANCE = mpmath.mpf("1e-9")\r
+GRAPH_POINTS = 401\r
+# An exact arc length is tried only for integrands with at most this many\r
+# operations. Textbook ones are short once simplified (measured: 4 for a\r
+# cycloid arch's 2|sin(t/2)|, 9 for the cardioid's, at most 9 in all); the\r
+# speed of ⟨1 + t³, te⁻ᵗ, sin 2t⟩ has 15, and the textbook rules spent six\r
+# seconds on it before failing.\r
+EXACT_LENGTH_LIMIT = 12\r
+\r
+\r
+def parse_curve_function(text, name, parameter):\r
+    if not isinstance(text, str) or text.strip() == "":\r
+        raise InputError(f"Enter {name}.")\r
+    try:\r
+        function = parse_function(latex_to_text(text), (parameter,))\r
+    except InputError as error:\r
+        raise InputError(f"{name}: {error}") from error\r
+    constants = constants_in(function, (parameter,))\r
+    if constants:\r
+        raise InputError(\r
+            f"{name} must use only {to_text(parameter)}, so the answers are numbers. "\r
+            f"Remove {', '.join(str(constant) for constant in constants)}."\r
+        )\r
+    return function\r
+\r
+\r
+def to_text(parameter):\r
+    return "θ" if parameter == THETA else "t"\r
+\r
+\r
+def parse_interval(lower_text, upper_text, parameter):\r
+    low, high = (\r
+        parse_bound(text, f"{name} {to_text(parameter)}")\r
+        for text, name in ((lower_text, "starting"), (upper_text, "ending"))\r
+    )\r
+    if low.is_infinite or high.is_infinite:\r
+        raise InputError("The interval must be finite, so the curve has a beginning and an end.")\r
+    if not (high - low).is_positive:\r
+        raise InputError(f"The starting {to_text(parameter)} must be less than the ending one.")\r
+    return low, high\r
+\r
+\r
+def latex_value(value):\r
+    """value in LaTeX, with a decimal after it when it isn't a whole number or fraction."""\r
+    text = to_latex(value)\r
+    if not value.is_Rational:\r
+        number = sympy.N(value, 15)\r
+        if number.is_real:\r
+            text += rf" \\approx {mpmath.nstr(mpmath.mpf(str(number)), 6)}"\r
+    return text\r
+\r
+\r
+# ---------------------------------------------------------------- the slope\r
+\r
+\r
+def slope_steps(curve):\r
+    """dy/dx and d²y/dx², and the slope at the chosen point if there is one."""\r
+    p, dxdt, dydt = curve["parameter"], curve["dxdt"], curve["dydt"]\r
+    name = to_latex(p)\r
+    slope = sympy.simplify(dydt / dxdt)\r
+    if curve["kind"] == "polar":\r
+        r, drdtheta = curve["r"], sympy.diff(curve["r"], p)\r
+        slope_step = make_step(\r
+            "Slope of a polar curve",\r
+            r"A polar curve is the parametric curve $x = r\\cos\\theta$, $y = r\\sin\\theta$, with "\r
+            r"$\\theta$ as the parameter. Differentiate both with the product rule, then divide.",\r
+            [\r
+                r"\\frac{dy}{dx} = \\frac{dy/d\\theta}{dx/d\\theta} = "\r
+                r"\\frac{\\frac{dr}{d\\theta}\\sin\\theta + r\\cos\\theta}"\r
+                r"{\\frac{dr}{d\\theta}\\cos\\theta - r\\sin\\theta}",\r
+                rf"\\frac{{\\left({to_latex(drdtheta)}\\right)\\sin\\theta + \\left({to_latex(r)}\\right)\\cos\\theta}}"\r
+                rf"{{\\left({to_latex(drdtheta)}\\right)\\cos\\theta - \\left({to_latex(r)}\\right)\\sin\\theta}}",\r
+                to_latex(slope),\r
+            ],\r
+        )\r
+    else:\r
+        slope_step = make_step(\r
+            "Slope of a parametric curve",\r
+            rf"By the chain rule, $\\frac{{dy}}{{d{name}}} = \\frac{{dy}}{{dx}} \\cdot \\frac{{dx}}{{d{name}}}$, "\r
+            rf"so wherever $\\frac{{dx}}{{d{name}}} \\ne 0$, divide.",\r
+            [\r
+                rf"\\frac{{dy}}{{dx}} = \\frac{{dy/d{name}}}{{dx/d{name}}}",\r
+                rf"\\frac{{{to_latex(dydt)}}}{{{to_latex(dxdt)}}}",\r
+                to_latex(slope),\r
+            ],\r
+        )\r
+    second = sympy.simplify(sympy.diff(slope, p) / dxdt)\r
+    second_step = make_step(\r
+        "Second derivative of a parametric curve",\r
+        rf"$\\frac{{d^2y}}{{dx^2}}$ is the derivative of $\\frac{{dy}}{{dx}}$ with respect to $x$, "\r
+        rf"so differentiate the slope with respect to \${name}$ and divide by "\r
+        rf"$\\frac{{dx}}{{d{name}}}$ again.",\r
+        [\r
+            rf"\\frac{{d^2y}}{{dx^2}} = \\frac{{\\frac{{d}}{{d{name}}}\\left(\\frac{{dy}}{{dx}}\\right)}}{{dx/d{name}}}",\r
+            to_latex(second),\r
+        ],\r
+    )\r
+    results = [\r
+        {"label": "Slope", "latex": rf"\\frac{{dy}}{{dx}} = {to_latex(slope)}"},\r
+        {"label": "Second derivative", "latex": rf"\\frac{{d^2y}}{{dx^2}} = {to_latex(second)}"},\r
+    ]\r
+    steps = [slope_step, second_step]\r
+    if curve["at"] is not None:\r
+        step, result = tangent_at(curve, curve["at"])\r
+        steps.append(step)\r
+        results.append(result)\r
+    return steps, results\r
+\r
+\r
+def tangent_at(curve, at):\r
+    p = curve["parameter"]\r
+    name = to_latex(p)\r
+    x0, y0 = (sympy.simplify(coordinate.subs(p, at)) for coordinate in (curve["x"], curve["y"]))\r
+    dx0, dy0 = (sympy.simplify(derivative.subs(p, at)) for derivative in (curve["dxdt"], curve["dydt"]))\r
+    curve["point"] = (x0, y0, dx0, dy0)\r
+    point = rf"\\left({to_latex(x0)}, {to_latex(y0)}\\right)"\r
+    at_text = rf"{name} = {to_latex(at)}"\r
+    if dx0 == 0 and dy0 == 0:\r
+        explanation = rf"Both $\\frac{{dx}}{{d{name}}}$ and $\\frac{{dy}}{{d{name}}}$ are $0$ here, so the formula gives $\\frac{{0}}{{0}}$ and doesn't decide the slope."\r
+        latex = r"\\frac{dy}{dx} \\text{ is undefined } \\left(\\tfrac{0}{0}\\right)"\r
+    elif dx0 == 0:\r
+        explanation = rf"$\\frac{{dx}}{{d{name}}} = 0$ but $\\frac{{dy}}{{d{name}}} \\ne 0$: the curve moves straight up or down here, so the tangent is vertical."\r
+        latex = r"\\text{vertical tangent}"\r
+    else:\r
+        value = sympy.simplify(dy0 / dx0)\r
+        explanation = (\r
+            rf"Substitute \${to_latex(at)}$ for \${name}$ in $\\frac{{dy}}{{dx}}$. The curve is at "\r
+            rf"\${point}$ there."\r
+        )\r
+        latex = rf"\\frac{{dy}}{{dx}} = {latex_value(value)}"\r
+        if value == 0:\r
+            explanation += " The slope is $0$, so the tangent is horizontal."\r
+    # One chain: the slope at the point, the quotient of the rates there, its value.\r
+    math = (\r
+        [\r
+            rf"\\left.\\frac{{dy}}{{dx}}\\right|_{{{at_text}}}",\r
+            rf"\\frac{{{to_latex(dy0)}}}{{{to_latex(dx0)}}}",\r
+            latex_value(sympy.simplify(dy0 / dx0)),\r
+        ]\r
+        if dx0 != 0\r
+        else [latex]\r
+    )\r
+    step = make_step("Slope at a point", explanation, math)\r
+    return step, {"label": "Slope at the point", "latex": rf"{at_text}: \\quad {latex}"}\r
+\r
+\r
+# ------------------------------------------------------------ the arc length\r
+\r
+\r
+def half_angle_form(speed_squared, parameter):\r
+    """(c, g, identity) with √(speed²) = c |g|, from a half-angle identity, or None.\r
+\r
+    1 − cos u = 2 sin²(u/2), 1 + cos u = 2 cos²(u/2), and\r
+    1 ± sin u = (sin(u/2) ± cos(u/2))², each times a positive constant A.\r
+    """\r
+    a = sympy.Wild("a", exclude=[parameter])\r
+    b = sympy.Wild("b", exclude=[parameter])\r
+    u = sympy.Wild("u")\r
+    for trig in (sympy.cos, sympy.sin):\r
+        match = sympy.expand(speed_squared).match(a + b * trig(u))\r
+        if not match or match[b] == 0 or not match[u].has(parameter) or not match[a].is_positive:\r
+            continue\r
+        amount, coefficient, angle = match[a], match[b], match[u]\r
+        half = angle / 2\r
+        if trig is sympy.cos and coefficient == -amount:\r
+            return sympy.sqrt(2 * amount), sympy.sin(half), rf"1 - \\cos u = 2\\sin^2\\frac{{u}}{{2}}"\r
+        if trig is sympy.cos and coefficient == amount:\r
+            return sympy.sqrt(2 * amount), sympy.cos(half), rf"1 + \\cos u = 2\\cos^2\\frac{{u}}{{2}}"\r
+        if trig is sympy.sin and coefficient == amount:\r
+            return (\r
+                sympy.sqrt(amount),\r
+                sympy.sin(half) + sympy.cos(half),\r
+                r"1 + \\sin u = \\left(\\sin\\frac{u}{2} + \\cos\\frac{u}{2}\\right)^2",\r
+            )\r
+        if trig is sympy.sin and coefficient == -amount:\r
+            return (\r
+                sympy.sqrt(amount),\r
+                sympy.sin(half) - sympy.cos(half),\r
+                r"1 - \\sin u = \\left(\\sin\\frac{u}{2} - \\cos\\frac{u}{2}\\right)^2",\r
+            )\r
+    return None\r
+\r
+\r
+def sign_change_points(integrand, parameter, low, high):\r
+    """Where the inside of each |·| in integrand is 0 strictly between low and high."""\r
+    points = set()\r
+    for absolute in integrand.atoms(sympy.Abs):\r
+        zeros = sympy.solveset(absolute.args[0], parameter, sympy.Interval.open(low, high))\r
+        if zeros is sympy.S.EmptySet:\r
+            continue  # No sign change inside the interval.\r
+        if not isinstance(zeros, sympy.FiniteSet):\r
+            return None\r
+        points.update(zeros)\r
+    return sorted(points, key=lambda point: float(sympy.N(point)))\r
+\r
+\r
+def without_absolute_values(integrand, parameter, low, high):\r
+    """integrand on (low, high), where no |·| inside changes sign, without the |·|."""\r
+    middle = (low + high) / 2\r
+    replacements = {}\r
+    for absolute in integrand.atoms(sympy.Abs):\r
+        inside = absolute.args[0]\r
+        sign = 1 if float(sympy.N(inside.subs(parameter, middle))) >= 0 else -1\r
+        replacements[absolute] = sign * inside\r
+    return integrand.xreplace(replacements)\r
+\r
+\r
+def integrate_piece(integrand, parameter, low, high, general=False):\r
+    """∫ integrand from low to high: the step and the value. Without general,\r
+    only the textbook rules are tried, and InputError means they found no\r
+    antiderivative."""\r
+    antiderivative, _, steps, _ = find_antiderivative(integrand, parameter, general=general)\r
+    math, value = evaluate_between(integrand, antiderivative, low, high, parameter)\r
+    step = make_step(\r
+        "Fundamental Theorem of Calculus",\r
+        r"Find an antiderivative and subtract its values at the ends of the interval.",\r
+        math,\r
+        [antiderivative_step(integrand, parameter, antiderivative, steps)],\r
+    )\r
+    return step, value\r
+\r
+\r
+def arc_length(curve):\r
+    """The arc length: its step, its result for display, its check, and its exact\r
+    value (None when it was only computed numerically)."""\r
+    p, (low, high) = curve["parameter"], curve["interval"]\r
+    name = to_latex(p)\r
+    if curve["kind"] == "polar":\r
+        r = curve["r"]\r
+        speed_squared = sympy.simplify(r**2 + sympy.diff(r, p) ** 2)\r
+        formula = (\r
+            rf"L = \\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} \\sqrt{{r^2 + \\left(\\frac{{dr}}{{d\\theta}}\\right)^2}}\\, d\\theta"\r
+        )\r
+        explanation = (\r
+            r"For a polar curve, $\\left(\\frac{dx}{d\\theta}\\right)^2 + \\left(\\frac{dy}{d\\theta}\\right)^2 "\r
+            r"= r^2 + \\left(\\frac{dr}{d\\theta}\\right)^2$, so the length is the integral of its square "\r
+            r"root."\r
+        )\r
+    elif curve["kind"] == "space":\r
+        speed_squared = sympy.simplify(curve["dxdt"] ** 2 + curve["dydt"] ** 2 + curve["dzdt"] ** 2)\r
+        formula = (\r
+            rf"L = \\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} |\\mathbf{{r}}'({name})|\\, d{name} = "\r
+            rf"\\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} \\sqrt{{x'^2 + y'^2 + z'^2}}\\, d{name}"\r
+        )\r
+        explanation = (\r
+            rf"Over a short time $d{name}$ the point moves $\\sqrt{{dx^2 + dy^2 + dz^2}}$ (the "\r
+            rf"Pythagorean theorem in space), so the length is the integral of the speed "\r
+            rf"$|\\mathbf{{r}}'({name})|$."\r
+        )\r
+    else:\r
+        speed_squared = sympy.simplify(curve["dxdt"] ** 2 + curve["dydt"] ** 2)\r
+        formula = (\r
+            rf"L = \\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} \\sqrt{{\\left(\\frac{{dx}}{{d{name}}}\\right)^2 + \\left(\\frac{{dy}}{{d{name}}}\\right)^2}}\\, d{name}"\r
+        )\r
+        explanation = (\r
+            rf"Over a short time $d{name}$ the point moves $\\sqrt{{dx^2 + dy^2}}$ (the Pythagorean "\r
+            rf"theorem), so the length is the integral of its speed, $\\sqrt{{\\left(\\frac{{dx}}{{d{name}}}\\right)^2 + \\left(\\frac{{dy}}{{d{name}}}\\right)^2}}$."\r
+        )\r
+    substeps = []\r
+    integrand = sympy.sqrt(speed_squared)\r
+    form = half_angle_form(speed_squared, p)\r
+    if form is not None:\r
+        constant, inside, identity = form\r
+        integrand = constant * sympy.Abs(inside)\r
+        substeps.append(\r
+            make_step(\r
+                "Half-angle identity",\r
+                rf"Use \${identity}$ to write the expression under the root as a perfect square. "\r
+                r"The root of a square is an absolute value: $\\sqrt{g^2} = |g|$.",\r
+                [rf"\\sqrt{{{to_latex(speed_squared)}}}", to_latex(integrand)],\r
+            )\r
+        )\r
+    else:\r
+        # Textbook curves are often built so that the speed squared is a\r
+        # perfect square, like e^(2t) + e^(-2t) + 2 = (e^t + e^(-t))², which\r
+        # factoring reveals. SymPy's simplify writes that one as\r
+        # 2 cosh(2t) + 2, so it is also factored in exponentials.\r
+        factored = min(\r
+            (\r
+                sympy.sqrt(sympy.factor(form))\r
+                for form in (speed_squared, speed_squared.rewrite(sympy.exp))\r
+            ),\r
+            key=sympy.count_ops,\r
+        )\r
+        if sympy.count_ops(factored) < sympy.count_ops(integrand):\r
+            integrand = factored\r
+            substeps.append(\r
+                make_step(\r
+                    "Perfect square",\r
+                    r"The expression under the root factors into a perfect square (times a square), "\r
+                    r"so the root simplifies: $\\sqrt{g^2} = |g|$, which is just $g$ where $g > 0$.",\r
+                    [rf"\\sqrt{{{to_latex(speed_squared)}}}", to_latex(integrand)],\r
+                )\r
+            )\r
+    math = [formula, to_latex(sympy.Integral(integrand, (p, low, high)))]\r
+    points = sign_change_points(integrand, p, low, high)\r
+    ends = [low, *(points or []), high]\r
+    value = None\r
+    # Long integrands are left to numerical integration: the textbook rules can\r
+    # spend many seconds on them and practically never succeed.\r
+    if points is not None and sympy.count_ops(integrand) <= EXACT_LENGTH_LIMIT:\r
+        piece_steps = []\r
+        if points:\r
+            piece_steps.append(\r
+                make_step(\r
+                    "Split where the sign changes",\r
+                    r"$|g| = g$ where $g \\ge 0$ and $|g| = -g$ where $g < 0$, so split the interval "\r
+                    rf"where the expression inside $|\\cdot|$ is $0$: at \${', '.join(to_latex(point) for point in points)}$.",\r
+                    [],\r
+                )\r
+            )\r
+        try:\r
+            pieces = []\r
+            for piece_low, piece_high in zip(ends, ends[1:]):\r
+                piece = without_absolute_values(integrand, p, piece_low, piece_high)\r
+                step, piece_value = integrate_piece(piece, p, piece_low, piece_high)\r
+                piece_steps.append(step)\r
+                pieces.append(piece_value)\r
+            value = sympy.simplify(sum(pieces))\r
+            math.append(latex_value(value))\r
+            substeps.extend(piece_steps)\r
+        except InputError:\r
+            value = None\r
+    as_numeric = numeric_function(sympy.sqrt(speed_squared), (p,))\r
+    # Integrated piece by piece too: across a kink, where |g| turns at 0,\r
+    # numerical integration loses accuracy.\r
+    numeric = numerical_integral(as_numeric, ends)\r
+    if value is None:\r
+        if numeric is None:\r
+            raise InputError("The arc length couldn't be computed, even numerically.")\r
+        shown = mpmath.nstr(numeric, 10)\r
+        math.append(rf"\\approx {shown}")\r
+        note = (\r
+            "No antiderivative was found with the textbook rules (most arc length integrals "\r
+            "have none), so the length was computed numerically."\r
+        )\r
+        substeps.append(make_step("Numerical integration", note, []))\r
+        check = numerical_cross_check(as_numeric, ends, numeric, shown)\r
+        result = rf"L \\approx {shown}"\r
+    else:\r
+        check = compare("integration", numeric, value)\r
+        result = rf"L = {latex_value(value)}"\r
+    step = make_step("Arc length", explanation, math, substeps)\r
+    return step, {"label": "Arc length", "latex": result}, check, value\r
+\r
+\r
+# ------------------------------------------------------------------ the area\r
+\r
+\r
+def area(curve):\r
+    """The area: its step, its result for display, its check, and its exact value."""\r
+    p, (low, high) = curve["parameter"], curve["interval"]\r
+    name = to_latex(p)\r
+    if curve["kind"] == "polar":\r
+        integrand = sympy.simplify(curve["r"] ** 2 / 2)\r
+        rule = "Area of a polar region"\r
+        explanation = (\r
+            r"The region swept by the radius from $\\theta = a$ to $\\theta = b$ is made of thin "\r
+            r"sectors, each of area $\\frac{1}{2} r^2 \\, d\\theta$ (a circle's sector of angle "\r
+            r"$d\\theta$), so $A = \\frac{1}{2}\\int_a^b r^2 \\, d\\theta$."\r
+        )\r
+        formula = rf"A = \\frac{{1}}{{2}}\\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} r^2 \\, d\\theta"\r
+        label = "Area swept by the radius"\r
+    else:\r
+        integrand = sympy.simplify(curve["y"] * curve["dxdt"])\r
+        rule = "Area under a parametric curve"\r
+        explanation = (\r
+            rf"The area between a curve and the $x$-axis is $\\int y\\, dx$. With $dx = \\frac{{dx}}{{d{name}}}\\, d{name}$ "\r
+            rf"it becomes an integral in \${name}$. It is a signed area: a stretch counts as negative "\r
+            r"where exactly one of these holds: the curve is below the axis, or it runs right to left."\r
+        )\r
+        formula = rf"A = \\int y \\, dx = \\int_{{{to_latex(low)}}}^{{{to_latex(high)}}} y \\, \\frac{{dx}}{{d{name}}} \\, d{name}"\r
+        label = "Area under the curve"\r
+    # Area integrands are polynomials and powers of trig functions, which the\r
+    # general algorithms handle quickly.\r
+    step, value = integrate_piece(integrand, p, low, high, general=True)\r
+    value = sympy.simplify(value)\r
+    as_numeric = numeric_function(integrand, (p,))\r
+    check = compare("integration", numerical_integral(as_numeric, [low, high]), value)\r
+    step = make_step(\r
+        rule,\r
+        explanation,\r
+        [formula, to_latex(sympy.Integral(integrand, (p, low, high))), latex_value(value)],\r
+        [step],\r
+    )\r
+    return step, {"label": label, "latex": rf"A = {latex_value(value)}"}, check, value\r
+\r
+\r
+# ------------------------------------------------------------------ checking\r
+\r
+\r
+def numerical_integral(as_numeric, points, method="tanh-sinh"):\r
+    """The integral of as_numeric over [points[0], points[-1]], one piece between\r
+    each pair of neighboring points, by mpmath's tanh-sinh or Gauss-Legendre\r
+    quadrature."""\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        try:\r
+            value = mpmath.quad(\r
+                lambda point: real_number(as_numeric(point)),\r
+                [mpmath.mpf(str(sympy.N(point, CHECK_DIGITS))) for point in points],\r
+                method=method,\r
+            )\r
+        except Exception:  # Numerical integration fails in many ways; all mean "no value".\r
+            return None\r
+    return None if isinstance(value, mpmath.mpc) else value\r
+\r
+\r
+def numerical_cross_check(as_numeric, points, numeric, shown):\r
+    """A length with no exact form is checked by computing it again with a\r
+    different method: tanh-sinh and Gauss-Legendre quadrature place their points\r
+    and weigh them differently, so a mistake in one is very unlikely to repeat\r
+    in the other."""\r
+    other = numerical_integral(as_numeric, points, method="gauss-legendre")\r
+    if other is not None and abs(other - numeric) <= CHECK_TOLERANCE * max(1, abs(numeric)):\r
+        return {\r
+            "status": "verified",\r
+            "detail": f"There is no exact form, so the length was computed numerically: two "\r
+            f"different methods (tanh-sinh and Gauss–Legendre quadrature) agree on \${shown}$.",\r
+        }\r
+    return {\r
+        "status": "unchecked",\r
+        "detail": "There is no exact form, and two different numerical methods didn't agree "\r
+        "closely enough to confirm the decimal.",\r
+    }\r
+\r
+\r
+def compare(kind, numeric, exact):\r
+    if numeric is None:\r
+        return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        expected = mpmath.mpmathify(sympy.N(exact, CHECK_DIGITS))\r
+        shown = mpmath.nstr(numeric, 10).removesuffix(".0")\r
+        if isinstance(expected, mpmath.mpc):\r
+            return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}\r
+        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"A numerical {kind} gives \${shown}$, matching the exact answer.",\r
+            }\r
+    return {\r
+        "status": "failed",\r
+        "detail": f"A numerical {kind} gives \${shown}$, which doesn't match. Treat this answer with caution.",\r
+    }\r
+\r
+\r
+# ------------------------------------------------------------------ the graph\r
+\r
+\r
+def graph_samples(curve):\r
+    p, (low, high) = curve["parameter"], curve["interval"]\r
+    x_at, y_at = (numeric_function(coordinate, (p,)) for coordinate in (curve["x"], curve["y"]))\r
+    a, b = float(sympy.N(low)), float(sympy.N(high))\r
+    parameters = [a + (b - a) * index / (GRAPH_POINTS - 1) for index in range(GRAPH_POINTS)]\r
+\r
+    def value(function, point):\r
+        try:\r
+            number = real_number(mpmath.mpmathify(function(mpmath.mpf(point))))\r
+        except Exception:  # Undefined points raise many error types; all mean "no point here".\r
+            return None\r
+        if isinstance(number, mpmath.mpc) or not mpmath.isfinite(number):\r
+            return None\r
+        return round(float(number), 6)\r
+\r
+    xs = [value(x_at, point) for point in parameters]\r
+    ys = [value(y_at, point) for point in parameters]\r
+    graph = {"x": xs, "y": ys, "point": None, "tangent": None, "kind": curve["kind"]}\r
+    if curve.get("point"):\r
+        x0, y0, dx0, dy0 = (float(sympy.N(part)) for part in curve["point"])\r
+        graph["point"] = [x0, y0]\r
+        speed = (dx0**2 + dy0**2) ** 0.5\r
+        if speed > 0:\r
+            # A tangent segment as long as a fifth of the curve's width or height.\r
+            spread = max(\r
+                (max(v for v in values if v is not None) - min(v for v in values if v is not None))\r
+                for values in (xs, ys)\r
+            )\r
+            reach = 0.2 * spread / speed\r
+            graph["tangent"] = {\r
+                "x": [x0 - reach * dx0, x0 + reach * dx0],\r
+                "y": [y0 - reach * dy0, y0 + reach * dy0],\r
+            }\r
+    return graph\r
+\r
+\r
+# ------------------------------------------------- the lesson picture: a trace\r
+\r
+TRACE_STEPS = 120\r
+\r
+\r
+def trace(request):\r
+    """A point moving along the curve: for each of TRACE_STEPS + 1 parameter\r
+    values, the point, its velocity (dx/dt, dy/dt), and the length traced and\r
+    area swept so far, computed numerically piece by piece."""\r
+    curve = curve_from_request(request)\r
+    p, (low, high) = curve["parameter"], curve["interval"]\r
+    functions = {\r
+        name: numeric_function(curve[name], (p,)) for name in ("x", "y", "dxdt", "dydt")\r
+    }\r
+    speed = numeric_function(sympy.sqrt(curve["dxdt"] ** 2 + curve["dydt"] ** 2), (p,))\r
+    if curve["kind"] == "polar":\r
+        sweep = numeric_function(curve["r"] ** 2 / 2, (p,))\r
+    else:\r
+        sweep = numeric_function(curve["y"] * curve["dxdt"], (p,))\r
+    a, b = float(sympy.N(low)), float(sympy.N(high))\r
+    parameters = [a + (b - a) * index / TRACE_STEPS for index in range(TRACE_STEPS + 1)]\r
+\r
+    def number(function, point):\r
+        try:\r
+            value = real_number(mpmath.mpmathify(function(mpmath.mpf(point))))\r
+        except Exception:  # Undefined points raise many error types; all mean "no value".\r
+            return None\r
+        if isinstance(value, mpmath.mpc) or not mpmath.isfinite(value):\r
+            return None\r
+        return round(float(value), 6)\r
+\r
+    length = area_so_far = 0.0\r
+    samples = []\r
+    for index, point in enumerate(parameters):\r
+        if index > 0:\r
+            piece = [parameters[index - 1], point]\r
+            length += float(numerical_integral(speed, piece) or 0)\r
+            area_so_far += float(numerical_integral(sweep, piece) or 0)\r
+        samples.append(\r
+            {\r
+                "parameter": round(point, 6),\r
+                **{name: number(function, point) for name, function in functions.items()},\r
+                "length": round(length, 6),\r
+                "area": round(area_so_far, 6),\r
+            }\r
+        )\r
+    return {\r
+        "ok": True,\r
+        "operation": "trace",\r
+        "kind": curve["kind"],\r
+        "samples": samples,\r
+        "curve": graph_samples(curve),\r
+    }\r
+\r
+\r
+# ---------------------------------------------------------------- the request\r
+\r
+\r
+def build_curve(kind, x, y, r, interval, at=None):\r
+    """Everything the steps need about a curve. For a polar curve, x and y are\r
+    r cos θ and r sin θ; the parameter is θ for a polar curve and t otherwise."""\r
+    parameter = THETA if kind == "polar" else T\r
+    return {\r
+        "kind": kind,\r
+        "parameter": parameter,\r
+        "x": x,\r
+        "y": y,\r
+        "r": r,\r
+        "dxdt": sympy.diff(x, parameter),\r
+        "dydt": sympy.diff(y, parameter),\r
+        "interval": interval,\r
+        "at": at,\r
+        "point": None,\r
+    }\r
+\r
+\r
+def curve_from_request(request):\r
+    """The curve a request describes: its kind, its function(s) as LaTeX, its\r
+    interval, and an optional parameter value for a tangent."""\r
+    kind = request.get("curveKind")\r
+    if kind not in ("parametric", "polar"):\r
+        raise InputError("Choose a parametric curve or a polar curve.")\r
+    parameter = THETA if kind == "polar" else T\r
+    if kind == "polar":\r
+        r = parse_curve_function(request.get("expression"), "r(θ)", parameter)\r
+        x, y = r * sympy.cos(parameter), r * sympy.sin(parameter)\r
+    else:\r
+        r = None\r
+        x = parse_curve_function(request.get("xExpression"), "x(t)", parameter)\r
+        y = parse_curve_function(request.get("yExpression"), "y(t)", parameter)\r
+    low, high = parse_interval(request.get("lower"), request.get("upper"), parameter)\r
+    at_text = request.get("at")\r
+    at = None\r
+    if isinstance(at_text, str) and at_text.strip():\r
+        at = parse_bound(at_text, f"tangent's {to_text(parameter)}")\r
+        if at.is_infinite:\r
+            raise InputError(f"The tangent's {to_text(parameter)} must be a number.")\r
+    return build_curve(kind, x, y, r, (low, high), at)\r
+\r
+\r
+def analyze_curve(request):\r
+    curve = curve_from_request(request)\r
+    parameter, (low, high) = curve["parameter"], curve["interval"]\r
+    if curve["kind"] == "polar":\r
+        curve_latex = rf"r = {to_latex(curve['r'])}"\r
+    else:\r
+        curve_latex = rf"x = {to_latex(curve['x'])}, \\quad y = {to_latex(curve['y'])}"\r
+    name = to_latex(parameter)\r
+    report("Finding the slope…")\r
+    steps, results = slope_steps(curve)\r
+    report("Finding the arc length…")\r
+    length_step, length_result, length_check, _ = arc_length(curve)\r
+    report("Finding the area…")\r
+    area_step, area_result, area_check, _ = area(curve)\r
+    return {\r
+        "ok": True,\r
+        "operation": "curve",\r
+        "curveLatex": rf"{curve_latex}, \\quad {to_latex(low)} \\le {name} \\le {to_latex(high)}",\r
+        "results": [*results, length_result, area_result],\r
+        "checks": [\r
+            {"label": "Arc length", "check": length_check},\r
+            {"label": "Area", "check": area_check},\r
+        ],\r
+        "steps": [*steps, length_step, area_step],\r
+        "graph": graph_samples(curve),\r
+    }\r
+`,"./python/mathlab/definite.py":`"""Definite integrals, proper and improper.\r
+\r
+A proper integral is F(b) − F(a) by the Fundamental Theorem of Calculus. An\r
+improper one (an infinite bound, or a point where f breaks down) is split so\r
+each piece has one problem end, and that end becomes a limit; the integral\r
+converges only if every limit is finite. Answers are checked independently:\r
+convergent values against a high-precision numerical integration, divergence\r
+against SymPy's own definite integration.\r
+"""\r
+\r
+import re\r
+\r
+import mpmath\r
+import sympy\r
+from sympy import AccumBounds\r
+from sympy.calculus.util import continuous_domain\r
+\r
+from mathlab.antiderivatives import find_antiderivative\r
+from mathlab.checks import numeric_function, plot_value, real_value\r
+from mathlab.expressions import X, InputError, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.parsing import constants_in, parse_function\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step\r
+\r
+CHECK_DIGITS = 30\r
+# The exact answer and the numerical integration must agree this closely.\r
+CHECK_TOLERANCE = mpmath.mpf("1e-10")\r
+GRAPH_POINT_COUNT = 401\r
+# How far the graph reaches toward an infinite bound.\r
+GRAPH_REACH = 10\r
+# The moving bound in a limit.\r
+T = sympy.Symbol("t", real=True)\r
+SIGNED_INFINITY = re.compile(r"^\\s*([+-]?)\\s*(\\\\infty|∞|oo|inf|infinity)\\s*$", re.IGNORECASE)\r
+INFINITY = re.compile(r"\\\\infty|∞|\\b(oo|inf|infinity)\\b", re.IGNORECASE)\r
+\r
+\r
+def parse_bound(text, name):\r
+    """A bound typed in the math box: an exact real number, ∞, or −∞."""\r
+    if not isinstance(text, str) or text.strip() == "":\r
+        raise InputError(f"Enter the {name} bound.")\r
+    infinite = SIGNED_INFINITY.match(text)\r
+    if infinite:\r
+        return -sympy.oo if infinite.group(1) == "-" else sympy.oo\r
+    if INFINITY.search(text):\r
+        raise InputError(f"The {name} bound: use ∞ or −∞ on its own, or a number.")\r
+    try:\r
+        bound = parse_function(latex_to_text(text), ())\r
+    except InputError as error:\r
+        raise InputError(f"The {name} bound: {error}") from error\r
+    if bound.free_symbols or bound.is_real is not True or bound.is_finite is not True:\r
+        raise InputError(\r
+            f"The {name} bound must be a number (like 0, 1/2, π, or π/2), ∞, or −∞."\r
+        )\r
+    return bound\r
+\r
+\r
+def bound_text(bound):\r
+    """A bound for plain text, like 1, π/2, ∞, or −∞."""\r
+    if bound == sympy.oo:\r
+        return "∞"\r
+    if bound == -sympy.oo:\r
+        return "−∞"\r
+    return str(bound).replace("pi", "π").replace("-", "−")\r
+\r
+\r
+def problem_points(function, low, high):\r
+    """The finite points of [low, high] where f isn't continuous, in order."""\r
+    report("Looking for points where the function breaks down…")\r
+    interval = sympy.Interval(low, high)\r
+    try:\r
+        gaps = sympy.Complement(interval, continuous_domain(function, X, interval))\r
+    except Exception:  # SymPy can't always tell; the independent check still guards the answer.\r
+        return []\r
+    if gaps == sympy.S.EmptySet:\r
+        return []\r
+    if not isinstance(gaps, sympy.FiniteSet):\r
+        raise InputError(\r
+            f"The function isn't defined, as a real number, on part of the interval from "\r
+            f"{bound_text(low)} to {bound_text(high)}, so this integral has no value."\r
+        )\r
+    return sorted(gaps, key=float)\r
+\r
+\r
+def regular_point_between(start, end):\r
+    """A point strictly inside (start, end), for splitting a piece in two."""\r
+    if start == -sympy.oo and end == sympy.oo:\r
+        return sympy.Integer(0)\r
+    if start == -sympy.oo:\r
+        return end - 1\r
+    if end == sympy.oo:\r
+        return start + 1\r
+    return (start + end) / 2\r
+\r
+\r
+def split_into_pieces(low, high, points):\r
+    """Pieces of [low, high], each with at most one problem end."""\r
+    cuts = [low, *[point for point in points if low < point < high], high]\r
+\r
+    def is_problem(end):\r
+        return end.is_infinite or end in points\r
+\r
+    pieces = []\r
+    for start, end in zip(cuts, cuts[1:]):\r
+        if is_problem(start) and is_problem(end):\r
+            middle = regular_point_between(start, end)\r
+            pieces += [(start, middle), (middle, end)]\r
+        else:\r
+            pieces.append((start, end))\r
+    return pieces\r
+\r
+\r
+def endpoint_value(antiderivative, point, direction, variable=X):\r
+    """F at a regular end, approaching from inside the piece if F isn't defined right there."""\r
+    value = antiderivative.subs(variable, point)\r
+    if value.has(sympy.nan, sympy.zoo) or value.is_finite is False:\r
+        value = sympy.limit(antiderivative, variable, point, direction)\r
+    return value\r
+\r
+\r
+def subtracted_latex(value):\r
+    """A value after a minus sign, in parentheses when it is a sum or negative."""\r
+    latex = to_latex(value)\r
+    if isinstance(value, sympy.Add) or value.could_extract_minus_sign():\r
+        return rf"\\left({latex}\\right)"\r
+    return latex\r
+\r
+\r
+def limit_of(antiderivative, point, direction):\r
+    """The one-sided limit of F at a problem end, or why it doesn't exist.\r
+\r
+    Returns (value, reason): reason is None for a finite limit; otherwise it\r
+    says why the piece diverges, and value is ±∞, or None if the limit\r
+    doesn't exist.\r
+    """\r
+    if point.is_infinite:\r
+        value = sympy.limit(antiderivative, X, point)\r
+    else:\r
+        value = sympy.limit(antiderivative, X, point, direction)\r
+    if isinstance(value, sympy.Limit) or value.has(sympy.Limit):\r
+        raise InputError("SymPy couldn't work out a limit this integral needs.")\r
+    if isinstance(value, AccumBounds) or value.has(sympy.nan, sympy.zoo):\r
+        return None, "$F(t)$ keeps oscillating and has no limit"\r
+    if value.is_infinite:\r
+        return value, rf"$F(t) \\to {to_latex(value)}$"\r
+    return value, None\r
+\r
+\r
+def limit_latex(point, direction):\r
+    target = to_latex(point) if point.is_infinite else f"{to_latex(point)}^{{{direction}}}"\r
+    return rf"\\lim_{{t \\to {target}}}"\r
+\r
+\r
+def improper_piece(function, antiderivative, start, end, points):\r
+    """One piece with a problem end: the step, and its value (None if it diverges)."""\r
+    upper_is_problem = end.is_infinite or end in points\r
+    moving, fixed = (end, start) if upper_is_problem else (start, end)\r
+    direction = "-" if upper_is_problem else "+"\r
+    side = "upper" if upper_is_problem else "lower"\r
+    lim = limit_latex(moving, direction)\r
+    target = lim.removeprefix(r"\\lim_{").removesuffix("}")\r
+    if moving.is_infinite:\r
+        reason = (\r
+            rf"The {side} bound is \${to_latex(moving)}$, so replace it with $t$ and let "\r
+            rf"\${target}$."\r
+        )\r
+    else:\r
+        reason = (\r
+            rf"$f$ breaks down at $x = {to_latex(moving)}$, the {side} end of this piece, so "\r
+            rf"replace that end with $t$ and let \${target}$."\r
+        )\r
+    fixed_value = endpoint_value(antiderivative, fixed, "+" if upper_is_problem else "-")\r
+    limit_value, divergence = limit_of(antiderivative, moving, direction)\r
+\r
+    at_t = to_latex(antiderivative.subs(X, T))\r
+    if upper_is_problem:\r
+        inner = sympy.Integral(function, (X, start, T))\r
+        bracket = rf"\\left[{to_latex(antiderivative)}\\right]_{{{to_latex(start)}}}^{{t}}"\r
+        difference = rf"\\left({at_t} - {subtracted_latex(fixed_value)}\\right)"\r
+    else:\r
+        inner = sympy.Integral(function, (X, T, end))\r
+        bracket = rf"\\left[{to_latex(antiderivative)}\\right]_{{t}}^{{{to_latex(end)}}}"\r
+        at_t_subtracted = subtracted_latex(antiderivative.subs(X, T))\r
+        difference = rf"\\left({to_latex(fixed_value)} - {at_t_subtracted}\\right)"\r
+    math = [\r
+        to_latex(sympy.Integral(function, (X, start, end))),\r
+        f"{lim} {to_latex(inner)}",\r
+        f"{lim} {bracket}",\r
+        f"{lim} {difference}",\r
+    ]\r
+    if limit_value is None:\r
+        piece_value = None\r
+        math.append(r"\\text{does not exist}")\r
+    elif upper_is_problem:\r
+        piece_value = sympy.simplify(limit_value - fixed_value)\r
+    else:\r
+        piece_value = sympy.simplify(fixed_value - limit_value)\r
+    if piece_value is not None:\r
+        math.append(to_latex(piece_value))\r
+    if divergence is None:\r
+        verdict = "The limit is finite, so this piece converges."\r
+    else:\r
+        verdict = rf"As \${target}$, {divergence}, so this piece diverges."\r
+    step = make_step("Improper integral", f"{reason} {verdict}", math)\r
+    # A diverging piece has no value to add.\r
+    return step, (piece_value if divergence is None else None)\r
+\r
+\r
+def evaluate_between(function, antiderivative, low, high, variable=X):\r
+    """F(high) − F(low), written out: the equation's parts and the value.\r
+\r
+    The bounds may contain other variables, as an inner integral's do.\r
+    """\r
+    at_high = endpoint_value(antiderivative, high, "-", variable)\r
+    at_low = endpoint_value(antiderivative, low, "+", variable)\r
+    value = sympy.simplify(at_high - at_low)\r
+    difference = f"{to_latex(at_high)} - {subtracted_latex(at_low)}"\r
+    math = [\r
+        to_latex(sympy.Integral(function, (variable, low, high))),\r
+        rf"\\left[{to_latex(antiderivative)}\\right]_{{{to_latex(low)}}}^{{{to_latex(high)}}}",\r
+        difference,\r
+    ]\r
+    if to_latex(value) != difference:\r
+        math.append(to_latex(value))\r
+    return math, value\r
+\r
+\r
+def proper_step(function, antiderivative, low, high):\r
+    """F(high) − F(low), for an interval where f is continuous: the step and the value."""\r
+    math, value = evaluate_between(function, antiderivative, low, high)\r
+    step = make_step(\r
+        "Fundamental Theorem of Calculus",\r
+        r"Evaluate the antiderivative at the upper bound and subtract its value at the lower "\r
+        r"bound: $\\int_a^b f(x)\\,dx = F(b) - F(a)$.",\r
+        math,\r
+    )\r
+    return step, value\r
+\r
+\r
+def mpmath_point(point):\r
+    if point == sympy.oo:\r
+        return mpmath.inf\r
+    if point == -sympy.oo:\r
+        return -mpmath.inf\r
+    return mpmath.mpf(str(sympy.N(point, CHECK_DIGITS)))\r
+\r
+\r
+def sympy_definite(function, low, high):\r
+    """SymPy's own definite integration, as an independent opinion, or None."""\r
+    try:\r
+        result = sympy.integrate(function, (X, low, high))\r
+    except Exception:  # Its algorithms fail in many ways; all mean "no opinion".\r
+        return None\r
+    return None if result.has(sympy.Integral) else result\r
+\r
+\r
+def check_convergent(function, cuts, value, low, high):\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        exact = real_value(lambda: sympy.N(value, CHECK_DIGITS))\r
+        try:\r
+            numeric = mpmath.quad(numeric_function(function), [mpmath_point(cut) for cut in cuts])\r
+        except Exception:  # Numerical integration fails in many ways; all mean "unchecked".\r
+            numeric = None\r
+        if exact is not None and numeric is not None and not isinstance(numeric, mpmath.mpc):\r
+            shown = mpmath.nstr(numeric, 10).removesuffix(".0")\r
+            if abs(numeric - exact) <= CHECK_TOLERANCE * max(1, abs(exact)):\r
+                return {\r
+                    "status": "verified",\r
+                    "detail": f"A high-precision numerical integration gives \${shown}$, "\r
+                    "matching the exact answer.",\r
+                }\r
+            if low.is_finite and high.is_finite:\r
+                return {\r
+                    "status": "failed",\r
+                    "detail": f"A numerical integration gives \${shown}$, which doesn't match. "\r
+                    "Treat this answer with caution.",\r
+                }\r
+    # Numerical integration over an infinite interval can struggle (slow, oscillating\r
+    # integrands), so ask SymPy's own definite integration instead.\r
+    other = sympy_definite(function, low, high)\r
+    if other is not None and other.is_finite and sympy.simplify(other - value) == 0:\r
+        return {\r
+            "status": "verified",\r
+            "detail": "SymPy's own definite integration, a different method, gives the same value.",\r
+        }\r
+    return {"status": "unchecked", "detail": "The value couldn't be confirmed by a second method."}\r
+\r
+\r
+def check_divergent(function, low, high):\r
+    other = sympy_definite(function, low, high)\r
+    if other is not None and (other.is_infinite or other.has(sympy.nan, sympy.zoo, AccumBounds)):\r
+        return {\r
+            "status": "verified",\r
+            "detail": "SymPy's own definite integration, a different method, also finds no "\r
+            "finite value.",\r
+        }\r
+    if other is not None and other.is_finite:\r
+        return {\r
+            "status": "failed",\r
+            "detail": f"SymPy's own definite integration gives \${to_latex(other)}$, which "\r
+            "disagrees. Treat this answer with caution.",\r
+        }\r
+    return {\r
+        "status": "unchecked",\r
+        "detail": "A divergent integral has no value to check numerically; the limits in the "\r
+        "steps show why it diverges.",\r
+    }\r
+\r
+\r
+def graph_samples(function, low, high):\r
+    """f around the interval, with the part of it that fits on the graph for shading."""\r
+    if low.is_finite and high.is_finite:\r
+        margin = max(0.25 * float(high - low), 0.5)\r
+        start, end = float(low) - margin, float(high) + margin\r
+    elif low.is_finite:\r
+        start, end = float(low) - 0.5, float(low) + GRAPH_REACH\r
+    elif high.is_finite:\r
+        start, end = float(high) - GRAPH_REACH, float(high) + 0.5\r
+    else:\r
+        start, end = -GRAPH_REACH, GRAPH_REACH\r
+    shade_from = float(low) if low.is_finite else start\r
+    shade_to = float(high) if high.is_finite else end\r
+    step = (end - start) / (GRAPH_POINT_COUNT - 1)\r
+    points = [start + step * index for index in range(GRAPH_POINT_COUNT)]\r
+    # Include the shading's ends, so it starts and stops exactly there.\r
+    xs = sorted({round(point, 6) for point in [*points, shade_from, shade_to]})\r
+    as_numeric = numeric_function(function)\r
+    values = [plot_value(lambda point=point: as_numeric(mpmath.mpf(point))) for point in xs]\r
+    return {"x": xs, "input": values, "area": [round(shade_from, 6), round(shade_to, 6)]}\r
+\r
+\r
+def graph_note(low, high, converges):\r
+    note = (\r
+        f"Shaded: the region between f(x) and the x-axis from {bound_text(low)} to "\r
+        f"{bound_text(high)}"\r
+    )\r
+    if low.is_infinite or high.is_infinite:\r
+        note += ", which goes on past the edge of the graph"\r
+    note += ". The integral adds the area above the axis and subtracts the area below it."\r
+    if not converges:\r
+        note += " Here that total has no finite value, so the integral diverges."\r
+    return note\r
+\r
+\r
+def definite_integral(function, lower_text, upper_text):\r
+    lower = parse_bound(lower_text, "lower")\r
+    upper = parse_bound(upper_text, "upper")\r
+    constants = constants_in(function, (X,))\r
+    if constants:\r
+        names = ", ".join(str(constant) for constant in constants)\r
+        raise InputError(\r
+            f"A definite integral needs a function of x alone, so its answer is a number. "\r
+            f"Remove {names}, or use Integrate for an antiderivative with constants."\r
+        )\r
+    reversed_bounds = (upper - lower).is_negative is True\r
+    low, high = (upper, lower) if reversed_bounds else (lower, upper)\r
+    integral = to_latex(sympy.Integral(function, (X, lower, upper)))\r
+    if low == high:\r
+        return result(integral, function, low, high, [], sympy.Integer(0), [low, high], False)\r
+\r
+    points = problem_points(function, low, high)\r
+    antiderivative, _, antiderivative_steps, _ = find_antiderivative(function)\r
+    steps = []\r
+    if reversed_bounds:\r
+        steps.append(\r
+            make_step(\r
+                "Swap the bounds",\r
+                r"Integrating from the larger bound to the smaller one gives the negative: "\r
+                r"$\\int_a^b f(x)\\,dx = -\\int_b^a f(x)\\,dx$.",\r
+                [integral, f"-{to_latex(sympy.Integral(function, (X, low, high)))}"],\r
+            )\r
+        )\r
+    steps.append(\r
+        make_step(\r
+            "Find an antiderivative",\r
+            r"Any antiderivative works, because the constant $C$ cancels in the subtraction, "\r
+            r"so take $C = 0$.",\r
+            [to_latex(sympy.Integral(function, X)), f"{to_latex(antiderivative)} + C"],\r
+            antiderivative_steps,\r
+        )\r
+    )\r
+\r
+    report("Evaluating the antiderivative at the bounds…")\r
+    pieces = split_into_pieces(low, high, points)\r
+    cuts = [low, *[end for _, end in pieces]]\r
+    if len(pieces) == 1 and not (low.is_infinite or high.is_infinite or points):\r
+        step, value = proper_step(function, antiderivative, low, high)\r
+        steps.append(step)\r
+        return result(integral, function, low, high, steps, value, cuts, reversed_bounds)\r
+\r
+    if len(pieces) > 1:\r
+        where = ", ".join(f"$x = {to_latex(point)}$" for point in cuts[1:-1])\r
+        steps.append(\r
+            make_step(\r
+                "Split the integral",\r
+                "A limit can handle a problem (an infinite bound, or a point where $f$ blows up) "\r
+                f"only at one end of an interval, so split the integral at {where}, giving pieces "\r
+                "with at most one problem end each. It converges only if every piece converges.",\r
+                [\r
+                    to_latex(sympy.Integral(function, (X, low, high))),\r
+                    " + ".join(to_latex(sympy.Integral(function, (X, a, b))) for a, b in pieces),\r
+                ],\r
+            )\r
+        )\r
+    values = []\r
+    for start, end in pieces:\r
+        if (end.is_infinite or end in points) or (start.is_infinite or start in points):\r
+            step, value = improper_piece(function, antiderivative, start, end, points)\r
+        else:\r
+            step, value = proper_step(function, antiderivative, start, end)\r
+        steps.append(step)\r
+        values.append(value)\r
+    total = None if any(value is None for value in values) else sympy.simplify(sum(values))\r
+    return result(integral, function, low, high, steps, total, cuts, reversed_bounds)\r
+\r
+\r
+def result(integral, function, low, high, steps, value, cuts, reversed_bounds):\r
+    """The response: value is None when the integral diverges."""\r
+    converges = value is not None\r
+    if converges:\r
+        shown = -value if reversed_bounds else value\r
+        equation = f"{integral} = {to_latex(shown)}"\r
+        if not shown.is_Rational:\r
+            equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(shown, 15))), 6)}"\r
+        check = check_convergent(function, cuts, value, low, high)\r
+    else:\r
+        equation = rf"{integral} \\text{{ diverges}}"\r
+        check = check_divergent(function, low, high)\r
+    return {\r
+        "ok": True,\r
+        "operation": "definite",\r
+        "equationLatex": equation,\r
+        "converges": converges,\r
+        "check": check,\r
+        "steps": steps,\r
+        "stepsNote": None,\r
+        "graph": graph_samples(function, low, high),\r
+        "graphNote": graph_note(low, high, converges),\r
+    }\r
 `,"./python/mathlab/derivative_steps.py":`"""Step-by-step derivatives, using the rules taught in Calculus I.
 
 explain_derivative() returns a derivative together with the step that
@@ -2988,8 +2989,13 @@ def divergence_theorem(request):\r
     count = len(faces)\r
     flux_step = make_step(\r
         "Flux through the boundary",\r
-        rf"The long way, as a check: $\\partial E$ is made of {count} face{'s' if count > 1 else ''} with area. "\r
-        r"Find the outward flux through each and add.",\r
+        (\r
+            rf"The long way, as a check: $\\partial E$ is made of {count} faces with area. "\r
+            r"Find the outward flux through each and add."\r
+            if count > 1\r
+            else r"The long way, as a check: $\\partial E$ is one face with area. Find the outward "\r
+            r"flux through it."\r
+        ),\r
         flux_math,\r
         face_steps,\r
     )\r
@@ -3769,8 +3775,13 @@ def line_side(region, field, pieces):\r
     count = len(pieces)\r
     step = make_step(\r
         "Line integral around C",\r
-        rf"The long way, as a check: $C$ is made of {count} piece{'s' if count > 1 else ''}, "\r
-        rf"\${names}$, each traced so that $D$ is on the left. Integrate along each piece and add.",\r
+        (\r
+            rf"The long way, as a check: $C$ is made of {count} pieces, "\r
+            rf"\${names}$, each traced so that $D$ is on the left. Integrate along each piece and add."\r
+            if count > 1\r
+            else r"The long way, as a check: $C$ is one piece, traced so that $D$ is on the left. "\r
+            r"Integrate along it."\r
+        ),\r
         math,\r
         steps,\r
     )\r
@@ -4146,353 +4157,388 @@ def curl_dots(curl, region, xy, low_at, high_at, a, b):\r
             x, y = xy(lo + (hi - lo) * (column + 0.5) / CURL_GRID, o)\r
             dots.append([round(x, 6), round(y, 6), round(curl_at(x, y), 6)])\r
     return dots\r
-`,"./python/mathlab/integral_steps.py":`"""Step-by-step integrals, from the rule tree SymPy's manualintegrate builds.
-
-manualintegrate solves integrals with the techniques taught in calculus
-courses (substitution, integration by parts, partial fractions, ...) and
-records which rule it used at each step. This module picks the simplest
-solution when there are several and turns its rules into explained steps.
-"""
-
-import dataclasses
-import re
-
-import sympy
-from sympy.integrals import manualintegrate
-
-from mathlab.expressions import (
-    differential_latex,
-    factor_latex,
-    power_base_latex,
-    to_latex,
-    with_absolute_value_logs,
-)
-from mathlab.steps import make_step
-
-# Solutions with more rules than this are too long to read as steps.
-MAX_STEP_COUNT = 60
-
-STANDARD_LABELS = {
-    "SinRule": "Integral of sine",
-    "CosRule": "Integral of cosine",
-    "Sec2Rule": "Integral of sec²",
-    "Csc2Rule": "Integral of csc²",
-    "SecTanRule": "Integral of sec · tan",
-    "CscCotRule": "Integral of csc · cot",
-    "SinhRule": "Integral of sinh",
-    "CoshRule": "Integral of cosh",
-    "ArctanRule": "Arctangent form",
-    "ArcsinRule": "Arcsine form",
-    "ArcsinhRule": "Inverse sinh form",
-}
-
-SPECIAL_FUNCTION_RULES = (
-    "ErfRule",
-    "FresnelSRule",
-    "FresnelCRule",
-    "EiRule",
-    "SiRule",
-    "CiRule",
-    "ChiRule",
-    "ShiRule",
-    "LiRule",
-    "UpperGammaRule",
-    "PolylogRule",
-    "EllipticFRule",
-    "EllipticERule",
-)
-
-
-def child_rules(rule):
-    for field in dataclasses.fields(rule):
-        value = getattr(rule, field.name)
-        if isinstance(value, manualintegrate.Rule):
-            yield value
-        elif isinstance(value, list):
-            yield from (item for item in value if isinstance(item, manualintegrate.Rule))
-
-
-def rule_count(rule):
-    return 1 + sum(rule_count(child) for child in child_rules(rule))
-
-
-def substitution_size(rule):
-    """How complicated the substitutions are, to prefer u = x^2 over u = e^(x^2)."""
-    own = sympy.count_ops(rule.u_func) if isinstance(rule, manualintegrate.URule) else 0
-    return own + sum(substitution_size(child) for child in child_rules(rule))
-
-
-def choose_alternatives(rule):
-    """Replace each AlternativeRule with its simplest alternative, recursively."""
-    if isinstance(rule, manualintegrate.AlternativeRule):
-        candidates = [choose_alternatives(alternative) for alternative in rule.alternatives]
-        return min(
-            candidates,
-            key=lambda candidate: (
-                candidate.contains_dont_know(),
-                rule_count(candidate),
-                substitution_size(candidate),
-            ),
-        )
-    changes = {}
-    for field in dataclasses.fields(rule):
-        value = getattr(rule, field.name)
-        if isinstance(value, manualintegrate.Rule):
-            changes[field.name] = choose_alternatives(value)
-        elif isinstance(value, list) and any(isinstance(item, manualintegrate.Rule) for item in value):
-            changes[field.name] = [
-                choose_alternatives(item) if isinstance(item, manualintegrate.Rule) else item
-                for item in value
-            ]
-    return dataclasses.replace(rule, **changes) if changes else rule
-
-
-def find_integral_rule(function, variable):
-    """Return (rule, antiderivative) solved with textbook rules, or None if there is no such solution."""
-    try:
-        rule = choose_alternatives(manualintegrate.integral_steps(function, variable))
-        if rule.contains_dont_know():
-            return None
-        return rule, rule.eval()
-    except Exception:  # manualintegrate fails in many ways on integrals it cannot do.
-        return None
-
-
-def explain_integral(rule, use_absolute_logs):
-    """Return the list of steps explaining rule.
-
-    use_absolute_logs writes ln|u| instead of ln(u), to match the final answer.
-    """
-    present = with_absolute_value_logs if use_absolute_logs else (lambda expression: expression)
-    return [explain_rule(rule, present)]
-
-
-def integral_of(integrand, variable):
-    return to_latex(sympy.Integral(integrand, variable))
-
-
-def result_latex(rule, present):
-    return to_latex(present(rule.eval()))
-
-
-def explain_rule(rule, present):
-    for rule_type in type(rule).__mro__:
-        explainer = EXPLAINERS.get(rule_type)
-        if explainer is not None:
-            return explainer(rule, present)
-    return explain_other(rule, present)
-
-
-def explain_constant(rule, present):
-    return make_step(
-        "Constant rule",
-        rf"The integral of a constant $c$ is $c\\,{to_latex(rule.variable)}$.",
-        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],
-    )
-
-
-def explain_constant_times(rule, present):
-    return make_step(
-        "Constant multiple rule",
-        f"Move the constant \${to_latex(rule.constant)}$ outside the integral.",
-        [
-            integral_of(rule.integrand, rule.variable),
-            rf"{factor_latex(rule.constant)} {integral_of(rule.other, rule.variable)}",
-            result_latex(rule, present),
-        ],
-        [explain_rule(rule.substep, present)],
-    )
-
-
-def explain_power(rule, present):
-    note = ""
-    if not (rule.exp.is_integer and rule.exp.is_positive):
-        power_form = rf"{power_base_latex(rule.base)}^{{{to_latex(rule.exp)}}}"
-        note = f" Here \${to_latex(rule.integrand)} = {power_form}$."
-    return make_step(
-        "Power rule",
-        r"Raise the power by one and divide by the new power: "
-        rf"$\\int x^{{n}}\\,dx = \\frac{{x^{{n+1}}}}{{n+1}}$ for $n \\neq -1$.{note}",
-        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],
-    )
-
-
-def explain_reciprocal(rule, _present):
-    # ln|u| is the textbook antiderivative of 1/u, whatever the final answer uses.
-    return make_step(
-        "Reciprocal rule",
-        r"$\\int \\frac{1}{u}\\,du = \\ln|u|$, because the derivative of $\\ln|u|$ is $\\frac{1}{u}$.",
-        [integral_of(rule.integrand, rule.variable), to_latex(with_absolute_value_logs(rule.eval()))],
-    )
-
-
-def explain_exp(rule, present):
-    variable = to_latex(rule.variable)
-    if rule.base == sympy.E:
-        explanation = rf"$e^{{{variable}}}$ is its own derivative, so it is also its own antiderivative."
-    else:
-        explanation = r"$\\int a^{x}\\,dx = \\frac{a^{x}}{\\ln a}$ for a constant base $a$."
-    return make_step(
-        "Exponential rule",
-        explanation,
-        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],
-    )
-
-
-def explain_add(rule, present):
-    terms = [substep.integrand for substep in rule.substeps]
-    return make_step(
-        "Sum rule",
-        "Integrate each term separately, then add the results.",
-        [
-            integral_of(rule.integrand, rule.variable),
-            " + ".join(integral_of(term, rule.variable) for term in terms),
-            result_latex(rule, present),
-        ],
-        [explain_rule(substep, present) for substep in rule.substeps],
-    )
-
-
-def explain_substitution(rule, present):
-    variable = rule.variable
-    u_latex = to_latex(rule.u_func)
-    du = sympy.diff(rule.u_func, variable)
-    inner = rule.substep
-    return make_step(
-        "Substitution",
-        rf"Let $u = {u_latex}$, so $du = {differential_latex(du, variable)}$. Rewrite the "
-        rf"integral in terms of $u$, integrate, then put $u = {u_latex}$ back.",
-        [
-            integral_of(rule.integrand, variable),
-            integral_of(inner.integrand, rule.u_var),
-            to_latex(present(inner.eval())),
-            result_latex(rule, present),
-        ],
-        [explain_rule(inner, present)],
-    )
-
-
-def explain_parts(rule, present, variable=None):
-    """Explain one integration by parts.
-
-    Inside cyclic integration by parts, SymPy leaves the rule's variable and
-    remaining integral empty, so the parent passes the variable and shows the math.
-    """
-    variable = rule.variable if rule.variable is not None else variable
-    v = rule.v_step.eval()
-    du = sympy.diff(rule.u, variable)
-    explanation = (
-        rf"Use $\\int u\\,dv = uv - \\int v\\,du$ with $u = {to_latex(rule.u)}$ and "
-        rf"$dv = {differential_latex(rule.dv, variable)}$. Then "
-        rf"$du = {differential_latex(du, variable)}$ and $v = {to_latex(present(v))}$."
-    )
-    if rule.second_step is None:
-        return make_step("Integration by parts", explanation, [])
-    return make_step(
-        "Integration by parts",
-        explanation,
-        [
-            integral_of(rule.integrand, variable),
-            rf"{to_latex(present(rule.u * v))} - {integral_of(rule.second_step.integrand, variable)}",
-            result_latex(rule, present),
-        ],
-        [explain_rule(rule.second_step, present)],
-    )
-
-
-def explain_cyclic_parts(rule, present):
-    return make_step(
-        "Integration by parts (cyclic)",
-        "Integrating by parts twice brings back the original integral. Move it to the "
-        "left-hand side and solve for it.",
-        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],
-        [explain_parts(parts_rule, present, rule.variable) for parts_rule in rule.parts_rules],
-    )
-
-
-def explain_rewrite(rule, present):
-    variable = rule.variable
-    equation = f"{to_latex(rule.integrand)} = {to_latex(rule.rewritten)}"
-    is_partial_fractions = (
-        rule.integrand.is_rational_function(variable)
-        and len(sympy.Add.make_args(sympy.expand(rule.rewritten))) > 1
-    )
-    if is_partial_fractions:
-        label, explanation = "Partial fractions", f"Split the fraction into simpler ones: \${equation}$."
-    else:
-        label, explanation = "Rewrite", f"Rewrite the integrand: \${equation}$."
-    return make_step(
-        label,
-        explanation,
-        [
-            integral_of(rule.integrand, variable),
-            integral_of(rule.rewritten, variable),
-            result_latex(rule, present),
-        ],
-        [explain_rule(rule.substep, present)],
-    )
-
-
-def explain_trig_substitution(rule, present):
-    theta = to_latex(rule.theta)
-    return make_step(
-        "Trigonometric substitution",
-        rf"Let \${to_latex(rule.variable)} = {to_latex(rule.func)}$, which turns the square root "
-        rf"into a trigonometric function. Integrate in \${theta}$, then convert back.",
-        [
-            integral_of(rule.integrand, rule.variable),
-            integral_of(rule.rewritten, rule.theta),
-            result_latex(rule, present),
-        ],
-        [explain_rule(rule.substep, present)],
-    )
-
-
-def explain_special_function(rule, present):
-    return make_step(
-        "Special function",
-        "This integral has no antiderivative made of elementary functions (powers, roots, "
-        "exponentials, logarithms, and trig functions), so the answer uses a special function "
-        "defined by an integral like this one.",
-        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],
-    )
-
-
-def explain_standard(rule, present):
-    antiderivative = present(rule.eval())
-    return make_step(
-        STANDARD_LABELS.get(type(rule).__name__, "Standard integral"),
-        rf"Differentiating \${to_latex(antiderivative)}$ gives \${to_latex(rule.integrand)}$, "
-        "so it is an antiderivative.",
-        [integral_of(rule.integrand, rule.variable), to_latex(antiderivative)],
-    )
-
-
-def explain_other(rule, present):
-    name = re.sub(r"(?<!^)(?=[A-Z])", " ", type(rule).__name__).lower().capitalize()
-    math = []
-    if rule.integrand is not None:
-        math = [integral_of(rule.integrand, rule.variable), result_latex(rule, present)]
-    return make_step(name, "", math, [explain_rule(child, present) for child in child_rules(rule)])
-
-
-EXPLAINERS = {
-    manualintegrate.ConstantRule: explain_constant,
-    manualintegrate.ConstantTimesRule: explain_constant_times,
-    manualintegrate.PowerRule: explain_power,
-    manualintegrate.ReciprocalRule: explain_reciprocal,
-    manualintegrate.ExpRule: explain_exp,
-    manualintegrate.AddRule: explain_add,
-    manualintegrate.URule: explain_substitution,
-    manualintegrate.PartsRule: explain_parts,
-    manualintegrate.CyclicPartsRule: explain_cyclic_parts,
-    manualintegrate.RewriteRule: explain_rewrite,
-    manualintegrate.TrigSubstitutionRule: explain_trig_substitution,
-    manualintegrate.AtomicRule: explain_standard,
-}
-for _rule_name in SPECIAL_FUNCTION_RULES:
-    if hasattr(manualintegrate, _rule_name):
-        EXPLAINERS[getattr(manualintegrate, _rule_name)] = explain_special_function
+`,"./python/mathlab/integral_steps.py":`"""Step-by-step integrals, from the rule tree SymPy's manualintegrate builds.\r
+\r
+manualintegrate solves integrals with the techniques taught in calculus\r
+courses (substitution, integration by parts, partial fractions, ...) and\r
+records which rule it used at each step. This module picks the simplest\r
+solution when there are several and turns its rules into explained steps.\r
+"""\r
+\r
+import dataclasses\r
+import re\r
+\r
+import sympy\r
+from sympy.integrals import manualintegrate\r
+\r
+from mathlab.expressions import (\r
+    differential_latex,\r
+    factor_latex,\r
+    power_base_latex,\r
+    to_latex,\r
+    with_absolute_value_logs,\r
+)\r
+from mathlab.steps import make_step\r
+\r
+# Solutions with more rules than this are too long to read as steps.\r
+MAX_STEP_COUNT = 60\r
+\r
+STANDARD_LABELS = {\r
+    "SinRule": "Integral of sine",\r
+    "CosRule": "Integral of cosine",\r
+    "Sec2Rule": "Integral of sec²",\r
+    "Csc2Rule": "Integral of csc²",\r
+    "SecTanRule": "Integral of sec · tan",\r
+    "CscCotRule": "Integral of csc · cot",\r
+    "SinhRule": "Integral of sinh",\r
+    "CoshRule": "Integral of cosh",\r
+    "ArctanRule": "Arctangent form",\r
+    "ArcsinRule": "Arcsine form",\r
+    "ArcsinhRule": "Inverse sinh form",\r
+}\r
+\r
+SPECIAL_FUNCTION_RULES = (\r
+    "ErfRule",\r
+    "FresnelSRule",\r
+    "FresnelCRule",\r
+    "EiRule",\r
+    "SiRule",\r
+    "CiRule",\r
+    "ChiRule",\r
+    "ShiRule",\r
+    "LiRule",\r
+    "UpperGammaRule",\r
+    "PolylogRule",\r
+    "EllipticFRule",\r
+    "EllipticERule",\r
+)\r
+\r
+\r
+def child_rules(rule):\r
+    for field in dataclasses.fields(rule):\r
+        value = getattr(rule, field.name)\r
+        if isinstance(value, manualintegrate.Rule):\r
+            yield value\r
+        elif isinstance(value, list):\r
+            yield from (item for item in value if isinstance(item, manualintegrate.Rule))\r
+\r
+\r
+def rule_count(rule):\r
+    return 1 + sum(rule_count(child) for child in child_rules(rule))\r
+\r
+\r
+def substitution_size(rule):\r
+    """How complicated the substitutions are, to prefer u = x^2 over u = e^(x^2)."""\r
+    own = sympy.count_ops(rule.u_func) if isinstance(rule, manualintegrate.URule) else 0\r
+    return own + sum(substitution_size(child) for child in child_rules(rule))\r
+\r
+\r
+def choose_alternatives(rule):\r
+    """Replace each AlternativeRule with its simplest alternative, recursively."""\r
+    if isinstance(rule, manualintegrate.AlternativeRule):\r
+        candidates = [choose_alternatives(alternative) for alternative in rule.alternatives]\r
+        return min(\r
+            candidates,\r
+            key=lambda candidate: (\r
+                candidate.contains_dont_know(),\r
+                rule_count(candidate),\r
+                substitution_size(candidate),\r
+            ),\r
+        )\r
+    changes = {}\r
+    for field in dataclasses.fields(rule):\r
+        value = getattr(rule, field.name)\r
+        if isinstance(value, manualintegrate.Rule):\r
+            changes[field.name] = choose_alternatives(value)\r
+        elif isinstance(value, list) and any(isinstance(item, manualintegrate.Rule) for item in value):\r
+            changes[field.name] = [\r
+                choose_alternatives(item) if isinstance(item, manualintegrate.Rule) else item\r
+                for item in value\r
+            ]\r
+    return dataclasses.replace(rule, **changes) if changes else rule\r
+\r
+\r
+def find_integral_rule(function, variable):\r
+    """Return (rule, antiderivative) solved with textbook rules, or None if there is no such solution."""\r
+    try:\r
+        rule = choose_alternatives(manualintegrate.integral_steps(function, variable))\r
+        if rule.contains_dont_know():\r
+            return None\r
+        return rule, rule.eval()\r
+    except Exception:  # manualintegrate fails in many ways on integrals it cannot do.\r
+        return None\r
+\r
+\r
+def explain_integral(rule, use_absolute_logs):\r
+    """Return the list of steps explaining rule.\r
+\r
+    use_absolute_logs writes ln|u| instead of ln(u), to match the final answer.\r
+    """\r
+    present = with_absolute_value_logs if use_absolute_logs else (lambda expression: expression)\r
+    return [explain_rule(rule, present)]\r
+\r
+\r
+def integral_of(integrand, variable):\r
+    return to_latex(sympy.Integral(integrand, variable))\r
+\r
+\r
+def result_latex(rule, present):\r
+    return to_latex(present(rule.eval()))\r
+\r
+\r
+def explain_rule(rule, present):\r
+    for rule_type in type(rule).__mro__:\r
+        explainer = EXPLAINERS.get(rule_type)\r
+        if explainer is not None:\r
+            return explainer(rule, present)\r
+    return explain_other(rule, present)\r
+\r
+\r
+def explain_constant(rule, present):\r
+    return make_step(\r
+        "Constant rule",\r
+        rf"The integral of a constant $c$ is $c\\,{to_latex(rule.variable)}$.",\r
+        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],\r
+    )\r
+\r
+\r
+def explain_constant_times(rule, present):\r
+    return make_step(\r
+        "Constant multiple rule",\r
+        f"Move the constant \${to_latex(rule.constant)}$ outside the integral.",\r
+        [\r
+            integral_of(rule.integrand, rule.variable),\r
+            rf"{factor_latex(rule.constant)} {integral_of(rule.other, rule.variable)}",\r
+            result_latex(rule, present),\r
+        ],\r
+        [explain_rule(rule.substep, present)],\r
+    )\r
+\r
+\r
+def explain_power(rule, present):\r
+    note = ""\r
+    if not (rule.exp.is_integer and rule.exp.is_positive):\r
+        power_form = rf"{power_base_latex(rule.base)}^{{{to_latex(rule.exp)}}}"\r
+        note = f" Here \${to_latex(rule.integrand)} = {power_form}$."\r
+    return make_step(\r
+        "Power rule",\r
+        r"Raise the power by one and divide by the new power: "\r
+        rf"$\\int x^{{n}}\\,dx = \\frac{{x^{{n+1}}}}{{n+1}}$ for $n \\neq -1$.{note}",\r
+        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],\r
+    )\r
+\r
+\r
+def explain_reciprocal(rule, _present):\r
+    # ln|u| is the textbook antiderivative of 1/u, whatever the final answer uses.\r
+    return make_step(\r
+        "Reciprocal rule",\r
+        r"$\\int \\frac{1}{u}\\,du = \\ln|u|$, because the derivative of $\\ln|u|$ is $\\frac{1}{u}$.",\r
+        [integral_of(rule.integrand, rule.variable), to_latex(with_absolute_value_logs(rule.eval()))],\r
+    )\r
+\r
+\r
+def explain_exp(rule, present):\r
+    variable = to_latex(rule.variable)\r
+    if rule.base == sympy.E:\r
+        explanation = rf"$e^{{{variable}}}$ is its own derivative, so it is also its own antiderivative."\r
+    else:\r
+        explanation = r"$\\int a^{x}\\,dx = \\frac{a^{x}}{\\ln a}$ for a constant base $a$."\r
+    return make_step(\r
+        "Exponential rule",\r
+        explanation,\r
+        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],\r
+    )\r
+\r
+\r
+def explain_add(rule, present):\r
+    terms = [substep.integrand for substep in rule.substeps]\r
+    return make_step(\r
+        "Sum rule",\r
+        "Integrate each term separately, then add the results.",\r
+        [\r
+            integral_of(rule.integrand, rule.variable),\r
+            " + ".join(integral_of(term, rule.variable) for term in terms),\r
+            result_latex(rule, present),\r
+        ],\r
+        [explain_rule(substep, present) for substep in rule.substeps],\r
+    )\r
+\r
+\r
+def renamed(value, old, new):\r
+    """A rule (or a part of one) with the symbol old replaced by new\r
+    everywhere in it, including the rules under it."""\r
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):\r
+        changes = {field.name: renamed(getattr(value, field.name), old, new) for field in dataclasses.fields(value)}\r
+        return dataclasses.replace(value, **changes)\r
+    if isinstance(value, sympy.Basic):\r
+        return value.xreplace({old: new})\r
+    if isinstance(value, (list, tuple)):\r
+        return type(value)(renamed(item, old, new) for item in value)\r
+    return value\r
+\r
+\r
+# Names for a substitution's new variable, in the order they are tried.\r
+SUBSTITUTION_NAMES = ("u", "w", "s")\r
+\r
+\r
+def explain_substitution(rule, present):\r
+    variable = rule.variable\r
+    u_latex = to_latex(rule.u_func)\r
+    du = sympy.diff(rule.u_func, variable)\r
+    inner = rule.substep\r
+    # SymPy always calls the new variable u. When the integral already has a\r
+    # u, like a surface's r(u, v), that would read "Let u = cos u", so the\r
+    # new variable gets the first name that isn't taken.\r
+    taken = {symbol.name for symbol in rule.integrand.free_symbols | {variable}}\r
+    # Integrating in u or v means a surface r(u, v), whose other parameter\r
+    # may already be integrated out but is still part of the problem.\r
+    if variable.name in ("u", "v"):\r
+        taken |= {"u", "v"}\r
+    name = next(candidate for candidate in SUBSTITUTION_NAMES if candidate not in taken)\r
+    u_var = rule.u_var\r
+    if name != "u":\r
+        new_var = sympy.Dummy(name, real=True)\r
+        inner = renamed(inner, u_var, new_var)\r
+        u_var = new_var\r
+    return make_step(\r
+        "Substitution",\r
+        rf"Let \${name} = {u_latex}$, so $d{name} = {differential_latex(du, variable)}$. Rewrite the "\r
+        rf"integral in terms of \${name}$, integrate, then put \${name} = {u_latex}$ back.",\r
+        [\r
+            integral_of(rule.integrand, variable),\r
+            integral_of(inner.integrand, u_var),\r
+            to_latex(present(inner.eval())),\r
+            result_latex(rule, present),\r
+        ],\r
+        [explain_rule(inner, present)],\r
+    )\r
+\r
+\r
+def explain_parts(rule, present, variable=None):\r
+    """Explain one integration by parts.\r
+\r
+    Inside cyclic integration by parts, SymPy leaves the rule's variable and\r
+    remaining integral empty, so the parent passes the variable and shows the math.\r
+    """\r
+    variable = rule.variable if rule.variable is not None else variable\r
+    v = rule.v_step.eval()\r
+    du = sympy.diff(rule.u, variable)\r
+    explanation = (\r
+        rf"Use $\\int u\\,dv = uv - \\int v\\,du$ with $u = {to_latex(rule.u)}$ and "\r
+        rf"$dv = {differential_latex(rule.dv, variable)}$. Then "\r
+        rf"$du = {differential_latex(du, variable)}$ and $v = {to_latex(present(v))}$."\r
+    )\r
+    if rule.second_step is None:\r
+        return make_step("Integration by parts", explanation, [])\r
+    return make_step(\r
+        "Integration by parts",\r
+        explanation,\r
+        [\r
+            integral_of(rule.integrand, variable),\r
+            rf"{to_latex(present(rule.u * v))} - {integral_of(rule.second_step.integrand, variable)}",\r
+            result_latex(rule, present),\r
+        ],\r
+        [explain_rule(rule.second_step, present)],\r
+    )\r
+\r
+\r
+def explain_cyclic_parts(rule, present):\r
+    return make_step(\r
+        "Integration by parts (cyclic)",\r
+        "Integrating by parts twice brings back the original integral. Move it to the "\r
+        "left-hand side and solve for it.",\r
+        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],\r
+        [explain_parts(parts_rule, present, rule.variable) for parts_rule in rule.parts_rules],\r
+    )\r
+\r
+\r
+def explain_rewrite(rule, present):\r
+    variable = rule.variable\r
+    equation = f"{to_latex(rule.integrand)} = {to_latex(rule.rewritten)}"\r
+    # Partial fractions split a fraction with the variable in its denominator;\r
+    # multiplying out a polynomial, like t²(t² - 3), is only a rewrite.\r
+    _, denominator = sympy.fraction(sympy.together(rule.integrand))\r
+    is_partial_fractions = (\r
+        rule.integrand.is_rational_function(variable)\r
+        and denominator.has(variable)\r
+        and len(sympy.Add.make_args(sympy.expand(rule.rewritten))) > 1\r
+    )\r
+    if is_partial_fractions:\r
+        label, explanation = "Partial fractions", f"Split the fraction into simpler ones: \${equation}$."\r
+    else:\r
+        label, explanation = "Rewrite", f"Rewrite the integrand: \${equation}$."\r
+    return make_step(\r
+        label,\r
+        explanation,\r
+        [\r
+            integral_of(rule.integrand, variable),\r
+            integral_of(rule.rewritten, variable),\r
+            result_latex(rule, present),\r
+        ],\r
+        [explain_rule(rule.substep, present)],\r
+    )\r
+\r
+\r
+def explain_trig_substitution(rule, present):\r
+    theta = to_latex(rule.theta)\r
+    return make_step(\r
+        "Trigonometric substitution",\r
+        rf"Let \${to_latex(rule.variable)} = {to_latex(rule.func)}$, which turns the square root "\r
+        rf"into a trigonometric function. Integrate in \${theta}$, then convert back.",\r
+        [\r
+            integral_of(rule.integrand, rule.variable),\r
+            integral_of(rule.rewritten, rule.theta),\r
+            result_latex(rule, present),\r
+        ],\r
+        [explain_rule(rule.substep, present)],\r
+    )\r
+\r
+\r
+def explain_special_function(rule, present):\r
+    return make_step(\r
+        "Special function",\r
+        "This integral has no antiderivative made of elementary functions (powers, roots, "\r
+        "exponentials, logarithms, and trig functions), so the answer uses a special function "\r
+        "defined by an integral like this one.",\r
+        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],\r
+    )\r
+\r
+\r
+def explain_standard(rule, present):\r
+    antiderivative = present(rule.eval())\r
+    return make_step(\r
+        STANDARD_LABELS.get(type(rule).__name__, "Standard integral"),\r
+        rf"Differentiating \${to_latex(antiderivative)}$ gives \${to_latex(rule.integrand)}$, "\r
+        "so it is an antiderivative.",\r
+        [integral_of(rule.integrand, rule.variable), to_latex(antiderivative)],\r
+    )\r
+\r
+\r
+def explain_other(rule, present):\r
+    name = re.sub(r"(?<!^)(?=[A-Z])", " ", type(rule).__name__).lower().capitalize()\r
+    math = []\r
+    if rule.integrand is not None:\r
+        math = [integral_of(rule.integrand, rule.variable), result_latex(rule, present)]\r
+    return make_step(name, "", math, [explain_rule(child, present) for child in child_rules(rule)])\r
+\r
+\r
+EXPLAINERS = {\r
+    manualintegrate.ConstantRule: explain_constant,\r
+    manualintegrate.ConstantTimesRule: explain_constant_times,\r
+    manualintegrate.PowerRule: explain_power,\r
+    manualintegrate.ReciprocalRule: explain_reciprocal,\r
+    manualintegrate.ExpRule: explain_exp,\r
+    manualintegrate.AddRule: explain_add,\r
+    manualintegrate.URule: explain_substitution,\r
+    manualintegrate.PartsRule: explain_parts,\r
+    manualintegrate.CyclicPartsRule: explain_cyclic_parts,\r
+    manualintegrate.RewriteRule: explain_rewrite,\r
+    manualintegrate.TrigSubstitutionRule: explain_trig_substitution,\r
+    manualintegrate.AtomicRule: explain_standard,\r
+}\r
+for _rule_name in SPECIAL_FUNCTION_RULES:\r
+    if hasattr(manualintegrate, _rule_name):\r
+        EXPLAINERS[getattr(manualintegrate, _rule_name)] = explain_special_function\r
 `,"./python/mathlab/integral_strategies.py":`"""Extra integration strategies, tried when the textbook rules alone fail.
 
 SymPy's general algorithms can run for many minutes on integrals a student
@@ -7821,9 +7867,9 @@ def lines_and_planes_problem(rng):\r
     p, q = small_point(rng), small_point(rng)\r
     while q == p:\r
         q = small_point(rng)\r
-    pq = q - p\r
     named = lambda name, point: rf"{name}{point_latex(point)}"  # noqa: E731\r
-    if rng.choice(["plane", "line"]) == "plane" or pq[2] == 0:\r
+    if rng.choice(["plane", "line"]) == "plane":\r
+        pq = q - p\r
         r = small_point(rng)\r
         while pq.cross(r - p) == sympy.zeros(3, 1):\r
             r = small_point(rng)  # Three points on one line give no single plane.\r
@@ -7837,6 +7883,11 @@ def lines_and_planes_problem(rng):\r
             (),\r
             [vectors_step(p, q, r), normal_part, *equation_steps],\r
         )\r
+    # P or Q on z = 0 would give the crossing away, and equal heights would\r
+    # make a line that never crosses.\r
+    while p[2] == 0 or q[2] == 0 or p[2] == q[2]:\r
+        p, q = small_point(rng), small_point(rng)\r
+    pq = q - p\r
     t_value = -p[2] / pq[2]\r
     crossing = p + t_value * pq\r
     return Problem(\r
@@ -8803,8 +8854,13 @@ def line_side(field, edges):\r
     count = len(edges)\r
     step = make_step(\r
         "Line integral around the boundary",\r
-        rf"The other side: $C$, the boundary of $S$, is made of {count} piece{'s' if count > 1 else ''}. Integrate "\r
-        r"$\\mathbf{F} \\cdot d\\mathbf{r}$ along each and add.",\r
+        (\r
+            rf"The other side: $C$, the boundary of $S$, is made of {count} pieces. Integrate "\r
+            r"$\\mathbf{F} \\cdot d\\mathbf{r}$ along each and add."\r
+            if count > 1\r
+            else r"The other side: $C$, the boundary of $S$, is one piece. Integrate "\r
+            r"$\\mathbf{F} \\cdot d\\mathbf{r}$ along it."\r
+        ),\r
         math,\r
         steps,\r
     )\r
