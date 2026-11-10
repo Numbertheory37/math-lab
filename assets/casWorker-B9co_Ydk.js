@@ -148,6 +148,7 @@ from mathlab.solid import solid_picture\r
 from mathlab.space_curves import analyze_space_curve, space_trace\r
 from mathlab.triple import triple_integral\r
 from mathlab.planes import analyze_plane\r
+from mathlab.polar import polar_double_integral\r
 from mathlab.vectors import analyze_vectors, parse_vector\r
 \r
 GRAPH_X_MIN = -10.0\r
@@ -231,6 +232,17 @@ def preview(request):\r
     }\r
 \r
 \r
+def double_request(request):\r
+    """A double integral: inside bounds may use the outside variable (r's may\r
+    use θ, in polar coordinates); all bounds are LaTeX."""\r
+    function = parse_function(expression_text(request), (X, Y))\r
+    inner = (request.get("innerLower"), request.get("innerUpper"))\r
+    outer = (request.get("lower"), request.get("upper"))\r
+    if request.get("order") == "polar":\r
+        return polar_double_integral(function, inner, outer)\r
+    return double_integral(function, request.get("order"), inner, outer)\r
+\r
+\r
 def solid_bounds(request):\r
     """A triple integral's bounds as (lower, upper) LaTeX pairs, innermost first:\r
     the innermost may use the two other variables, the middle the outermost one."""\r
@@ -271,13 +283,7 @@ OPERATIONS = {\r
     "definite": lambda request: definite_integral(\r
         parse_function(expression_text(request)), request.get("lower"), request.get("upper")\r
     ),\r
-    # Inside bounds may depend on the outside variable; all bounds are LaTeX.\r
-    "double": lambda request: double_integral(\r
-        parse_function(expression_text(request), (X, Y)),\r
-        request.get("order"),\r
-        (request.get("innerLower"), request.get("innerUpper")),\r
-        (request.get("lower"), request.get("upper")),\r
-    ),\r
+    "double": double_request,\r
     "triple": lambda request: triple_integral(\r
         parse_function(expression_text(request), (X, Y, Z)),\r
         request.get("order"),\r
@@ -3637,7 +3643,7 @@ from mathlab.antiderivatives import NoAntiderivative\r
 from mathlab.curves import latex_value, numerical_integral\r
 from mathlab.definite import parse_bound\r
 from mathlab.double import iterated_integral, numerical_check, parse_inside_bound\r
-from mathlab.expressions import R, T, THETA, X, Y, Z, InputError, factor_latex, to_latex\r
+from mathlab.expressions import R, T, THETA, X, Y, Z, InputError, to_latex\r
 from mathlab.latex_input import latex_to_text\r
 from mathlab.numerical import ITERATED_AGREEMENT, iterated_value, no_formula_step, numerical_answer_check, shown\r
 from mathlab.line_integrals import (\r
@@ -3653,6 +3659,7 @@ from mathlab.line_integrals import (\r
     simpson,\r
 )\r
 from mathlab.parsing import parse_function\r
+from mathlab.polar import change_to_polar\r
 from mathlab.progress import report\r
 from mathlab.steps import make_step, separate\r
 from mathlab.tangent import only_variables\r
@@ -3933,21 +3940,10 @@ def double_side(region, curl):\r
     substeps = []\r
     integrand = curl\r
     if region["kind"] == "polar":\r
-        substituted = sympy.simplify(curl.subs({X: R * sympy.cos(THETA), Y: R * sympy.sin(THETA)}, simultaneous=True))\r
-        integrand = sympy.simplify(substituted * R)\r
-        substeps.append(\r
-            make_step(\r
-                "Change to polar coordinates",\r
-                r"Write $x = r\\cos\\theta$ and $y = r\\sin\\theta$, and replace $dA$ by $r\\,dr\\,d\\theta$: "\r
-                r"a small polar box has sides $dr$ and $r\\,d\\theta$ (an arc of a circle of radius $r$), "\r
-                r"as in cylindrical coordinates.",\r
-                [\r
-                    r"\\left(\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y}\\right) dA",\r
-                    rf"{factor_latex(substituted)} \\cdot r\\, dr\\, d\\theta",\r
-                    rf"{to_latex(integrand)}\\, dr\\, d\\theta",\r
-                ],\r
-            )\r
+        integrand, change = change_to_polar(\r
+            curl, r"\\left(\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y}\\right)"\r
         )\r
+        substeps.append(change)\r
     try:\r
         iterated, steps, value = iterated_integral(integrand, inside, outside, region["inner"], region["outer"])\r
         substeps.extend(steps[1:])\r
@@ -7557,6 +7553,137 @@ def analyze_plane(points):\r
             "normal": [float(component) for component in (a, b, c)],\r
         },\r
     }\r
+`,"./python/mathlab/polar.py":`"""Double integrals in polar coordinates: x = r cos θ, y = r sin θ, and\r
+dA = r dr dθ, for disks, rings, and sectors, whose bounds in r and θ are\r
+constants or simple. Green's theorem uses the same change for polar regions."""\r
+\r
+import math\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.antiderivatives import NoAntiderivative\r
+from mathlab.checks import numeric_function, plot_value\r
+from mathlab.double import GRID_SIZE, OUTLINE_POINTS, iterated_integral, numerical_check\r
+from mathlab.expressions import R, THETA, X, Y, InputError, factor_latex, to_latex\r
+from mathlab.numerical import iterated_value, no_formula_step, numerical_answer_check, shown\r
+from mathlab.parsing import constants_in\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step\r
+\r
+\r
+def change_to_polar(function, written):\r
+    """function(x, y) dA as an integrand in r and θ, with the step showing it.\r
+    written is how the step's first line shows the function."""\r
+    substituted = sympy.simplify(function.subs({X: R * sympy.cos(THETA), Y: R * sympy.sin(THETA)}, simultaneous=True))\r
+    integrand = sympy.simplify(substituted * R)\r
+    step = make_step(\r
+        "Change to polar coordinates",\r
+        r"Write $x = r\\cos\\theta$ and $y = r\\sin\\theta$, and replace $dA$ by $r\\,dr\\,d\\theta$: "\r
+        r"a small polar box has sides $dr$ and $r\\,d\\theta$ (an arc of a circle of radius $r$), "\r
+        r"as in cylindrical coordinates.",\r
+        [\r
+            rf"{written}\\, dA",\r
+            rf"{factor_latex(substituted)} \\cdot r\\, dr\\, d\\theta",\r
+            rf"{to_latex(integrand)}\\, dr\\, d\\theta",\r
+        ],\r
+    )\r
+    return integrand, step\r
+\r
+\r
+def polar_graph(function, region):\r
+    """The surface over a box around the region, which points are in it, and\r
+    its outline, in (x, y) coordinates, as for a double integral in x and y."""\r
+    lower, upper = (numeric_function(bound, (THETA,)) for bound in region["inner"])\r
+    a, b = (float(bound) for bound in region["outer"])\r
+    angles = [a + (b - a) * index / (OUTLINE_POINTS - 1) for index in range(OUTLINE_POINTS)]\r
+    radii = [\r
+        [plot_value(lambda angle=angle, bound=bound: bound(mpmath.mpf(angle))) for angle in angles]\r
+        for bound in (lower, upper)\r
+    ]\r
+    if any(radius is None for edge in radii for radius in edge):\r
+        raise InputError("The bounds for r aren't defined for every θ in the region.")\r
+    # Along the inner edge, back along the outer edge, and closed.\r
+    path = [*zip(radii[0], angles), *zip(reversed(radii[1]), reversed(angles)), (radii[0][0], angles[0])]\r
+    outline = {\r
+        "x": [radius * math.cos(angle) for radius, angle in path],\r
+        "y": [radius * math.sin(angle) for radius, angle in path],\r
+    }\r
+    reach = max(max(radii[1]), 0.25) * 1.1\r
+\r
+    def grid():\r
+        step = 2 * reach / (GRID_SIZE - 1)\r
+        return [round(-reach + step * index, 6) for index in range(GRID_SIZE)]\r
+\r
+    def in_region(x, y):\r
+        radius = math.hypot(x, y)\r
+        # The point's angle, taken in [a, a + 2π).\r
+        angle = a + (math.atan2(y, x) - a) % (2 * math.pi)\r
+        if angle > b + 1e-9:\r
+            return False\r
+        low, high = (plot_value(lambda bound=bound: bound(mpmath.mpf(angle))) for bound in (lower, upper))\r
+        return low is not None and high is not None and low - 1e-9 <= radius <= high + 1e-9\r
+\r
+    as_numeric = numeric_function(function, (X, Y))\r
+    xs = ys = grid()\r
+    z = [[plot_value(lambda x=x, y=y: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x in xs] for y in ys]\r
+    region_mask = [[in_region(x, y) for x in xs] for y in ys]\r
+    return {"x": xs, "y": ys, "z": z, "region": region_mask, "outline": outline}\r
+\r
+\r
+def polar_double_integral(function, inner_texts, outer_texts):\r
+    """∬_R f dA with R given in polar coordinates: r between bounds that may\r
+    use θ, and θ between two numbers."""\r
+    # Imported here because green imports this module.\r
+    from mathlab.green import region_from\r
+\r
+    constants = constants_in(function, (X, Y))\r
+    if constants:\r
+        names = ", ".join(str(constant) for constant in constants)\r
+        raise InputError(\r
+            f"A double integral needs a function of x and y alone, so its answer is a number. Remove {names}."\r
+        )\r
+    region = region_from(\r
+        {\r
+            "regionKind": "polar",\r
+            "innerLower": inner_texts[0],\r
+            "innerUpper": inner_texts[1],\r
+            "lower": outer_texts[0],\r
+            "upper": outer_texts[1],\r
+        }\r
+    )\r
+    inner, outer = region["inner"], region["outer"]\r
+    graph = polar_graph(function, region)\r
+    integrand, change = change_to_polar(function, to_latex(function))\r
+    iterated = to_latex(sympy.Integral(integrand, (R, *inner), (THETA, *outer)))\r
+    shown_function = rf"\\left({to_latex(function)}\\right)" if function.is_Add else to_latex(function)\r
+    written = rf"\\iint_R {shown_function}\\, dA = {iterated}"\r
+    try:\r
+        _, steps, value = iterated_integral(integrand, R, THETA, inner, outer)\r
+    except NoAntiderivative as failure:\r
+        report("No formula was found, so integrating numerically…")\r
+        value = iterated_value(integrand, (R, THETA), (inner, outer))\r
+        return {\r
+            "ok": True,\r
+            "operation": "double",\r
+            "equationLatex": rf"{written} \\approx {shown(value)}",\r
+            "check": numerical_answer_check(value, "the same method with twice as many points"),\r
+            "steps": [change, no_formula_step(failure.function, failure.variable)],\r
+            "stepsNote": None,\r
+            "graph": graph,\r
+        }\r
+    equation = f"{written} = {to_latex(value)}"\r
+    if not value.is_Rational:\r
+        equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"\r
+    return {\r
+        "ok": True,\r
+        "operation": "double",\r
+        "equationLatex": equation,\r
+        "check": numerical_check(integrand, R, THETA, inner, outer, value),\r
+        "steps": [change, *steps],\r
+        "stepsNote": None,\r
+        "graph": graph,\r
+    }\r
 `,"./python/mathlab/practice.py":`"""Practice problems for the lessons, and checking a student's answer.\r
 \r
 A problem is built from its lesson and a seed. Checking rebuilds the same\r
@@ -7589,6 +7716,7 @@ from mathlab.planes import (\r
     signed_sum,\r
     vectors_step,\r
 )\r
+from mathlab.polar import change_to_polar\r
 from mathlab.steps import make_step, separate\r
 from mathlab.space_curves import build_space_curve, curvature_steps, velocity_steps\r
 from mathlab.surfaces import solve_surface\r
@@ -7709,6 +7837,39 @@ def double_integral_problem(rng):\r
     inner_bounds, outer_bounds = (tuple(map(sympy.sympify, bounds)) for bounds in (inner_bounds, outer_bounds))\r
     iterated, steps, value = iterated_integral(function, inside, outside, inner_bounds, outer_bounds)\r
     return Problem(rf"Evaluate \${iterated}$.", value, (), steps)\r
+\r
+\r
+# Sectors as θ ranges, and how a problem describes each one.\r
+POLAR_SECTORS = (\r
+    ((0, sympy.pi / 2), "in the first quadrant"),\r
+    ((0, sympy.pi), r"above the $x$-axis ($y \\ge 0$)"),\r
+    ((sympy.pi / 2, sympy.pi), "in the second quadrant"),\r
+    ((0, 2 * sympy.pi), None),\r
+)\r
+\r
+\r
+def polar_double_problem(rng):\r
+    """∬ f dA over a disk, a ring, or part of one, where polar coordinates\r
+    make the bounds constants, with an exact answer."""\r
+    function = rng.choice([sympy.Integer(1), X**2 + Y**2, sympy.sqrt(X**2 + Y**2), Y, X**2, sympy.exp(X**2 + Y**2)])\r
+    inner, outer = rng.choice([(0, 1), (0, 2), (1, 2), (1, 3), (0, 3)])\r
+    (start, end), where = rng.choice(POLAR_SECTORS)\r
+    if inner == 0:\r
+        region = rf"the disk $x^2 + y^2 \\le {outer**2}$"\r
+    else:\r
+        region = rf"the ring \${inner**2} \\le x^2 + y^2 \\le {outer**2}$"\r
+    if where is not None:\r
+        region = f"the part of {region.removeprefix('the ')} {where}"\r
+    integrand, change = change_to_polar(function, to_latex(function))\r
+    _, steps, value = iterated_integral(\r
+        integrand, R, THETA, (sympy.Integer(inner), sympy.Integer(outer)), (sympy.sympify(start), sympy.sympify(end))\r
+    )\r
+    return Problem(\r
+        rf"Evaluate $\\iint_R {to_latex(function)}\\, dA$, where $R$ is {region}.",\r
+        value,\r
+        (),\r
+        [change, *steps],\r
+    )\r
 \r
 \r
 def triple_integral_problem(rng):\r
@@ -8293,6 +8454,7 @@ GENERATORS = {\r
     "vectors": vector_problem,\r
     "partial-derivatives": partial_derivative_problem,\r
     "double-integrals": double_integral_problem,\r
+    "polar-double-integrals": polar_double_problem,\r
     "triple-integrals": triple_integral_problem,\r
     "parametric-polar": curve_problem,\r
     "space-curves": space_curve_problem,\r
