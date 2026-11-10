@@ -1,101 +1,113 @@
 const e=/* #__PURE__ */ Object.assign({"./python/mathlab/__init__.py":`"""Math Lab's Python side: SymPy-based calculus with checks and explanations."""
-`,"./python/mathlab/antiderivatives.py":`"""Finding an antiderivative, with steps when the textbook rules can explain it.
-
-Shared by indefinite, definite, and double integrals. The variable of
-integration is x unless given; any other letters are treated as constants.
-"""
-
-import sympy
-
-from mathlab.checks import (
-    check_antiderivative,
-    check_with_constants,
-    test_values,
-    undefined_where_function_is_defined,
-)
-from mathlab.expressions import X, InputError, with_absolute_value_logs
-from mathlab.integral_steps import MAX_STEP_COUNT, explain_integral, find_integral_rule, rule_count
-from mathlab.integral_strategies import integrate_with_one_angle
-from mathlab.parsing import constants_in
-from mathlab.progress import report
-
-
-def checked(function, antiderivative, variable):
-    """Check an antiderivative, with test values for any constants."""
-    return check_with_constants(
-        lambda f, F: check_antiderivative(f, F, variable), function, antiderivative, (variable,)
-    )
-
-
-def with_absolute_values_if_needed(function, antiderivative, variable=X):
-    """Use ln|u| instead of ln(u) where ln(u) is undefined but the function is not.
-
-    Returns the antiderivative to show and whether absolute values were added.
-    """
-    if not antiderivative.has(sympy.log):
-        return antiderivative, False
-    values = test_values(constants_in(function, (variable,)))
-    if not undefined_where_function_is_defined(
-        function.subs(values), antiderivative.subs(values), variable
-    ):
-        return antiderivative, False
-    candidate = with_absolute_value_logs(antiderivative)
-    if checked(function, candidate, variable)["status"] == "verified":
-        return candidate, True
-    return antiderivative, False
-
-
-def find_antiderivative(function, variable=X, general=True):
-    """Return (antiderivative, check, steps, steps_note).
-
-    Strategies go from the most explainable to the most powerful, reporting
-    each one, since hard integrals can take minutes. With general=False, the
-    slow general algorithms are skipped, for callers that have a numerical
-    answer to fall back on.
-    """
-    report("Trying the textbook rules (substitution, parts, partial fractions)…")
-    found = find_integral_rule(function, variable)
-    if found is not None:
-        rule, antiderivative = found
-        antiderivative, absolute_logs = with_absolute_values_if_needed(
-            function, antiderivative, variable
-        )
-        check = checked(function, antiderivative, variable)
-        if check["status"] != "failed":
-            if rule_count(rule) > MAX_STEP_COUNT:
-                return antiderivative, check, [], "This solution has too many steps to show."
-            try:
-                steps, steps_note = explain_integral(rule, absolute_logs), None
-            except Exception:  # Steps are extra: a failure in them must not block the answer.
-                steps, steps_note = [], "Steps couldn't be shown for this integral."
-            return antiderivative, check, steps, steps_note
-    # This rewrite is written for x, the Solver's usual variable.
-    if variable == X:
-        report("Rewriting the trig functions in terms of one angle…")
-        rewritten = integrate_with_one_angle(function)
-        if rewritten is not None:
-            antiderivative, steps = rewritten
-            antiderivative, _ = with_absolute_values_if_needed(function, antiderivative)
-            check = checked(function, antiderivative, variable)
-            if check["status"] != "failed":
-                return antiderivative, check, steps, None
-    if not general:
-        raise InputError("No antiderivative was found with the textbook rules.")
-    report("Trying SymPy's general algorithms (Risch, Meijer G). Hard integrals can take minutes…")
-    antiderivative = sympy.integrate(function, variable)
-    if antiderivative.has(sympy.Integral):
-        raise InputError(
-            "SymPy couldn't find an antiderivative for this function. "
-            "Some functions have none that can be written with standard functions."
-        )
-    antiderivative, _ = with_absolute_values_if_needed(function, antiderivative, variable)
-    return (
-        antiderivative,
-        checked(function, antiderivative, variable),
-        [],
-        "Steps aren't available: SymPy found this antiderivative with an advanced algorithm "
-        "rather than the rules taught in calculus courses.",
-    )
+`,"./python/mathlab/antiderivatives.py":`"""Finding an antiderivative, with steps when the textbook rules can explain it.\r
+\r
+Shared by indefinite, definite, and double integrals. The variable of\r
+integration is x unless given; any other letters are treated as constants.\r
+"""\r
+\r
+import sympy\r
+\r
+from mathlab.checks import (\r
+    check_antiderivative,\r
+    check_with_constants,\r
+    test_values,\r
+    undefined_where_function_is_defined,\r
+)\r
+from mathlab.expressions import X, InputError, with_absolute_value_logs\r
+from mathlab.integral_steps import MAX_STEP_COUNT, explain_integral, find_integral_rule, rule_count\r
+from mathlab.integral_strategies import integrate_with_one_angle\r
+from mathlab.parsing import constants_in\r
+from mathlab.progress import report\r
+\r
+\r
+class NoAntiderivative(InputError):\r
+    """No antiderivative of function with respect to variable was found: a\r
+    definite integral of it may still have a value, computed numerically."""\r
+\r
+    def __init__(self, message, function, variable):\r
+        super().__init__(message)\r
+        self.function = function\r
+        self.variable = variable\r
+\r
+\r
+def checked(function, antiderivative, variable):\r
+    """Check an antiderivative, with test values for any constants."""\r
+    return check_with_constants(\r
+        lambda f, F: check_antiderivative(f, F, variable), function, antiderivative, (variable,)\r
+    )\r
+\r
+\r
+def with_absolute_values_if_needed(function, antiderivative, variable=X):\r
+    """Use ln|u| instead of ln(u) where ln(u) is undefined but the function is not.\r
+\r
+    Returns the antiderivative to show and whether absolute values were added.\r
+    """\r
+    if not antiderivative.has(sympy.log):\r
+        return antiderivative, False\r
+    values = test_values(constants_in(function, (variable,)))\r
+    if not undefined_where_function_is_defined(\r
+        function.subs(values), antiderivative.subs(values), variable\r
+    ):\r
+        return antiderivative, False\r
+    candidate = with_absolute_value_logs(antiderivative)\r
+    if checked(function, candidate, variable)["status"] == "verified":\r
+        return candidate, True\r
+    return antiderivative, False\r
+\r
+\r
+def find_antiderivative(function, variable=X, general=True):\r
+    """Return (antiderivative, check, steps, steps_note).\r
+\r
+    Strategies go from the most explainable to the most powerful, reporting\r
+    each one, since hard integrals can take minutes. With general=False, the\r
+    slow general algorithms are skipped, for callers that have a numerical\r
+    answer to fall back on.\r
+    """\r
+    report("Trying the textbook rules (substitution, parts, partial fractions)…")\r
+    found = find_integral_rule(function, variable)\r
+    if found is not None:\r
+        rule, antiderivative = found\r
+        antiderivative, absolute_logs = with_absolute_values_if_needed(\r
+            function, antiderivative, variable\r
+        )\r
+        check = checked(function, antiderivative, variable)\r
+        if check["status"] != "failed":\r
+            if rule_count(rule) > MAX_STEP_COUNT:\r
+                return antiderivative, check, [], "This solution has too many steps to show."\r
+            try:\r
+                steps, steps_note = explain_integral(rule, absolute_logs), None\r
+            except Exception:  # Steps are extra: a failure in them must not block the answer.\r
+                steps, steps_note = [], "Steps couldn't be shown for this integral."\r
+            return antiderivative, check, steps, steps_note\r
+    # This rewrite is written for x, the Solver's usual variable.\r
+    if variable == X:\r
+        report("Rewriting the trig functions in terms of one angle…")\r
+        rewritten = integrate_with_one_angle(function)\r
+        if rewritten is not None:\r
+            antiderivative, steps = rewritten\r
+            antiderivative, _ = with_absolute_values_if_needed(function, antiderivative)\r
+            check = checked(function, antiderivative, variable)\r
+            if check["status"] != "failed":\r
+                return antiderivative, check, steps, None\r
+    if not general:\r
+        raise NoAntiderivative("No antiderivative was found with the textbook rules.", function, variable)\r
+    report("Trying SymPy's general algorithms (Risch, Meijer G). Hard integrals can take minutes…")\r
+    antiderivative = sympy.integrate(function, variable)\r
+    if antiderivative.has(sympy.Integral):\r
+        raise NoAntiderivative(\r
+            "SymPy couldn't find an antiderivative for this function. "\r
+            "Some functions have none that can be written with standard functions.",\r
+            function,\r
+            variable,\r
+        )\r
+    antiderivative, _ = with_absolute_values_if_needed(function, antiderivative, variable)\r
+    return (\r
+        antiderivative,\r
+        checked(function, antiderivative, variable),\r
+        [],\r
+        "Steps aren't available: SymPy found this antiderivative with an advanced algorithm "\r
+        "rather than the rules taught in calculus courses.",\r
+    )\r
 `,"./python/mathlab/calculus.py":`"""Calculus operations for the solver, run inside Pyodide (Python in the browser).\r
 \r
 The TypeScript side calls run_request() with a JSON string and gets a JSON\r
@@ -385,195 +397,217 @@ def run_request(request_json, on_progress=None):\r
     finally:\r
         listen(None)\r
     return json.dumps(response, allow_nan=False)\r
-`,"./python/mathlab/checks.py":`"""Independent numerical checks of answers, so a wrong answer is flagged."""
-
-import itertools
-import math
-
-import mpmath
-import sympy
-
-from mathlab.expressions import X, Y, to_latex
-
-# Points where answers are checked. They avoid 0, integers, and common
-# singularities such as pi/2 so that most functions are defined at most of them.
-CHECK_POINTS = (-2.37, -1.29, -0.53, 0.31, 0.87, 1.67, 2.61)
-# (x, y) points for functions of two variables, in all four quadrants.
-CHECK_POINTS_2D = tuple(zip(CHECK_POINTS, (1.13, -0.71, 2.07, -1.83, 0.47, -2.29, 1.59)))
-MIN_CHECK_POINTS = 3
-CHECK_PRECISION_DIGITS = 30
-CHECK_TOLERANCE = mpmath.mpf("1e-12")
-
-# Values tried for constants like a and b. Checks need numbers, so an answer
-# with constants is checked with these plugged in. They avoid 0 and 1, which
-# can hide mistakes.
-CONSTANT_TEST_VALUES = (1.37, 0.73, 2.19, 1.61, 0.58, 2.83, 1.17, 0.91)
-
-# Expressions larger than this are not passed to sympy.simplify, which can be slow.
-MAX_SIMPLIFY_SIZE = 40
-
-
-def test_values(constants):
-    """Numbers to substitute for constants (in order), for checking answers."""
-    return {
-        constant: sympy.Rational(str(value))
-        for constant, value in zip(constants, itertools.cycle(CONSTANT_TEST_VALUES))
-    }
-
-
-def check_with_constants(check, function, result, variables=(X,)):
-    """Run check(function, result). Checks need numbers, so any constants
-    (like a and b) get test values, and the detail says which."""
-    constants = sorted(function.free_symbols - set(variables), key=str)
-    if not constants:
-        return check(function, result)
-    values = test_values(constants)
-    outcome = check(function.subs(values), result.subs(values))
-    settings = ", ".join(f"\${to_latex(constant)} = {float(value):g}$" for constant, value in values.items())
-    return {**outcome, "detail": f"{outcome['detail']} (Checked with {settings}.)"}
-
-
-def numeric_function(expression, variables=(X,)):
-    return sympy.lambdify(variables, expression, modules="mpmath")
-
-
-def real_value(compute):
-    """Run compute() and return its value as a real mpf, or None if it is not a finite real number."""
-    try:
-        value = mpmath.mpmathify(compute())
-    except Exception:  # Undefined points raise many error types; all mean "no value here".
-        return None
-    if isinstance(value, mpmath.mpc):
-        if abs(value.imag) > CHECK_TOLERANCE * max(1, abs(value.real)):
-            return None
-        value = value.real
-    if not mpmath.isfinite(value):
-        return None
-    return value
-
-
-def check_points_for(variables):
-    return CHECK_POINTS_2D if len(variables) == 2 else tuple((point,) for point in CHECK_POINTS)
-
-
-def plot_value(compute):
-    """compute()'s value as a float for a graph, or None where there is no real value."""
-    value = real_value(compute)
-    if value is None:
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
-
-
-def compare_at_check_points(expected, actual, variables=(X,)):
-    """Count the check points where expected and actual agree and disagree.
-
-    Both are numeric functions of the variables. Points where either side has
-    no real value are skipped.
-    """
-    agreed = disagreed = 0
-    with mpmath.workdps(CHECK_PRECISION_DIGITS):
-        for point in check_points_for(variables):
-            coordinates = [mpmath.mpf(coordinate) for coordinate in point]
-            expected_value = real_value(lambda: expected(*coordinates))
-            actual_value = real_value(lambda: actual(*coordinates))
-            if expected_value is None or actual_value is None:
-                continue
-            scale = max(1, abs(expected_value), abs(actual_value))
-            if abs(expected_value - actual_value) <= CHECK_TOLERANCE * scale:
-                agreed += 1
-            else:
-                disagreed += 1
-    return agreed, disagreed
-
-
-def agree_numerically(first, second, variables=(X,)):
-    """True when two expressions have the same value at every check point."""
-    _, disagreed = compare_at_check_points(
-        numeric_function(first, variables), numeric_function(second, variables), variables
-    )
-    return disagreed == 0
-
-
-def numeric_check(agreed, disagreed, verified_detail, failed_detail):
-    if disagreed > 0:
-        return {"status": "failed", "detail": failed_detail}
-    if agreed >= MIN_CHECK_POINTS:
-        return {"status": "verified", "detail": verified_detail.format(count=agreed)}
-    return {
-        "status": "unchecked",
-        "detail": "Couldn't test this answer: the function isn't defined at enough test points.",
-    }
-
-
-def check_derivative(function, derivative):
-    as_numeric = numeric_function(function)
-    agreed, disagreed = compare_at_check_points(
-        lambda point: mpmath.diff(as_numeric, point),
-        numeric_function(derivative),
-    )
-    return numeric_check(
-        agreed,
-        disagreed,
-        "Matches a high-precision numerical derivative at {count} test points.",
-        "Doesn't match a numerical derivative. Don't trust this answer.",
-    )
-
-
-def check_partial_derivative(function, derivative, variable):
-    """Compare with a numerical partial derivative: vary one coordinate, hold the other."""
-    variables = (X, Y)
-    index = variables.index(variable)
-    as_numeric = numeric_function(function, variables)
-
-    def numerical_partial(*point):
-        def along_variable(value):
-            coordinates = list(point)
-            coordinates[index] = value
-            return as_numeric(*coordinates)
-
-        return mpmath.diff(along_variable, point[index])
-
-    agreed, disagreed = compare_at_check_points(
-        numerical_partial, numeric_function(derivative, variables), variables
-    )
-    return numeric_check(
-        agreed,
-        disagreed,
-        "Matches a high-precision numerical partial derivative at {count} test points.",
-        "Doesn't match a numerical partial derivative. Don't trust this answer.",
-    )
-
-
-def check_antiderivative(function, antiderivative, variable=X):
-    derivative = sympy.diff(antiderivative, variable)
-    difference = derivative - function
-    if sympy.count_ops(difference) <= MAX_SIMPLIFY_SIZE and sympy.simplify(difference) == 0:
-        return {
-            "status": "verified",
-            "detail": "Differentiating the answer gives back your function exactly.",
-        }
-    variables = (variable,)
-    agreed, disagreed = compare_at_check_points(
-        numeric_function(function, variables), numeric_function(derivative, variables), variables
-    )
-    return numeric_check(
-        agreed,
-        disagreed,
-        "Differentiating the answer matches your function at {count} test points.",
-        "Differentiating the answer doesn't give back your function. Don't trust this answer.",
-    )
-
-
-def undefined_where_function_is_defined(function, antiderivative, variable=X):
-    as_numeric = numeric_function(function, (variable,))
-    antiderivative_numeric = numeric_function(antiderivative, (variable,))
-    with mpmath.workdps(CHECK_PRECISION_DIGITS):
-        return any(
-            real_value(lambda: as_numeric(mpmath.mpf(point))) is not None
-            and real_value(lambda: antiderivative_numeric(mpmath.mpf(point))) is None
-            for point in CHECK_POINTS
-        )
+`,"./python/mathlab/checks.py":`"""Independent numerical checks of answers, so a wrong answer is flagged."""\r
+\r
+import itertools\r
+import math\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.expressions import X, Y, to_latex\r
+\r
+# Points where answers are checked. They avoid 0, integers, and common\r
+# singularities such as pi/2 so that most functions are defined at most of them.\r
+CHECK_POINTS = (-2.37, -1.29, -0.53, 0.31, 0.87, 1.67, 2.61)\r
+# (x, y) points for functions of two variables, in all four quadrants.\r
+CHECK_POINTS_2D = tuple(zip(CHECK_POINTS, (1.13, -0.71, 2.07, -1.83, 0.47, -2.29, 1.59)))\r
+MIN_CHECK_POINTS = 3\r
+CHECK_PRECISION_DIGITS = 30\r
+CHECK_TOLERANCE = mpmath.mpf("1e-12")\r
+\r
+# Values tried for constants like a and b. Checks need numbers, so an answer\r
+# with constants is checked with these plugged in. They avoid 0 and 1, which\r
+# can hide mistakes.\r
+CONSTANT_TEST_VALUES = (1.37, 0.73, 2.19, 1.61, 0.58, 2.83, 1.17, 0.91)\r
+\r
+# Expressions larger than this are not passed to sympy.simplify, which can be slow.\r
+MAX_SIMPLIFY_SIZE = 40\r
+\r
+\r
+def test_values(constants):\r
+    """Numbers to substitute for constants (in order), for checking answers."""\r
+    return {\r
+        constant: sympy.Rational(str(value))\r
+        for constant, value in zip(constants, itertools.cycle(CONSTANT_TEST_VALUES))\r
+    }\r
+\r
+\r
+def check_with_constants(check, function, result, variables=(X,)):\r
+    """Run check(function, result). Checks need numbers, so any constants\r
+    (like a and b) get test values, and the detail says which."""\r
+    constants = sorted(function.free_symbols - set(variables), key=str)\r
+    if not constants:\r
+        return check(function, result)\r
+    values = test_values(constants)\r
+    outcome = check(function.subs(values), result.subs(values))\r
+    settings = ", ".join(f"\${to_latex(constant)} = {float(value):g}$" for constant, value in values.items())\r
+    return {**outcome, "detail": f"{outcome['detail']} (Checked with {settings}.)"}\r
+\r
+\r
+def numeric_function(expression, variables=(X,)):\r
+    return sympy.lambdify(variables, expression, modules="mpmath")\r
+\r
+\r
+def real_value(compute):\r
+    """Run compute() and return its value as a real mpf, or None if it is not a finite real number."""\r
+    try:\r
+        value = mpmath.mpmathify(compute())\r
+    except Exception:  # Undefined points raise many error types; all mean "no value here".\r
+        return None\r
+    if isinstance(value, mpmath.mpc):\r
+        if abs(value.imag) > CHECK_TOLERANCE * max(1, abs(value.real)):\r
+            return None\r
+        value = value.real\r
+    if not mpmath.isfinite(value):\r
+        return None\r
+    return value\r
+\r
+\r
+def check_points_for(variables):\r
+    return CHECK_POINTS_2D if len(variables) == 2 else tuple((point,) for point in CHECK_POINTS)\r
+\r
+\r
+def plot_value(compute):\r
+    """compute()'s value as a float for a graph, or None where there is no real value."""\r
+    value = real_value(compute)\r
+    if value is None:\r
+        return None\r
+    number = float(value)\r
+    return number if math.isfinite(number) else None\r
+\r
+\r
+def compare_at_check_points(expected, actual, variables=(X,), points=None):\r
+    """Count the check points where expected and actual agree and disagree.\r
+\r
+    Both are numeric functions of the variables. Points where either side has\r
+    no real value are skipped.\r
+    """\r
+    agreed = disagreed = 0\r
+    with mpmath.workdps(CHECK_PRECISION_DIGITS):\r
+        for point in points or check_points_for(variables):\r
+            coordinates = [mpmath.mpf(coordinate) for coordinate in point]\r
+            expected_value = real_value(lambda: expected(*coordinates))\r
+            actual_value = real_value(lambda: actual(*coordinates))\r
+            if expected_value is None or actual_value is None:\r
+                continue\r
+            scale = max(1, abs(expected_value), abs(actual_value))\r
+            if abs(expected_value - actual_value) <= CHECK_TOLERANCE * scale:\r
+                agreed += 1\r
+            else:\r
+                disagreed += 1\r
+    return agreed, disagreed\r
+\r
+\r
+def agree_numerically(first, second, variables=(X,)):\r
+    """True when two expressions have the same value at every check point."""\r
+    _, disagreed = compare_at_check_points(\r
+        numeric_function(first, variables), numeric_function(second, variables), variables\r
+    )\r
+    return disagreed == 0\r
+\r
+\r
+def numeric_check(agreed, disagreed, verified_detail, failed_detail):\r
+    if disagreed > 0:\r
+        return {"status": "failed", "detail": failed_detail}\r
+    if agreed >= MIN_CHECK_POINTS:\r
+        return {"status": "verified", "detail": verified_detail.format(count=agreed)}\r
+    return {\r
+        "status": "unchecked",\r
+        "detail": "Couldn't test this answer: the function isn't defined at enough test points.",\r
+    }\r
+\r
+\r
+def check_derivative(function, derivative):\r
+    as_numeric = numeric_function(function)\r
+    agreed, disagreed = compare_at_check_points(\r
+        lambda point: mpmath.diff(as_numeric, point),\r
+        numeric_function(derivative),\r
+    )\r
+    return numeric_check(\r
+        agreed,\r
+        disagreed,\r
+        "Matches a high-precision numerical derivative at {count} test points.",\r
+        "Doesn't match a numerical derivative. Don't trust this answer.",\r
+    )\r
+\r
+\r
+def check_partial_derivative(function, derivative, variable):\r
+    """Compare with a numerical partial derivative: vary one coordinate, hold the other."""\r
+    variables = (X, Y)\r
+    index = variables.index(variable)\r
+    as_numeric = numeric_function(function, variables)\r
+\r
+    def numerical_partial(*point):\r
+        def along_variable(value):\r
+            coordinates = list(point)\r
+            coordinates[index] = value\r
+            return as_numeric(*coordinates)\r
+\r
+        return mpmath.diff(along_variable, point[index])\r
+\r
+    agreed, disagreed = compare_at_check_points(\r
+        numerical_partial, numeric_function(derivative, variables), variables\r
+    )\r
+    return numeric_check(\r
+        agreed,\r
+        disagreed,\r
+        "Matches a high-precision numerical partial derivative at {count} test points.",\r
+        "Doesn't match a numerical partial derivative. Don't trust this answer.",\r
+    )\r
+\r
+\r
+def points_where_it_holds(antiderivative, variable):\r
+    """For an answer that holds only on part of the line (one Piecewise piece,\r
+    like x > 2 after x = 2 sec θ), check points inside that part, so it gets\r
+    enough of them; None for the usual check points."""\r
+    if not (isinstance(antiderivative, sympy.Piecewise) and len(antiderivative.args) == 1):\r
+        return None\r
+    try:\r
+        region = antiderivative.args[0][1].as_set()\r
+    except NotImplementedError:\r
+        return None\r
+    offsets = (0.31, 0.87, 1.67, 2.61)\r
+    candidates = list(CHECK_POINTS)\r
+    if region.inf.is_finite:\r
+        candidates += [float(region.inf) + offset for offset in offsets]\r
+    if region.sup.is_finite:\r
+        candidates += [float(region.sup) - offset for offset in offsets]\r
+    return tuple((point,) for point in candidates if region.contains(point) == sympy.true)\r
+\r
+\r
+def check_antiderivative(function, antiderivative, variable=X):\r
+    derivative = sympy.diff(antiderivative, variable)\r
+    difference = derivative - function\r
+    if sympy.count_ops(difference) <= MAX_SIMPLIFY_SIZE and sympy.simplify(difference) == 0:\r
+        return {\r
+            "status": "verified",\r
+            "detail": "Differentiating the answer gives back your function exactly.",\r
+        }\r
+    variables = (variable,)\r
+    agreed, disagreed = compare_at_check_points(\r
+        numeric_function(function, variables),\r
+        numeric_function(derivative, variables),\r
+        variables,\r
+        points_where_it_holds(antiderivative, variable),\r
+    )\r
+    return numeric_check(\r
+        agreed,\r
+        disagreed,\r
+        "Differentiating the answer matches your function at {count} test points.",\r
+        "Differentiating the answer doesn't give back your function. Don't trust this answer.",\r
+    )\r
+\r
+\r
+def undefined_where_function_is_defined(function, antiderivative, variable=X):\r
+    as_numeric = numeric_function(function, (variable,))\r
+    antiderivative_numeric = numeric_function(antiderivative, (variable,))\r
+    with mpmath.workdps(CHECK_PRECISION_DIGITS):\r
+        return any(\r
+            real_value(lambda: as_numeric(mpmath.mpf(point))) is not None\r
+            and real_value(lambda: antiderivative_numeric(mpmath.mpf(point))) is None\r
+            for point in CHECK_POINTS\r
+        )\r
 `,"./python/mathlab/curl_div.py":`"""Curl and divergence of a vector field F = ⟨P, Q, R⟩, or ⟨P, Q⟩ in the plane.\r
 \r
 The divergence ∇ · F = P_x + Q_y + R_z is a number at each point: how much F\r
@@ -1373,7 +1407,7 @@ def numerical_cross_check(as_numeric, points, numeric, shown):\r
     other = numerical_integral(as_numeric, points, method="gauss-legendre")\r
     if other is not None and abs(other - numeric) <= CHECK_TOLERANCE * max(1, abs(numeric)):\r
         return {\r
-            "status": "verified",\r
+            "status": "numerical",\r
             "detail": f"There is no exact form, so the length was computed numerically: two "\r
             f"different methods (tanh-sinh and Gauss–Legendre quadrature) agree on \${shown}$.",\r
         }\r
@@ -1585,10 +1619,11 @@ import sympy\r
 from sympy import AccumBounds\r
 from sympy.calculus.util import continuous_domain\r
 \r
-from mathlab.antiderivatives import find_antiderivative\r
+from mathlab.antiderivatives import NoAntiderivative, find_antiderivative\r
 from mathlab.checks import numeric_function, plot_value, real_value\r
 from mathlab.expressions import X, InputError, to_latex\r
 from mathlab.latex_input import latex_to_text\r
+from mathlab.numerical import no_formula_step, numerical_answer_check, one_variable_value, shown\r
 from mathlab.parsing import constants_in, parse_function\r
 from mathlab.progress import report\r
 from mathlab.steps import make_step\r
@@ -1929,7 +1964,10 @@ def definite_integral(function, lower_text, upper_text):\r
         return result(integral, function, low, high, [], sympy.Integer(0), [low, high], False)\r
 \r
     points = problem_points(function, low, high)\r
-    antiderivative, _, antiderivative_steps, _ = find_antiderivative(function)\r
+    try:\r
+        antiderivative, _, antiderivative_steps, _ = find_antiderivative(function)\r
+    except NoAntiderivative:\r
+        return numerical_result(integral, function, low, high, points, reversed_bounds)\r
     steps = []\r
     if reversed_bounds:\r
         steps.append(\r
@@ -1982,6 +2020,27 @@ def definite_integral(function, lower_text, upper_text):\r
         values.append(value)\r
     total = None if any(value is None for value in values) else sympy.simplify(sum(values))\r
     return result(integral, function, low, high, steps, total, cuts, reversed_bounds)\r
+\r
+\r
+def numerical_result(integral, function, low, high, points, reversed_bounds):\r
+    """The response when f has no antiderivative made of standard functions:\r
+    the value computed numerically, split where f blows up."""\r
+    report("No formula was found, so integrating numerically…")\r
+    cuts = [low, *sorted(points, key=lambda point: float(point)), high]\r
+    value = one_variable_value(function, X, cuts)\r
+    if reversed_bounds:\r
+        value = -value\r
+    return {\r
+        "ok": True,\r
+        "operation": "definite",\r
+        "equationLatex": rf"{integral} \\approx {shown(value)}",\r
+        "converges": True,\r
+        "check": numerical_answer_check(value, "Gauss–Legendre quadrature, a second method,"),\r
+        "steps": [no_formula_step(function, X)],\r
+        "stepsNote": None,\r
+        "graph": graph_samples(function, low, high),\r
+        "graphNote": graph_note(low, high, True),\r
+    }\r
 \r
 \r
 def result(integral, function, low, high, steps, value, cuts, reversed_bounds):\r
@@ -3049,7 +3108,7 @@ def flux_check(faces, field, exact, numeric):\r
     others = [independent_value("flux", position, field, ub, vb, "tanh-sinh") for _, position, ub, vb in faces]\r
     if all(other is not None for other in others) and agrees(numeric, sum(others)):\r
         return {\r
-            "status": "verified",\r
+            "status": "numerical",\r
             "detail": f"Some faces have no exact form, so the flux was computed numerically: two different "\r
             f"methods (Gauss–Legendre and tanh-sinh quadrature) agree on \${shown_number(numeric)}$.",\r
         }\r
@@ -3121,14 +3180,16 @@ isn't a rectangle. The value is checked with a numerical double integration.\r
 import mpmath\r
 import sympy\r
 \r
-from mathlab.antiderivatives import find_antiderivative\r
+from mathlab.antiderivatives import NoAntiderivative, find_antiderivative\r
 from mathlab.checks import numeric_function, plot_value, real_value\r
 from mathlab.definite import INFINITY, evaluate_between, parse_bound\r
 from mathlab.expressions import X, Y, InputError, to_latex\r
 from mathlab.latex_input import latex_to_text\r
+from mathlab.numerical import iterated_value, no_formula_step, numerical_answer_check, shown\r
 from mathlab.parsing import constants_in, parse_function\r
 from mathlab.progress import report\r
 from mathlab.region import real_number, simplify_on_region\r
+from mathlab.reverse_order import is_elementary, reverse_step, reversed_bounds\r
 from mathlab.steps import make_step\r
 \r
 # The order of integration: (inside variable, outside variable).\r
@@ -3296,7 +3357,32 @@ def double_integral(function, order, inner_texts, outer_texts):\r
     if (outer_bounds[1] - outer_bounds[0]).is_negative:\r
         raise InputError("The outside integral's lower bound must be at most its upper bound.")\r
 \r
-    iterated, steps, value = iterated_integral(function, inside, outside, inner_bounds, outer_bounds)\r
+    graph = graph_samples(function, inside, outside, inner_bounds, outer_bounds)\r
+    iterated = to_latex(sympy.Integral(function, (inside, *inner_bounds), (outside, *outer_bounds)))\r
+    failure = steps = value = None\r
+    try:\r
+        _, steps, value = iterated_integral(function, inside, outside, inner_bounds, outer_bounds)\r
+    except NoAntiderivative as error:\r
+        failure = error\r
+    # A special function in the steps (like the Fresnel integral for ∫ sin(y²) dy)\r
+    # isn't how a student would do it, even when the final answer is elementary.\r
+    if failure is not None or not is_elementary(value) or uses_special_function(steps):\r
+        report("Trying the other order of integration…")\r
+        reversed_solution = in_other_order(function, inside, outside, inner_bounds, outer_bounds)\r
+        if reversed_solution is not None:\r
+            (steps, value), failure = reversed_solution, None\r
+    if failure is not None:\r
+        report("No formula was found, so integrating numerically…")\r
+        value = iterated_value(function, (inside, outside), (inner_bounds, outer_bounds))\r
+        return {\r
+            "ok": True,\r
+            "operation": "double",\r
+            "equationLatex": rf"{iterated} \\approx {shown(value)}",\r
+            "check": numerical_answer_check(value, "the same method with twice as many points"),\r
+            "steps": [no_formula_step(failure.function, failure.variable)],\r
+            "stepsNote": None,\r
+            "graph": graph,\r
+        }\r
     equation = f"{iterated} = {to_latex(value)}"\r
     if not value.is_Rational:\r
         equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"\r
@@ -3307,8 +3393,31 @@ def double_integral(function, order, inner_texts, outer_texts):\r
         "check": numerical_check(function, inside, outside, inner_bounds, outer_bounds, value),\r
         "steps": steps,\r
         "stepsNote": None,\r
-        "graph": graph_samples(function, inside, outside, inner_bounds, outer_bounds),\r
+        "graph": graph,\r
     }\r
+\r
+\r
+def uses_special_function(steps):\r
+    return any(\r
+        step["rule"] == "Special function" or uses_special_function(step["substeps"]) for step in steps\r
+    )\r
+\r
+\r
+def in_other_order(function, inside, outside, inner_bounds, outer_bounds):\r
+    """(steps, value) with the order reversed, when that region has a simple\r
+    description the other way and gives an elementary answer; else None."""\r
+    candidate = reversed_bounds(inside, outside, inner_bounds, outer_bounds)\r
+    if candidate is None:\r
+        return None\r
+    new_inner, new_outer = candidate\r
+    try:\r
+        _, steps, value = iterated_integral(function, outside, inside, new_inner, new_outer)\r
+    except NoAntiderivative:\r
+        return None\r
+    if not is_elementary(value):\r
+        return None\r
+    first = reverse_step(function, inside, outside, inner_bounds, outer_bounds, candidate)\r
+    return [first, *steps], value\r
 \r
 \r
 def iterated_integral(function, inside, outside, inner_bounds, outer_bounds, general=True):\r
@@ -3524,11 +3633,13 @@ the boundary. Then they are compared, which checks each against the other.\r
 import mpmath\r
 import sympy\r
 \r
+from mathlab.antiderivatives import NoAntiderivative\r
 from mathlab.curves import latex_value, numerical_integral\r
 from mathlab.definite import parse_bound\r
 from mathlab.double import iterated_integral, numerical_check, parse_inside_bound\r
 from mathlab.expressions import R, T, THETA, X, Y, Z, InputError, factor_latex, to_latex\r
 from mathlab.latex_input import latex_to_text\r
+from mathlab.numerical import ITERATED_AGREEMENT, iterated_value, no_formula_step, numerical_answer_check, shown\r
 from mathlab.line_integrals import (\r
     GRAPH_POINTS,\r
     along_curve,\r
@@ -3837,17 +3948,32 @@ def double_side(region, curl):\r
                 ],\r
             )\r
         )\r
-    iterated, steps, value = iterated_integral(integrand, inside, outside, region["inner"], region["outer"])\r
-    substeps.extend(steps[1:])\r
+    try:\r
+        iterated, steps, value = iterated_integral(integrand, inside, outside, region["inner"], region["outer"])\r
+        substeps.extend(steps[1:])\r
+    except NoAntiderivative as error:\r
+        report("No formula was found, so integrating numerically…")\r
+        value = iterated_value(integrand, (inside, outside), (region["inner"], region["outer"]))\r
+        iterated = to_latex(sympy.Integral(integrand, (inside, *region["inner"]), (outside, *region["outer"])))\r
+        substeps.append(no_formula_step(error.function, error.variable))\r
     step = make_step(\r
         "Double integral over D",\r
         rf"Integrate over $D$ as an iterated integral: \${to_latex(inside)}$ inside, from "\r
         rf"\${to_latex(region['inner'][0])}$ to \${to_latex(region['inner'][1])}$, then "\r
         rf"\${to_latex(outside)}$ from \${to_latex(region['outer'][0])}$ to \${to_latex(region['outer'][1])}$.",\r
-        [rf"\\iint_D \\left({to_latex(curl)}\\right) dA", iterated, latex_value(value)],\r
+        [rf"\\iint_D \\left({to_latex(curl)}\\right) dA", iterated, double_latex(value)],\r
         substeps,\r
     )\r
     return step, integrand, value\r
+\r
+\r
+def is_numerical(value):\r
+    """Whether the double integral was computed numerically, having no formula."""\r
+    return isinstance(value, mpmath.mpf)\r
+\r
+\r
+def double_latex(value):\r
+    return rf"\\approx {shown(value)}" if is_numerical(value) else latex_value(value)\r
 \r
 \r
 def boundary_numeric(field, pieces, method="tanh-sinh"):\r
@@ -3862,10 +3988,10 @@ def boundary_numeric(field, pieces, method="tanh-sinh"):\r
     return total\r
 \r
 \r
-def agrees(first, second):\r
+def agrees(first, second, tolerance=CHECK_TOLERANCE):\r
     with mpmath.workdps(CHECK_DIGITS):\r
         expected = mpmath.mpf(str(sympy.N(first, CHECK_DIGITS))) if isinstance(first, sympy.Basic) else first\r
-        return abs(second - expected) <= CHECK_TOLERANCE * max(1, abs(expected))\r
+        return abs(second - expected) <= tolerance * max(1, abs(expected))\r
 \r
 \r
 def shown_number(value):\r
@@ -3891,7 +4017,7 @@ def line_check(field, pieces, exact, numeric):\r
     other = boundary_numeric(field, pieces, "gauss-legendre")\r
     if other is not None and agrees(independent, other) and agrees(independent, numeric):\r
         return {\r
-            "status": "verified",\r
+            "status": "numerical",\r
             "detail": f"There is no exact form along the boundary, so it was computed numerically: two "\r
             f"different methods (tanh-sinh and Gauss–Legendre quadrature) agree on "\r
             f"\${shown_number(independent)}$.",\r
@@ -3906,13 +4032,16 @@ def line_check(field, pieces, exact, numeric):\r
 def comparison(field, double_value, line_exact, line_numeric):\r
     """The last step, and the check that both sides agree (None when Green's\r
     theorem doesn't apply because F isn't defined everywhere)."""\r
-    if line_exact is not None:\r
+    if is_numerical(double_value):\r
+        # A numerical double integral is accurate to about one part in a million.\r
+        equal = line_numeric is not None and agrees(double_value, line_numeric, ITERATED_AGREEMENT)\r
+    elif line_exact is not None:\r
         equal = sympy.simplify(double_value - line_exact) == 0 or (\r
             line_numeric is not None and agrees(double_value, line_numeric)\r
         )\r
     else:\r
         equal = line_numeric is not None and agrees(double_value, line_numeric)\r
-    shown = latex_value(double_value)\r
+    value_shown = double_latex(double_value)\r
     if equal:\r
         step = make_step(\r
             "Compare the two sides",\r
@@ -3921,13 +4050,13 @@ def comparison(field, double_value, line_exact, line_numeric):\r
             [\r
                 r"\\oint_C P\\,dx + Q\\,dy",\r
                 r"\\iint_D \\left(\\frac{\\partial Q}{\\partial x} - \\frac{\\partial P}{\\partial y}\\right) dA",\r
-                shown,\r
+                value_shown,\r
             ],\r
         )\r
         computed = (\r
             f"The line integral, computed numerically around $C$ from the typed field, is \${shown_number(line_numeric)}$"\r
             if line_numeric is not None\r
-            else f"The line integral, computed exactly around $C$, is \${shown}$"\r
+            else f"The line integral, computed exactly around $C$, is \${value_shown}$"\r
         )\r
         check = {"status": "verified", "detail": f"{computed}, equal to the double integral, as Green's theorem says."}\r
         return step, check\r
@@ -4008,7 +4137,14 @@ def green(request):\r
     solved = solve_green(field, region)\r
     report("Checking the answer numerically…")\r
     checks = []\r
-    if solved["integrand"] is not None:\r
+    if is_numerical(solved["double"]):\r
+        checks.append(\r
+            {\r
+                "label": "Double integral",\r
+                "check": numerical_answer_check(solved["double"], "the same method with twice as many points"),\r
+            }\r
+        )\r
+    elif solved["integrand"] is not None:\r
         checks.append(\r
             {\r
                 "label": "Double integral",\r
@@ -4041,8 +4177,8 @@ def green(request):\r
         "results": [\r
             {\r
                 "label": "Double integral",\r
-                "latex": rf"\\iint_D \\left(\\frac{{\\partial Q}}{{\\partial x}} - \\frac{{\\partial P}}{{\\partial y}}\\right) dA = "\r
-                rf"{latex_value(solved['double'])}",\r
+                "latex": rf"\\iint_D \\left(\\frac{{\\partial Q}}{{\\partial x}} - \\frac{{\\partial P}}{{\\partial y}}\\right) dA "\r
+                rf"{'' if is_numerical(solved['double']) else '= '}{double_latex(solved['double'])}",\r
             },\r
             {"label": "Line integral around C", "latex": rf"\\oint_C P\\,dx + Q\\,dy {equals} {line_shown}"},\r
         ],\r
@@ -4179,6 +4315,12 @@ from mathlab.expressions import (\r
     with_absolute_value_logs,\r
 )\r
 from mathlab.steps import make_step\r
+from mathlab.trig_substitution import (\r
+    SecCubedRule,\r
+    TextbookTrigSubstitutionRule,\r
+    sec_cubed_rule,\r
+    trig_substitution,\r
+)\r
 \r
 # Solutions with more rules than this are too long to read as steps.\r
 MAX_STEP_COUNT = 60\r
@@ -4233,6 +4375,20 @@ def substitution_size(rule):\r
     return own + sum(substitution_size(child) for child in child_rules(rule))\r
 \r
 \r
+def with_children(rule, change):\r
+    """rule with change applied to each of its child rules."""\r
+    changes = {}\r
+    for field in dataclasses.fields(rule):\r
+        value = getattr(rule, field.name)\r
+        if isinstance(value, manualintegrate.Rule):\r
+            changes[field.name] = change(value)\r
+        elif isinstance(value, list) and any(isinstance(item, manualintegrate.Rule) for item in value):\r
+            changes[field.name] = [\r
+                change(item) if isinstance(item, manualintegrate.Rule) else item for item in value\r
+            ]\r
+    return dataclasses.replace(rule, **changes) if changes else rule\r
+\r
+\r
 def choose_alternatives(rule):\r
     """Replace each AlternativeRule with its simplest alternative, recursively."""\r
     if isinstance(rule, manualintegrate.AlternativeRule):\r
@@ -4245,23 +4401,35 @@ def choose_alternatives(rule):\r
                 substitution_size(candidate),\r
             ),\r
         )\r
-    changes = {}\r
-    for field in dataclasses.fields(rule):\r
-        value = getattr(rule, field.name)\r
-        if isinstance(value, manualintegrate.Rule):\r
-            changes[field.name] = choose_alternatives(value)\r
-        elif isinstance(value, list) and any(isinstance(item, manualintegrate.Rule) for item in value):\r
-            changes[field.name] = [\r
-                choose_alternatives(item) if isinstance(item, manualintegrate.Rule) else item\r
-                for item in value\r
-            ]\r
-    return dataclasses.replace(rule, **changes) if changes else rule\r
+    return with_children(rule, choose_alternatives)\r
+\r
+\r
+# Rules that a textbook trigonometric substitution replaces: SymPy's shortcut\r
+# formulas for square roots of quadratics, its own flawed version of the\r
+# substitution, and integrals it gave up on.\r
+REPLACED_BY_TRIG_SUBSTITUTION = (\r
+    manualintegrate.SqrtQuadraticRule,\r
+    manualintegrate.SqrtQuadraticDenomRule,\r
+    manualintegrate.TrigSubstitutionRule,\r
+    manualintegrate.DontKnowRule,\r
+)\r
+\r
+\r
+def with_trig_substitutions(rule):\r
+    """rule with textbook trigonometric substitutions, and ∫ sec³ by parts,\r
+    wherever they apply, recursively."""\r
+    if isinstance(rule, REPLACED_BY_TRIG_SUBSTITUTION) and not isinstance(rule, TextbookTrigSubstitutionRule):\r
+        replacement = trig_substitution(rule.integrand, rule.variable)\r
+        if replacement is None and isinstance(rule, manualintegrate.DontKnowRule):\r
+            replacement = sec_cubed_rule(rule.integrand, rule.variable)\r
+        return rule if replacement is None else replacement\r
+    return with_children(rule, with_trig_substitutions)\r
 \r
 \r
 def find_integral_rule(function, variable):\r
     """Return (rule, antiderivative) solved with textbook rules, or None if there is no such solution."""\r
     try:\r
-        rule = choose_alternatives(manualintegrate.integral_steps(function, variable))\r
+        rule = with_trig_substitutions(choose_alternatives(manualintegrate.integral_steps(function, variable)))\r
         if rule.contains_dont_know():\r
             return None\r
         return rule, rule.eval()\r
@@ -4479,18 +4647,48 @@ def explain_rewrite(rule, present):\r
     )\r
 \r
 \r
+# The identity each substitution uses to clear the square root.\r
+TRIG_IDENTITIES = {\r
+    sympy.sin: r"$1 - \\sin^2\\theta = \\cos^2\\theta$",\r
+    sympy.tan: r"$1 + \\tan^2\\theta = \\sec^2\\theta$",\r
+    sympy.sec: r"$\\sec^2\\theta - 1 = \\tan^2\\theta$",\r
+}\r
+\r
+\r
 def explain_trig_substitution(rule, present):\r
-    theta = to_latex(rule.theta)\r
+    theta, x = to_latex(rule.theta), to_latex(rule.variable)\r
+    trig = rule.func.as_coeff_Mul()[1]\r
+    identity = TRIG_IDENTITIES.get(type(trig))\r
+    clears = f"the identity {identity} turns the square root" if identity else "this turns the square root"\r
+    differential = to_latex(sympy.diff(rule.func, rule.theta))\r
+    explanation = (\r
+        rf"Let \${x} = {to_latex(rule.func)}$, so $d{x} = {differential}\\, d{theta}$; {clears} into a "\r
+        rf"trigonometric function. Integrate in \${theta}$, then convert back to \${x}$ with a right "\r
+        "triangle."\r
+    )\r
+    if rule.restriction is not True:\r
+        explanation += rf" The answer holds for \${to_latex(rule.restriction)}$."\r
     return make_step(\r
         "Trigonometric substitution",\r
-        rf"Let \${to_latex(rule.variable)} = {to_latex(rule.func)}$, which turns the square root "\r
-        rf"into a trigonometric function. Integrate in \${theta}$, then convert back.",\r
+        explanation,\r
         [\r
             integral_of(rule.integrand, rule.variable),\r
             integral_of(rule.rewritten, rule.theta),\r
             result_latex(rule, present),\r
         ],\r
         [explain_rule(rule.substep, present)],\r
+    )\r
+\r
+\r
+def explain_sec_cubed(rule, present):\r
+    t = to_latex(rule.variable)\r
+    return make_step(\r
+        "Integration by parts (cyclic)",\r
+        rf"Integrate by parts with $u = \\sec {t}$ and $dv = \\sec^2 {t}\\, d{t}$, then write "\r
+        rf"$\\tan^2 {t} = \\sec^2 {t} - 1$. That brings back $I = \\int \\sec^3 {t}\\, d{t}$: "\r
+        rf"$I = \\sec {t} \\tan {t} - I + \\int \\sec {t}\\, d{t}$, so "\r
+        rf"$2I = \\sec {t} \\tan {t} + \\ln\\left|\\sec {t} + \\tan {t}\\right|$.",\r
+        [integral_of(rule.integrand, rule.variable), result_latex(rule, present)],\r
     )\r
 \r
 \r
@@ -4534,6 +4732,7 @@ EXPLAINERS = {\r
     manualintegrate.CyclicPartsRule: explain_cyclic_parts,\r
     manualintegrate.RewriteRule: explain_rewrite,\r
     manualintegrate.TrigSubstitutionRule: explain_trig_substitution,\r
+    SecCubedRule: explain_sec_cubed,\r
     manualintegrate.AtomicRule: explain_standard,\r
 }\r
 for _rule_name in SPECIAL_FUNCTION_RULES:\r
@@ -5693,6 +5892,184 @@ def partial_derivatives(function, point):
         # With constants like a there is no single surface to draw.
         "surface": None if constants else sample_surface(function, point),
     }
+`,"./python/mathlab/numerical.py":`"""Numerical answers for integrals with no formula: when SymPy finds no\r
+antiderivative made of standard functions (like 1/arctan x, which has none),\r
+the value is still a number, computed here and confirmed by a second method."""\r
+\r
+import functools\r
+import math\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.antiderivatives import NoAntiderivative, find_antiderivative\r
+from mathlab.checks import numeric_function\r
+from mathlab.expressions import InputError, to_latex\r
+from mathlab.progress import report\r
+from mathlab.region import real_number\r
+from mathlab.steps import make_step\r
+\r
+# Working digits for one-variable integrals, and how closely two methods must\r
+# agree before the value is shown.\r
+WORKING_DIGITS = 20\r
+AGREEMENT = mpmath.mpf("1e-8")\r
+SHOWN_DIGITS = 7\r
+\r
+COULD_NOT_AGREE = (\r
+    "This integral has no formula in standard functions, and two numerical methods didn't agree on "\r
+    "its value closely enough to give one. It may diverge, or its function may blow up too sharply."\r
+)\r
+\r
+\r
+def shown(value):\r
+    return mpmath.nstr(value, SHOWN_DIGITS).removesuffix(".0")\r
+\r
+\r
+def pieces_without_formula(function, variable):\r
+    """The terms of a sum that have no antiderivative SymPy can find, so the\r
+    step can name the piece to blame; the whole function if it isn't a sum or\r
+    no single term is to blame."""\r
+    if not function.is_Add:\r
+        return [function]\r
+    pieces = []\r
+    for term in function.args:\r
+        try:\r
+            find_antiderivative(term, variable)\r
+        except NoAntiderivative:\r
+            pieces.append(term)\r
+    return pieces or [function]\r
+\r
+\r
+def no_formula_step(function, variable):\r
+    report("Finding which part has no formula…")\r
+    pieces = " and ".join(f"\${to_latex(piece)}$" for piece in pieces_without_formula(function, variable))\r
+    return make_step(\r
+        "Numerical integration",\r
+        rf"SymPy found no antiderivative of {pieces} with respect to \${to_latex(variable)}$ made of "\r
+        r"standard functions (some functions, like $1/\\arctan x$, have none), so the integral was "\r
+        "computed numerically instead.",\r
+        [],\r
+    )\r
+\r
+\r
+def numerical_answer_check(value, second_method):\r
+    return {\r
+        "status": "numerical",\r
+        "detail": f"There is no formula, so the value was computed numerically: {second_method} "\r
+        f"agrees on \${shown(value)}$.",\r
+    }\r
+\r
+\r
+def one_variable_value(function, variable, cuts):\r
+    """∫ function over [cuts[0], cuts[-1]], split at the cuts, by tanh-sinh\r
+    quadrature, confirmed by Gauss-Legendre quadrature, which places and weighs\r
+    its points differently. Raises InputError when they disagree."""\r
+    as_numeric = numeric_function(function, (variable,))\r
+\r
+    def integrand(point):\r
+        return real_number(as_numeric(point))\r
+\r
+    with mpmath.workdps(WORKING_DIGITS):\r
+        points = [mpmath.mpf(str(sympy.N(cut, WORKING_DIGITS))) if cut.is_finite else\r
+                  (mpmath.inf if cut == sympy.oo else -mpmath.inf) for cut in cuts]\r
+        values = []\r
+        for method in ("tanh-sinh", "gauss-legendre"):\r
+            try:\r
+                value = mpmath.quad(integrand, points, method=method)\r
+            except Exception:  # Numerical integration fails in many ways; all mean "no value".\r
+                raise InputError(COULD_NOT_AGREE) from None\r
+            if isinstance(value, mpmath.mpc) or not mpmath.isfinite(value):\r
+                raise InputError(COULD_NOT_AGREE)\r
+            values.append(value)\r
+        first, second = values\r
+        if abs(first - second) > AGREEMENT * max(1, abs(first)):\r
+            raise InputError(COULD_NOT_AGREE)\r
+    return first\r
+\r
+\r
+# Iterated integrals in two or three variables use tanh-sinh quadrature in\r
+# ordinary floating point: mpmath's high-precision numbers make each of the\r
+# hundreds of thousands of evaluations far slower. The answer at one level is\r
+# confirmed at the next, which uses twice as many points in every variable.\r
+COARSE_LEVEL = 3\r
+FINE_LEVEL = 4\r
+ITERATED_AGREEMENT = 1e-6\r
+# Points farther out than this, in tanh-sinh's own variable, have weights too\r
+# small to change a floating point sum.\r
+REACH = 3.2\r
+\r
+\r
+@functools.cache\r
+def tanh_sinh_rule(level):\r
+    """Tanh-sinh points on [0, 1] with step 2^-level, as (p, q, weight): the\r
+    point's distance from 0 and from 1, each kept exactly, since points crowd\r
+    against the ends, where f may blow up."""\r
+    step = 2.0**-level\r
+    count = int(REACH / step)\r
+    rule = []\r
+    for k in range(-count, count + 1):\r
+        t = k * step\r
+        u = 0.5 * math.pi * math.sinh(t)\r
+        p = 1 / (1 + math.exp(-2 * u))\r
+        q = 1 / (1 + math.exp(2 * u))\r
+        weight = step * 0.5 * math.pi * math.cosh(t) / (2 * math.cosh(u) ** 2)\r
+        rule.append((p, q, weight))\r
+    return rule\r
+\r
+\r
+def float_function(expression, variables):\r
+    """expression as a Python function of floats, giving nan where it is undefined."""\r
+    compiled = sympy.lambdify(variables, expression, modules="math")\r
+\r
+    def evaluate(*values):\r
+        try:\r
+            value = compiled(*values)\r
+        except (ArithmeticError, ValueError):\r
+            return math.nan\r
+        return value if isinstance(value, float | int) else math.nan\r
+\r
+    return evaluate\r
+\r
+\r
+def iterated_float_value(function, variables, bounds, level):\r
+    """The iterated integral of function over the region, variables listed\r
+    from the innermost out, and bounds[i] the bounds of variables[i], which may\r
+    use the variables outside it."""\r
+    integrand = float_function(function, variables)\r
+    limits = [\r
+        tuple(float_function(bound, variables[index + 1 :]) for bound in pair)\r
+        for index, pair in enumerate(bounds)\r
+    ]\r
+    rule = tanh_sinh_rule(level)\r
+\r
+    def integrate(index, outer):\r
+        low, high = (limit(*outer) for limit in limits[index])\r
+        width = high - low\r
+        # Points crowded against the outer interval's end can round onto it,\r
+        # where the inner interval shrinks to nothing and adds nothing.\r
+        if width == 0:\r
+            return 0.0\r
+        total = 0.0\r
+        for p, q, weight in rule:\r
+            point = low + width * p if p <= 0.5 else high - width * q\r
+            values = (point, *outer)\r
+            total += weight * (integrand(*values) if index == 0 else integrate(index - 1, values))\r
+        return total * width\r
+\r
+    return integrate(len(variables) - 1, ())\r
+\r
+\r
+def iterated_value(function, variables, bounds):\r
+    """The iterated integral, computed at two levels that must agree. Raises\r
+    InputError when they don't, or when the function is undefined in the region."""\r
+    coarse, fine = (\r
+        iterated_float_value(function, variables, bounds, level) for level in (COARSE_LEVEL, FINE_LEVEL)\r
+    )\r
+    if not (math.isfinite(coarse) and math.isfinite(fine)):\r
+        raise InputError(COULD_NOT_AGREE)\r
+    if abs(fine - coarse) > ITERATED_AGREEMENT * max(1, abs(fine)):\r
+        raise InputError(COULD_NOT_AGREE)\r
+    return mpmath.mpf(fine)\r
 `,"./python/mathlab/optimize.py":`"""Maximum and minimum values of functions of several variables.
 
 Critical points: where ∇f = 0. The second-derivative test classifies a critical
@@ -8134,6 +8511,163 @@ def simplify_on_region(expression, variables, bounds):
     if simpler == expression or not agree(simpler, expression, points + check_points):
         return expression
     return simpler
+`,"./python/mathlab/reverse_order.py":`"""Reversing the order of a double integral: the same region described the\r
+other way, for when integrating in the given order needs a function with no\r
+elementary antiderivative (like ∫ sin(y²) dy) but the other order doesn't.\r
+\r
+The textbook cases are handled: each inside bound is constant or always\r
+increasing or always decreasing, so it can be solved for the outside\r
+variable. The new bounds are then confirmed numerically to describe the same\r
+region before they are used.\r
+"""\r
+\r
+import math\r
+\r
+import sympy\r
+\r
+from mathlab.expressions import to_latex\r
+from mathlab.numerical import iterated_float_value\r
+from mathlab.steps import make_step\r
+\r
+# Points inside an interval where slopes and bounds are compared.\r
+SAMPLE_COUNT = 7\r
+# Both descriptions must give integrals this close to count as the same region.\r
+SAME_REGION = 1e-9\r
+\r
+\r
+def is_elementary(expression):\r
+    """Whether expression is made of elementary functions only: no special\r
+    functions (like the Fresnel integral) and no unevaluated integrals."""\r
+    if expression.has(sympy.Integral):\r
+        return False\r
+    return not any(\r
+        type(function).__module__.startswith("sympy.functions.special")\r
+        for function in expression.atoms(sympy.Function)\r
+    )\r
+\r
+\r
+def samples(low, high):\r
+    return [low + (high - low) * sympy.Rational(k, SAMPLE_COUNT + 1) for k in range(1, SAMPLE_COUNT + 1)]\r
+\r
+\r
+def number(expression):\r
+    """expression as a float, or None if it isn't a real number."""\r
+    try:\r
+        value = complex(sympy.N(expression))\r
+    except (TypeError, ValueError):\r
+        return None\r
+    return value.real if abs(value.imag) < 1e-12 and math.isfinite(value.real) else None\r
+\r
+\r
+def direction(bound, variable, low, high):\r
+    """1 if bound always increases on (low, high), -1 if it always decreases,\r
+    0 if it is constant, None otherwise."""\r
+    if not bound.has(variable):\r
+        return 0\r
+    slope = sympy.diff(bound, variable)\r
+    signs = set()\r
+    for point in samples(low, high):\r
+        value = number(slope.subs(variable, point))\r
+        if value is None:\r
+            return None\r
+        if abs(value) > 1e-12:\r
+            signs.add(1 if value > 0 else -1)\r
+    return signs.pop() if len(signs) == 1 else None\r
+\r
+\r
+def inverse(bound, inside, outside, low, high):\r
+    """outside in terms of inside along the curve inside = bound(outside), or\r
+    None: the one solution that leads back to the same point."""\r
+    target = sympy.Dummy("target", real=True)\r
+    try:\r
+        solutions = sympy.solve(sympy.Eq(target, bound), outside)\r
+    except (NotImplementedError, ValueError):\r
+        return None\r
+    middle = (low + high) / 2\r
+    at_middle = bound.subs(outside, middle)\r
+    found = [\r
+        solution\r
+        for solution in solutions\r
+        if (value := number(solution.subs(target, at_middle))) is not None\r
+        and abs(value - number(middle)) < 1e-9\r
+    ]\r
+    return found[0].subs(target, inside) if len(found) == 1 else None\r
+\r
+\r
+def dominant(candidates, variable, low, high, pick):\r
+    """The candidate that is always the largest (pick=max) or smallest\r
+    (pick=min) on (low, high), or None if that changes partway."""\r
+    winners = set()\r
+    for point in samples(low, high):\r
+        values = [number(candidate.subs(variable, point)) for candidate in candidates]\r
+        if None in values:\r
+            return None\r
+        best = pick(values)\r
+        winners.add(next(index for index, value in enumerate(values) if abs(value - best) < 1e-12))\r
+    return candidates[winners.pop()] if len(winners) == 1 else None\r
+\r
+\r
+def reversed_bounds(inside, outside, inner_bounds, outer_bounds):\r
+    """The region a ≤ outside ≤ b, g₁(outside) ≤ inside ≤ g₂(outside),\r
+    described the other way: ((h₁, h₂), (c, d)) with c ≤ inside ≤ d and\r
+    h₁(inside) ≤ outside ≤ h₂(inside). None when it can't be done that simply."""\r
+    a, b = outer_bounds\r
+    lower, upper = (sympy.sympify(bound) for bound in inner_bounds)\r
+    ends = [number(bound.subs(outside, end)) for bound in (lower, upper) for end in (a, b)]\r
+    if None in ends:\r
+        return None\r
+    c = min((lower.subs(outside, end) for end in (a, b)), key=number)\r
+    d = max((upper.subs(outside, end) for end in (a, b)), key=number)\r
+    if number(c) >= number(d):\r
+        return None\r
+    lows, highs = [sympy.sympify(a)], [sympy.sympify(b)]\r
+    for bound, is_lower in ((lower, True), (upper, False)):\r
+        way = direction(bound, outside, a, b)\r
+        if way is None:\r
+            return None\r
+        if way == 0:\r
+            continue\r
+        solved = inverse(bound, inside, outside, a, b)\r
+        if solved is None:\r
+            return None\r
+        # inside ≥ an increasing lower bound means outside ≤ its inverse, and so on.\r
+        (highs if is_lower == (way == 1) else lows).append(solved)\r
+    new_lower = dominant(lows, inside, c, d, max)\r
+    new_upper = dominant(highs, inside, c, d, min)\r
+    if new_lower is None or new_upper is None:\r
+        return None\r
+    candidate = ((sympy.simplify(new_lower), sympy.simplify(new_upper)), (c, d))\r
+    return candidate if same_region(inside, outside, inner_bounds, outer_bounds, candidate) else None\r
+\r
+\r
+def same_region(inside, outside, inner_bounds, outer_bounds, candidate):\r
+    """Whether both descriptions give the same ∬ 1 dA and ∬ (1 + x + 2y + xy) dA."""\r
+    (new_inner, new_outer) = candidate\r
+    for test in (sympy.Integer(1), 1 + inside + 2 * outside + inside * outside):\r
+        given = iterated_float_value(test, (inside, outside), (inner_bounds, outer_bounds), 4)\r
+        other = iterated_float_value(test, (outside, inside), (new_inner, new_outer), 4)\r
+        if not (math.isfinite(given) and math.isfinite(other)):\r
+            return False\r
+        if abs(given - other) > SAME_REGION * max(1, abs(given)):\r
+            return False\r
+    return True\r
+\r
+\r
+def reverse_step(function, inside, outside, inner_bounds, outer_bounds, candidate):\r
+    (low, high), (c, d) = candidate\r
+    u, v = to_latex(inside), to_latex(outside)\r
+    given = rf"{to_latex(inner_bounds[0])} \\le {u} \\le {to_latex(inner_bounds[1])},\\ {to_latex(outer_bounds[0])} \\le {v} \\le {to_latex(outer_bounds[1])}"\r
+    other = rf"{to_latex(low)} \\le {v} \\le {to_latex(high)},\\ {to_latex(c)} \\le {u} \\le {to_latex(d)}"\r
+    return make_step(\r
+        "Reverse the order of integration",\r
+        rf"Integrating with respect to \${u}$ first needs a function with no antiderivative made of "\r
+        rf"elementary functions. So describe the same region the other way: \${given}$ is also "\r
+        rf"\${other}$. Integrating with respect to \${v}$ first makes it possible.",\r
+        [\r
+            to_latex(sympy.Integral(function, (inside, *inner_bounds), (outside, *outer_bounds))),\r
+            to_latex(sympy.Integral(function, (outside, low, high), (inside, c, d))),\r
+        ],\r
+    )\r
 `,"./python/mathlab/riemann.py":`"""The double-integrals lesson picture: a Riemann sum of boxes under z = f(x, y).
 
 The rectangle [a, b] × [c, d] is cut into m × n small rectangles. Each one
@@ -8907,7 +9441,7 @@ def value_check(exact, numeric, other, what):\r
         }\r
     if other is not None and agrees(numeric, other):\r
         return {\r
-            "status": "verified",\r
+            "status": "numerical",\r
             "detail": f"There is no exact form, so the {what} was computed numerically: two different methods "\r
             f"(Gauss–Legendre and tanh-sinh quadrature) agree on \${shown_number(numeric)}$.",\r
         }\r
@@ -9401,7 +9935,7 @@ def value_check(kind, position, integrand, u_bounds, v_bounds, exact):\r
         other = independent_value(kind, position, integrand, u_bounds, v_bounds, "tanh-sinh")\r
         if other is not None and abs(other - numeric) <= CHECK_TOLERANCE * max(1, abs(numeric)):\r
             return {\r
-                "status": "verified",\r
+                "status": "numerical",\r
                 "detail": f"There is no exact form, so it was computed numerically: two different methods "\r
                 f"(Gauss–Legendre and tanh-sinh quadrature) agree on \${shown(numeric)}$.",\r
             }, numeric\r
@@ -9964,336 +10498,507 @@ def tangent_picture(function):
         # points[j][i] is [f, f_x, f_y] at (values[i], values[j]), or null.
         "points": points,
     }
-`,"./python/mathlab/triple.py":`"""Triple integrals, as iterated integrals (Fubini's theorem in three dimensions).
-
-The innermost integral is taken first, with the two other variables held
-constant, and its bounds may depend on both of them. The middle integral's
-bounds may depend on the outermost variable, and the outermost bounds are
-numbers. Together the bounds describe a solid region E. The value is checked
-with a numerical triple integration.
-"""
-
-import mpmath
-import sympy
-
-from mathlab.antiderivatives import find_antiderivative
-from mathlab.checks import numeric_function
-from mathlab.definite import INFINITY, evaluate_between, parse_bound
-from mathlab.double import antiderivative_step
-from mathlab.expressions import PHI, RHO, THETA, R, X, Y, Z, InputError, factor_latex, to_latex
-from mathlab.latex_input import latex_to_text
-from mathlab.parsing import constants_in, parse_function
-from mathlab.progress import report
-from mathlab.region import real_number, simplify_on_region
-from mathlab.steps import make_step
-
-# The order of integration: (innermost, middle, outermost) variables.
-ORDERS = {
-    "dz dy dx": (Z, Y, X),
-    "dz dx dy": (Z, X, Y),
-    "dy dz dx": (Y, Z, X),
-    "dy dx dz": (Y, X, Z),
-    "dx dz dy": (X, Z, Y),
-    "dx dy dz": (X, Y, Z),
-}
-LEVELS = ("innermost", "middle", "outermost")
-CHECK_DIGITS = 15
-CHECK_TOLERANCE = mpmath.mpf("1e-9")
-# The fast numerical method is trusted when it estimates its own error below this.
-FAST_METHOD_TOLERANCE = mpmath.mpf("1e-12")
-
-
-# How the variables read in messages: θ, not theta.
-SPELLINGS = {"theta": "θ", "phi": "φ", "rho": "ρ"}
-
-
-def spelled(variable):
-    return SPELLINGS.get(str(variable), str(variable))
-
-
-def names(variables):
-    return " and ".join(spelled(variable) for variable in variables)
-
-
-def parse_dependent_bound(text, name, level, variable, allowed):
-    """A bound that is a number or an expression in the allowed outer variables."""
-    if not isinstance(text, str) or text.strip() == "":
-        raise InputError(f"Enter the {name} bound of the {level} integral.")
-    if INFINITY.search(text):
-        raise InputError("Infinite bounds in a triple integral aren't supported yet.")
-    try:
-        bound = parse_function(latex_to_text(text), allowed)
-    except InputError as error:
-        raise InputError(f"The {level} integral's {name} bound: {error}") from error
-    used = {str(symbol) for symbol in bound.free_symbols}
-    if str(variable) in used:
-        raise InputError(
-            f"The {level} integral's bounds can depend on {names(allowed)} but not on "
-            f"{spelled(variable)}, the variable it integrates."
-        )
-    if used - {str(symbol) for symbol in allowed}:
-        raise InputError(
-            f"The {level} integral's {name} bound can use only numbers and {names(allowed)}."
-        )
-    return bound
-
-
-def parse_outermost_bound(text, name):
-    bound = parse_bound(text, f"outermost integral's {name}")
-    if bound.is_infinite:
-        raise InputError("Infinite bounds in a triple integral aren't supported yet.")
-    return bound
-
-
-def parse_bounds(variables, texts):
-    """The bounds of each integral, innermost first, as (lower, upper) pairs."""
-    _, middle, outer = variables
-    allowed = {"innermost": (middle, outer), "middle": (outer,)}
-    bounds = []
-    for level, variable, pair in zip(LEVELS[:2], variables, texts):
-        bounds.append(
-            tuple(
-                parse_dependent_bound(text, name, level, variable, allowed[level])
-                for text, name in zip(pair, ("lower", "upper"))
-            )
-        )
-    outer_bounds = tuple(
-        parse_outermost_bound(text, name) for text, name in zip(texts[2], ("lower", "upper"))
-    )
-    if (outer_bounds[1] - outer_bounds[0]).is_negative:
-        raise InputError("The outermost integral's lower bound must be at most its upper bound.")
-    bounds.append(outer_bounds)
-    return bounds
-
-
-def integrate_level(function, variable, low, high, rule, explanation, region=None):
-    """One integral of the three: its step and its value. region holds the outer
-    variables and their bounds, where the value is used and can be simplified."""
-    antiderivative, _, steps, _ = find_antiderivative(function, variable)
-    math, value = evaluate_between(function, antiderivative, low, high, variable)
-    if region is not None:
-        simpler = simplify_on_region(value, *region)
-        if simpler != value:
-            math.append(to_latex(simpler))
-            value = simpler
-    if value.has(sympy.nan, sympy.zoo, sympy.oo, -sympy.oo):
-        raise InputError(
-            "One of the integrals has no finite value everywhere on the region, so this triple "
-            "integral is improper, which the Solver can't do yet."
-        )
-    step = make_step(
-        rule, explanation, math, [antiderivative_step(function, variable, antiderivative, steps)]
-    )
-    return step, value
-
-
-def nested_quad(as_numeric, interval_functions, outer_interval, method):
-    """The triple integral computed numerically, and the largest error estimate of
-    any of its one-variable integrals."""
-    inner_interval, middle_interval = interval_functions
-    largest_error = [mpmath.mpf(0)]
-
-    def quad(integrand, interval):
-        result, error = mpmath.quad(integrand, interval, method=method, error=True)
-        largest_error[0] = max(largest_error[0], abs(error))
-        return result
-
-    total = quad(
-        lambda o: quad(
-            lambda m: quad(lambda i: real_number(as_numeric(i, m, o)), inner_interval(m, o)),
-            middle_interval(o),
-        ),
-        outer_interval,
-    )
-    return total, largest_error[0]
-
-
-def numerical_check(function, variables, bounds, value):
-    inner, middle, outer = variables
-    as_numeric = numeric_function(function, (inner, middle, outer))
-    inner_low, inner_high = (numeric_function(bound, (middle, outer)) for bound in bounds[0])
-    middle_low, middle_high = (numeric_function(bound, (outer,)) for bound in bounds[1])
-    interval_functions = (
-        lambda m, o: [real_number(inner_low(m, o)), real_number(inner_high(m, o))],
-        lambda o: [real_number(middle_low(o)), real_number(middle_high(o))],
-    )
-    with mpmath.workdps(CHECK_DIGITS):
-        outer_interval = [mpmath.mpf(str(sympy.N(bound, CHECK_DIGITS))) for bound in bounds[2]]
-        try:
-            exact = mpmath.mpmathify(sympy.N(value, CHECK_DIGITS))
-            # Gauss-Legendre is very fast on smooth functions; when it isn't sure
-            # of its answer (as at a sphere's edge), tanh-sinh is slower but
-            # handles such edges well.
-            numeric, error = nested_quad(as_numeric, interval_functions, outer_interval, "gauss-legendre")
-            if error > FAST_METHOD_TOLERANCE * max(1, abs(numeric)):
-                numeric, _ = nested_quad(as_numeric, interval_functions, outer_interval, "tanh-sinh")
-        except Exception:  # Numerical integration fails in many ways; all mean "unchecked".
-            numeric = None
-        if numeric is None or isinstance(numeric, mpmath.mpc) or isinstance(exact, mpmath.mpc):
-            return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}
-        shown = mpmath.nstr(numeric, 10).removesuffix(".0")
-        if abs(numeric - exact) <= CHECK_TOLERANCE * max(1, abs(exact)):
-            return {
-                "status": "verified",
-                "detail": f"A numerical triple integration gives \${shown}$, matching the exact "
-                "answer.",
-            }
-        return {
-            "status": "failed",
-            "detail": f"A numerical triple integration gives \${shown}$, which doesn't match. "
-            "Treat this answer with caution.",
-        }
-
-
-def iterated_triple_integral(function, variables, bounds):
-    """The iterated integral's LaTeX, its steps, and its values: the innermost
-    integral (a function of the middle and outermost variables), the middle
-    integral (a function of the outermost variable), and the exact value."""
-    inner, middle, outer = variables
-    latex = [to_latex(variable) for variable in variables]
-    iterated = to_latex(
-        sympy.Integral(function, *((variable, *pair) for variable, pair in zip(variables, bounds)))
-    )
-
-    def interval(pair):
-        return rf"from \${to_latex(pair[0])}$ to \${to_latex(pair[1])}$"
-
-    steps = [
-        make_step(
-            "Iterated triple integral",
-            rf"Write the triple integral over the solid $E$ as an iterated integral: integrate "
-            rf"with respect to \${latex[0]}$ first, {interval(bounds[0])}; then \${latex[1]}$ "
-            rf"{interval(bounds[1])}; then \${latex[2]}$ {interval(bounds[2])}.",
-            [rf"\\iiint_{{E}} {to_latex(function)}\\, dV", iterated],
-        )
-    ]
-    report("Integrating the innermost integral…")
-    step, inner_value = integrate_level(
-        function,
-        inner,
-        *bounds[0],
-        "Innermost integral",
-        rf"Integrate with respect to \${latex[0]}$, treating \${latex[1]}$ and \${latex[2]}$ as "
-        r"constants, then subtract the antiderivative's values at the bounds.",
-        region=((middle, outer), bounds[1:]),
-    )
-    steps.append(step)
-    report("Integrating the middle integral…")
-    step, middle_value = integrate_level(
-        inner_value,
-        middle,
-        *bounds[1],
-        "Middle integral",
-        rf"Integrate the result with respect to \${latex[1]}$, treating \${latex[2]}$ as a "
-        r"constant, and evaluate between its bounds.",
-        region=((outer,), bounds[2:]),
-    )
-    steps.append(step)
-    report("Integrating the outermost integral…")
-    step, value = integrate_level(
-        middle_value,
-        outer,
-        *bounds[2],
-        "Outermost integral",
-        rf"Integrate the result with respect to \${latex[2]}$ and evaluate between its bounds.",
-    )
-    steps.append(step)
-    return iterated, steps, (inner_value, middle_value, value)
-
-
-# Cylindrical and spherical coordinates: the variables in the usual order
-# (innermost first), x, y, and z in terms of them, and the volume factor:
-# dV = r dz dr dθ, or ρ² sin φ dρ dφ dθ.
-COORDINATE_SYSTEMS = {
-    "cylindrical": {
-        "name": "cylindrical",
-        "variables": (Z, R, THETA),
-        "xyz": (R * sympy.cos(THETA), R * sympy.sin(THETA), Z),
-        "factor": R,
-        "substitution": r"x = r\\cos\\theta, \\quad y = r\\sin\\theta, \\quad z = z",
-        "volume": r"dV = r\\, dz\\, dr\\, d\\theta",
-        "why": r"A small box in cylindrical coordinates has sides $dr$, $r\\,d\\theta$ (an arc of a "
-        r"circle of radius $r$), and $dz$, so its volume is $r\\,dz\\,dr\\,d\\theta$.",
-    },
-    "spherical": {
-        "name": "spherical",
-        "variables": (RHO, PHI, THETA),
-        "xyz": (
-            RHO * sympy.sin(PHI) * sympy.cos(THETA),
-            RHO * sympy.sin(PHI) * sympy.sin(THETA),
-            RHO * sympy.cos(PHI),
-        ),
-        "factor": RHO**2 * sympy.sin(PHI),
-        "substitution": r"x = \\rho\\sin\\phi\\cos\\theta, \\quad y = \\rho\\sin\\phi\\sin\\theta, \\quad z = \\rho\\cos\\phi",
-        "volume": r"dV = \\rho^2 \\sin\\phi\\, d\\rho\\, d\\phi\\, d\\theta",
-        "why": r"A small box in spherical coordinates has sides $d\\rho$, $\\rho\\,d\\phi$ (an arc of "
-        r"a circle of radius $\\rho$), and $\\rho\\sin\\phi\\,d\\theta$ (an arc of a circle of radius "
-        r"$\\rho\\sin\\phi$, the distance to the $z$-axis), so its volume is "
-        r"$\\rho^2\\sin\\phi\\,d\\rho\\,d\\phi\\,d\\theta$.",
-    },
-}
-
-
-def change_coordinates(function, system):
-    """f(x, y, z) in the new coordinates, times the volume factor: the step and
-    the new integrand."""
-    x, y, z = system["xyz"]
-    substituted = sympy.simplify(function.subs({X: x, Y: y, Z: z}, simultaneous=True))
-    integrand = sympy.simplify(substituted * system["factor"])
-    differentials = r"\\,".join(rf"d{to_latex(variable)}" for variable in system["variables"])
-    rewritten = (
-        ""
-        if substituted == function
-        else rf" Here $f = {to_latex(function)}$ becomes \${to_latex(substituted)}$."
-    )
-    step = make_step(
-        f"Change to {system['name']} coordinates",
-        rf"Write $x$, $y$, and $z$ in {system['name']} coordinates, \${system['substitution']}$, "
-        rf"and replace $dV$ by \${system['volume']}$. {system['why']}{rewritten}",
-        [
-            r"f\\, dV",
-            rf"{factor_latex(substituted)} \\cdot {factor_latex(system['factor'])}\\, {differentials}",
-            rf"{to_latex(integrand)}\\, {differentials}",
-        ],
-    )
-    return step, integrand
-
-
-def triple_integral(function, order, bound_texts, coordinates="rectangular"):
-    """bound_texts holds (lower, upper) LaTeX pairs, innermost integral first.
-    In cylindrical or spherical coordinates the order is the usual one,
-    dz dr dθ or dρ dφ dθ, and the bounds are in those coordinates."""
-    system = COORDINATE_SYSTEMS.get(coordinates)
-    if system is None and coordinates not in (None, "rectangular"):
-        raise InputError("Choose rectangular, cylindrical, or spherical coordinates.")
-    if system is None and order not in ORDERS:
-        raise InputError("Choose the order of integration, such as dz dy dx.")
-    variables = system["variables"] if system else ORDERS[order]
-    constants = constants_in(function, (X, Y, Z))
-    if constants:
-        raise InputError(
-            f"A triple integral needs a function of x, y, and z alone, so its answer is a "
-            f"number. Remove {', '.join(str(constant) for constant in constants)}."
-        )
-    bounds = parse_bounds(variables, bound_texts)
-    first_steps = []
-    if system:
-        step, function = change_coordinates(function, system)
-        first_steps.append(step)
-    iterated, steps, (_, _, value) = iterated_triple_integral(function, variables, bounds)
-    steps = [*first_steps, *steps]
-    equation = f"{iterated} = {to_latex(value)}"
-    if not value.is_Rational:
-        equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"
-    report("Checking the answer numerically…")
-    return {
-        "ok": True,
-        "operation": "triple",
-        "equationLatex": equation,
-        "check": numerical_check(function, variables, bounds, value),
-        "steps": steps,
-        "stepsNote": None,
-    }
+`,"./python/mathlab/trig_substitution.py":`"""Trigonometric substitution as it is taught: x = a sin θ for √(a² − x²),\r
+x = a tan θ for √(a² + x²), and x = a sec θ for √(x² − a²).\r
+\r
+SymPy's manualintegrate has this rule but rarely shows it: shortcut rules for\r
+square roots of quadratics answer first, and its rule gives up or goes wrong\r
+in three ways repaired here. Its range for x = a sec θ is −a < x < a, exactly\r
+where √(x² − a²) isn't defined; after substituting it leaves 1/sin² θ, which\r
+it doesn't recognize as csc² θ; and it has no textbook rule for ∫ sec³ θ dθ,\r
+which √(a² + x²) leads to.\r
+"""\r
+\r
+import dataclasses\r
+\r
+import sympy\r
+from sympy.integrals import manualintegrate as mi\r
+\r
+\r
+@dataclasses.dataclass\r
+class SecCubedRule(mi.AtomicRule):\r
+    """∫ sec³ θ dθ = (sec θ tan θ + ln|sec θ + tan θ|)/2, by parts with\r
+    u = sec θ and dv = sec² θ dθ: the integral comes back, and is solved for."""\r
+\r
+    def eval(self):\r
+        t = self.variable\r
+        return (sympy.sec(t) * sympy.tan(t) + sympy.log(sympy.sec(t) + sympy.tan(t))) / 2\r
+\r
+\r
+def sec_cubed_rule(integrand, variable):\r
+    """c · sec³ θ (or c / cos³ θ) as a rule, or None for anything else. Only\r
+    the shape is compared, since simplifying a large trig integrand is slow."""\r
+    constant, rest = integrand.as_independent(variable, as_Add=False)\r
+    if rest not in (sympy.sec(variable) ** 3, sympy.cos(variable) ** -3):\r
+        return None\r
+    cubed = SecCubedRule(sympy.sec(variable) ** 3, variable)\r
+    if constant == 1:\r
+        return cubed\r
+    return mi.ConstantTimesRule(integrand, variable, constant, sympy.sec(variable) ** 3, cubed)\r
+\r
+\r
+@dataclasses.dataclass\r
+class KnownAnswerRule(mi.AtomicRule):\r
+    """A rule whose answer is already known: the integrand field holds it."""\r
+\r
+    def eval(self):\r
+        return self.integrand\r
+\r
+\r
+@dataclasses.dataclass\r
+class TextbookTrigSubstitutionRule(mi.TrigSubstitutionRule):\r
+    """SymPy's rule, but its conversion back to x knows only sin, cos, and tan,\r
+    so sec, csc, and cot in the θ answer are first written with them; and\r
+    arccos(a/x), which x = a sec θ gives, is written arcsec(x/a), as in\r
+    textbooks."""\r
+\r
+    def eval(self):\r
+        theta = self.theta\r
+        in_sin_cos = self.substep.eval().subs(\r
+            {\r
+                sympy.sec(theta): 1 / sympy.cos(theta),\r
+                sympy.csc(theta): 1 / sympy.sin(theta),\r
+                sympy.cot(theta): sympy.cos(theta) / sympy.sin(theta),\r
+            }\r
+        )\r
+        known = dataclasses.replace(self, substep=KnownAnswerRule(in_sin_cos, theta))\r
+        result = mi.TrigSubstitutionRule.eval(known)\r
+        # arccos(a/x): a number over an expression in x.\r
+        return result.replace(\r
+            lambda e: isinstance(e, sympy.acos)\r
+            and bool(e.args[0].free_symbols)\r
+            and e.args[0].as_numer_denom()[0].is_number,\r
+            lambda e: sympy.asec(1 / e.args[0]),\r
+        )\r
+\r
+\r
+def theta_steps(integrand, theta):\r
+    """The θ integral's rule: sec³ θ by parts, or SymPy's textbook rules."""\r
+    with_csc = integrand.replace(\r
+        lambda e: e.is_Pow and isinstance(e.base, sympy.sin) and e.exp.is_negative,\r
+        lambda e: sympy.csc(e.base.args[0]) ** (-e.exp),\r
+    )\r
+    special = sec_cubed_rule(with_csc, theta)\r
+    if special is not None:\r
+        return special\r
+    # Imported here because integral_steps imports this module.\r
+    from mathlab.integral_steps import choose_alternatives, with_trig_substitutions\r
+\r
+    return with_trig_substitutions(choose_alternatives(mi.integral_steps(with_csc, theta)))\r
+\r
+\r
+def derivative_matches(antiderivative, integrand, symbol, point):\r
+    try:\r
+        difference = sympy.diff(antiderivative, symbol) - integrand\r
+        value = complex(difference.subs(symbol, point).evalf())\r
+    except (TypeError, ValueError):\r
+        return False\r
+    return abs(value) < 1e-9\r
+\r
+\r
+def sec_range(rule, integrand, symbol, constant):\r
+    """Where the x = a sec θ answer holds: √(x² − a²) needs |x| ≥ a, and the\r
+    answer, found for 0 ≤ θ < π/2, may hold on only one side. None if neither."""\r
+    answer = rule.eval()\r
+    right = derivative_matches(answer, integrand, symbol, 2 * constant)\r
+    left = derivative_matches(answer, integrand, symbol, -2 * constant)\r
+    if right and left:\r
+        return True\r
+    if right:\r
+        return symbol > constant\r
+    if left:\r
+        return symbol < -constant\r
+    return None\r
+\r
+\r
+def trig_substitution(integrand, symbol):\r
+    """A trigonometric substitution rule for integrand, or None."""\r
+    a_wild = sympy.Wild("a", exclude=[0, symbol])\r
+    b_wild = sympy.Wild("b", exclude=[0, symbol])\r
+    theta = sympy.Dummy("theta")\r
+    for expression in integrand.find(a_wild + b_wild * symbol**2):\r
+        match = expression.match(a_wild + b_wild * symbol**2)\r
+        a, b = match.get(a_wild, sympy.S.Zero), match.get(b_wild, sympy.S.Zero)\r
+        if not (a.is_number and b.is_number and a.is_real and b.is_real):\r
+            continue\r
+        constant = sympy.sqrt(abs(a)) / sympy.sqrt(abs(b))\r
+        if a > 0 and b > 0:\r
+            x_func = constant * sympy.tan(theta)\r
+        elif a > 0 > b:\r
+            x_func = constant * sympy.sin(theta)\r
+        elif b > 0 > a:\r
+            x_func = constant * sympy.sec(theta)\r
+        else:\r
+            continue\r
+        # √(trig²) is the trig function itself on the range θ is taken from.\r
+        powers = {}\r
+        for function in (sympy.sin, sympy.cos, sympy.tan, sympy.sec, sympy.csc, sympy.cot):\r
+            powers[sympy.sqrt(function(theta) ** 2)] = function(theta)\r
+            powers[sympy.sqrt(function(theta) ** -2)] = 1 / function(theta)\r
+        replaced = mi.manual_subs(integrand.subs(symbol, x_func).trigsimp(), powers)\r
+        if replaced.has(symbol):\r
+            continue\r
+        replaced = (replaced * mi.manual_diff(x_func, theta)).trigsimp()\r
+        replaced = replaced.xreplace({1 / sympy.cos(theta): sympy.sec(theta)})\r
+        substep = theta_steps(replaced, theta)\r
+        if substep.contains_dont_know():\r
+            continue\r
+        # With x = a sin θ the integrand is real only for |x| < a, where the\r
+        # answer holds; x = a tan θ covers every x.\r
+        rule = TextbookTrigSubstitutionRule(integrand, symbol, theta, x_func, replaced, substep, True)\r
+        if isinstance(x_func.as_coeff_Mul()[1], sympy.sec):\r
+            restriction = sec_range(rule, integrand, symbol, constant)\r
+            if restriction is None:\r
+                continue\r
+            rule = dataclasses.replace(rule, restriction=restriction)\r
+        return rule\r
+    return None\r
+`,"./python/mathlab/triple.py":`"""Triple integrals, as iterated integrals (Fubini's theorem in three dimensions).\r
+\r
+The innermost integral is taken first, with the two other variables held\r
+constant, and its bounds may depend on both of them. The middle integral's\r
+bounds may depend on the outermost variable, and the outermost bounds are\r
+numbers. Together the bounds describe a solid region E. The value is checked\r
+with a numerical triple integration.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.antiderivatives import NoAntiderivative, find_antiderivative\r
+from mathlab.checks import numeric_function\r
+from mathlab.definite import INFINITY, evaluate_between, parse_bound\r
+from mathlab.double import antiderivative_step\r
+from mathlab.expressions import PHI, RHO, THETA, R, X, Y, Z, InputError, factor_latex, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.numerical import iterated_value, no_formula_step, numerical_answer_check, shown\r
+from mathlab.parsing import constants_in, parse_function\r
+from mathlab.progress import report\r
+from mathlab.region import real_number, simplify_on_region\r
+from mathlab.steps import make_step\r
+\r
+# The order of integration: (innermost, middle, outermost) variables.\r
+ORDERS = {\r
+    "dz dy dx": (Z, Y, X),\r
+    "dz dx dy": (Z, X, Y),\r
+    "dy dz dx": (Y, Z, X),\r
+    "dy dx dz": (Y, X, Z),\r
+    "dx dz dy": (X, Z, Y),\r
+    "dx dy dz": (X, Y, Z),\r
+}\r
+LEVELS = ("innermost", "middle", "outermost")\r
+CHECK_DIGITS = 15\r
+CHECK_TOLERANCE = mpmath.mpf("1e-9")\r
+# The fast numerical method is trusted when it estimates its own error below this.\r
+FAST_METHOD_TOLERANCE = mpmath.mpf("1e-12")\r
+\r
+\r
+# How the variables read in messages: θ, not theta.\r
+SPELLINGS = {"theta": "θ", "phi": "φ", "rho": "ρ"}\r
+\r
+\r
+def spelled(variable):\r
+    return SPELLINGS.get(str(variable), str(variable))\r
+\r
+\r
+def names(variables):\r
+    return " and ".join(spelled(variable) for variable in variables)\r
+\r
+\r
+def parse_dependent_bound(text, name, level, variable, allowed):\r
+    """A bound that is a number or an expression in the allowed outer variables."""\r
+    if not isinstance(text, str) or text.strip() == "":\r
+        raise InputError(f"Enter the {name} bound of the {level} integral.")\r
+    if INFINITY.search(text):\r
+        raise InputError("Infinite bounds in a triple integral aren't supported yet.")\r
+    try:\r
+        bound = parse_function(latex_to_text(text), allowed)\r
+    except InputError as error:\r
+        raise InputError(f"The {level} integral's {name} bound: {error}") from error\r
+    used = {str(symbol) for symbol in bound.free_symbols}\r
+    if str(variable) in used:\r
+        raise InputError(\r
+            f"The {level} integral's bounds can depend on {names(allowed)} but not on "\r
+            f"{spelled(variable)}, the variable it integrates."\r
+        )\r
+    if used - {str(symbol) for symbol in allowed}:\r
+        raise InputError(\r
+            f"The {level} integral's {name} bound can use only numbers and {names(allowed)}."\r
+        )\r
+    return bound\r
+\r
+\r
+def parse_outermost_bound(text, name):\r
+    bound = parse_bound(text, f"outermost integral's {name}")\r
+    if bound.is_infinite:\r
+        raise InputError("Infinite bounds in a triple integral aren't supported yet.")\r
+    return bound\r
+\r
+\r
+def parse_bounds(variables, texts):\r
+    """The bounds of each integral, innermost first, as (lower, upper) pairs."""\r
+    _, middle, outer = variables\r
+    allowed = {"innermost": (middle, outer), "middle": (outer,)}\r
+    bounds = []\r
+    for level, variable, pair in zip(LEVELS[:2], variables, texts):\r
+        bounds.append(\r
+            tuple(\r
+                parse_dependent_bound(text, name, level, variable, allowed[level])\r
+                for text, name in zip(pair, ("lower", "upper"))\r
+            )\r
+        )\r
+    outer_bounds = tuple(\r
+        parse_outermost_bound(text, name) for text, name in zip(texts[2], ("lower", "upper"))\r
+    )\r
+    if (outer_bounds[1] - outer_bounds[0]).is_negative:\r
+        raise InputError("The outermost integral's lower bound must be at most its upper bound.")\r
+    bounds.append(outer_bounds)\r
+    return bounds\r
+\r
+\r
+def integrate_level(function, variable, low, high, rule, explanation, region=None):\r
+    """One integral of the three: its step and its value. region holds the outer\r
+    variables and their bounds, where the value is used and can be simplified."""\r
+    antiderivative, _, steps, _ = find_antiderivative(function, variable)\r
+    math, value = evaluate_between(function, antiderivative, low, high, variable)\r
+    if region is not None:\r
+        simpler = simplify_on_region(value, *region)\r
+        if simpler != value:\r
+            math.append(to_latex(simpler))\r
+            value = simpler\r
+    if value.has(sympy.nan, sympy.zoo, sympy.oo, -sympy.oo):\r
+        raise InputError(\r
+            "One of the integrals has no finite value everywhere on the region, so this triple "\r
+            "integral is improper, which the Solver can't do yet."\r
+        )\r
+    step = make_step(\r
+        rule, explanation, math, [antiderivative_step(function, variable, antiderivative, steps)]\r
+    )\r
+    return step, value\r
+\r
+\r
+def nested_quad(as_numeric, interval_functions, outer_interval, method):\r
+    """The triple integral computed numerically, and the largest error estimate of\r
+    any of its one-variable integrals."""\r
+    inner_interval, middle_interval = interval_functions\r
+    largest_error = [mpmath.mpf(0)]\r
+\r
+    def quad(integrand, interval):\r
+        result, error = mpmath.quad(integrand, interval, method=method, error=True)\r
+        largest_error[0] = max(largest_error[0], abs(error))\r
+        return result\r
+\r
+    total = quad(\r
+        lambda o: quad(\r
+            lambda m: quad(lambda i: real_number(as_numeric(i, m, o)), inner_interval(m, o)),\r
+            middle_interval(o),\r
+        ),\r
+        outer_interval,\r
+    )\r
+    return total, largest_error[0]\r
+\r
+\r
+def numerical_check(function, variables, bounds, value):\r
+    inner, middle, outer = variables\r
+    as_numeric = numeric_function(function, (inner, middle, outer))\r
+    inner_low, inner_high = (numeric_function(bound, (middle, outer)) for bound in bounds[0])\r
+    middle_low, middle_high = (numeric_function(bound, (outer,)) for bound in bounds[1])\r
+    interval_functions = (\r
+        lambda m, o: [real_number(inner_low(m, o)), real_number(inner_high(m, o))],\r
+        lambda o: [real_number(middle_low(o)), real_number(middle_high(o))],\r
+    )\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        outer_interval = [mpmath.mpf(str(sympy.N(bound, CHECK_DIGITS))) for bound in bounds[2]]\r
+        try:\r
+            exact = mpmath.mpmathify(sympy.N(value, CHECK_DIGITS))\r
+            # Gauss-Legendre is very fast on smooth functions; when it isn't sure\r
+            # of its answer (as at a sphere's edge), tanh-sinh is slower but\r
+            # handles such edges well.\r
+            numeric, error = nested_quad(as_numeric, interval_functions, outer_interval, "gauss-legendre")\r
+            if error > FAST_METHOD_TOLERANCE * max(1, abs(numeric)):\r
+                numeric, _ = nested_quad(as_numeric, interval_functions, outer_interval, "tanh-sinh")\r
+        except Exception:  # Numerical integration fails in many ways; all mean "unchecked".\r
+            numeric = None\r
+        if numeric is None or isinstance(numeric, mpmath.mpc) or isinstance(exact, mpmath.mpc):\r
+            return {"status": "unchecked", "detail": "The answer couldn't be checked numerically."}\r
+        shown = mpmath.nstr(numeric, 10).removesuffix(".0")\r
+        if abs(numeric - exact) <= CHECK_TOLERANCE * max(1, abs(exact)):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"A numerical triple integration gives \${shown}$, matching the exact "\r
+                "answer.",\r
+            }\r
+        return {\r
+            "status": "failed",\r
+            "detail": f"A numerical triple integration gives \${shown}$, which doesn't match. "\r
+            "Treat this answer with caution.",\r
+        }\r
+\r
+\r
+def iterated_triple_integral(function, variables, bounds):\r
+    """The iterated integral's LaTeX, its steps, and its values: the innermost\r
+    integral (a function of the middle and outermost variables), the middle\r
+    integral (a function of the outermost variable), and the exact value."""\r
+    inner, middle, outer = variables\r
+    latex = [to_latex(variable) for variable in variables]\r
+    iterated = to_latex(\r
+        sympy.Integral(function, *((variable, *pair) for variable, pair in zip(variables, bounds)))\r
+    )\r
+\r
+    def interval(pair):\r
+        return rf"from \${to_latex(pair[0])}$ to \${to_latex(pair[1])}$"\r
+\r
+    steps = [\r
+        make_step(\r
+            "Iterated triple integral",\r
+            rf"Write the triple integral over the solid $E$ as an iterated integral: integrate "\r
+            rf"with respect to \${latex[0]}$ first, {interval(bounds[0])}; then \${latex[1]}$ "\r
+            rf"{interval(bounds[1])}; then \${latex[2]}$ {interval(bounds[2])}.",\r
+            [rf"\\iiint_{{E}} {to_latex(function)}\\, dV", iterated],\r
+        )\r
+    ]\r
+    report("Integrating the innermost integral…")\r
+    step, inner_value = integrate_level(\r
+        function,\r
+        inner,\r
+        *bounds[0],\r
+        "Innermost integral",\r
+        rf"Integrate with respect to \${latex[0]}$, treating \${latex[1]}$ and \${latex[2]}$ as "\r
+        r"constants, then subtract the antiderivative's values at the bounds.",\r
+        region=((middle, outer), bounds[1:]),\r
+    )\r
+    steps.append(step)\r
+    report("Integrating the middle integral…")\r
+    step, middle_value = integrate_level(\r
+        inner_value,\r
+        middle,\r
+        *bounds[1],\r
+        "Middle integral",\r
+        rf"Integrate the result with respect to \${latex[1]}$, treating \${latex[2]}$ as a "\r
+        r"constant, and evaluate between its bounds.",\r
+        region=((outer,), bounds[2:]),\r
+    )\r
+    steps.append(step)\r
+    report("Integrating the outermost integral…")\r
+    step, value = integrate_level(\r
+        middle_value,\r
+        outer,\r
+        *bounds[2],\r
+        "Outermost integral",\r
+        rf"Integrate the result with respect to \${latex[2]}$ and evaluate between its bounds.",\r
+    )\r
+    steps.append(step)\r
+    return iterated, steps, (inner_value, middle_value, value)\r
+\r
+\r
+# Cylindrical and spherical coordinates: the variables in the usual order\r
+# (innermost first), x, y, and z in terms of them, and the volume factor:\r
+# dV = r dz dr dθ, or ρ² sin φ dρ dφ dθ.\r
+COORDINATE_SYSTEMS = {\r
+    "cylindrical": {\r
+        "name": "cylindrical",\r
+        "variables": (Z, R, THETA),\r
+        "xyz": (R * sympy.cos(THETA), R * sympy.sin(THETA), Z),\r
+        "factor": R,\r
+        "substitution": r"x = r\\cos\\theta, \\quad y = r\\sin\\theta, \\quad z = z",\r
+        "volume": r"dV = r\\, dz\\, dr\\, d\\theta",\r
+        "why": r"A small box in cylindrical coordinates has sides $dr$, $r\\,d\\theta$ (an arc of a "\r
+        r"circle of radius $r$), and $dz$, so its volume is $r\\,dz\\,dr\\,d\\theta$.",\r
+    },\r
+    "spherical": {\r
+        "name": "spherical",\r
+        "variables": (RHO, PHI, THETA),\r
+        "xyz": (\r
+            RHO * sympy.sin(PHI) * sympy.cos(THETA),\r
+            RHO * sympy.sin(PHI) * sympy.sin(THETA),\r
+            RHO * sympy.cos(PHI),\r
+        ),\r
+        "factor": RHO**2 * sympy.sin(PHI),\r
+        "substitution": r"x = \\rho\\sin\\phi\\cos\\theta, \\quad y = \\rho\\sin\\phi\\sin\\theta, \\quad z = \\rho\\cos\\phi",\r
+        "volume": r"dV = \\rho^2 \\sin\\phi\\, d\\rho\\, d\\phi\\, d\\theta",\r
+        "why": r"A small box in spherical coordinates has sides $d\\rho$, $\\rho\\,d\\phi$ (an arc of "\r
+        r"a circle of radius $\\rho$), and $\\rho\\sin\\phi\\,d\\theta$ (an arc of a circle of radius "\r
+        r"$\\rho\\sin\\phi$, the distance to the $z$-axis), so its volume is "\r
+        r"$\\rho^2\\sin\\phi\\,d\\rho\\,d\\phi\\,d\\theta$.",\r
+    },\r
+}\r
+\r
+\r
+def change_coordinates(function, system):\r
+    """f(x, y, z) in the new coordinates, times the volume factor: the step and\r
+    the new integrand."""\r
+    x, y, z = system["xyz"]\r
+    substituted = sympy.simplify(function.subs({X: x, Y: y, Z: z}, simultaneous=True))\r
+    integrand = sympy.simplify(substituted * system["factor"])\r
+    differentials = r"\\,".join(rf"d{to_latex(variable)}" for variable in system["variables"])\r
+    rewritten = (\r
+        ""\r
+        if substituted == function\r
+        else rf" Here $f = {to_latex(function)}$ becomes \${to_latex(substituted)}$."\r
+    )\r
+    step = make_step(\r
+        f"Change to {system['name']} coordinates",\r
+        rf"Write $x$, $y$, and $z$ in {system['name']} coordinates, \${system['substitution']}$, "\r
+        rf"and replace $dV$ by \${system['volume']}$. {system['why']}{rewritten}",\r
+        [\r
+            r"f\\, dV",\r
+            rf"{factor_latex(substituted)} \\cdot {factor_latex(system['factor'])}\\, {differentials}",\r
+            rf"{to_latex(integrand)}\\, {differentials}",\r
+        ],\r
+    )\r
+    return step, integrand\r
+\r
+\r
+def triple_integral(function, order, bound_texts, coordinates="rectangular"):\r
+    """bound_texts holds (lower, upper) LaTeX pairs, innermost integral first.\r
+    In cylindrical or spherical coordinates the order is the usual one,\r
+    dz dr dθ or dρ dφ dθ, and the bounds are in those coordinates."""\r
+    system = COORDINATE_SYSTEMS.get(coordinates)\r
+    if system is None and coordinates not in (None, "rectangular"):\r
+        raise InputError("Choose rectangular, cylindrical, or spherical coordinates.")\r
+    if system is None and order not in ORDERS:\r
+        raise InputError("Choose the order of integration, such as dz dy dx.")\r
+    variables = system["variables"] if system else ORDERS[order]\r
+    constants = constants_in(function, (X, Y, Z))\r
+    if constants:\r
+        raise InputError(\r
+            f"A triple integral needs a function of x, y, and z alone, so its answer is a "\r
+            f"number. Remove {', '.join(str(constant) for constant in constants)}."\r
+        )\r
+    bounds = parse_bounds(variables, bound_texts)\r
+    first_steps = []\r
+    if system:\r
+        step, function = change_coordinates(function, system)\r
+        first_steps.append(step)\r
+    try:\r
+        iterated, steps, (_, _, value) = iterated_triple_integral(function, variables, bounds)\r
+    except NoAntiderivative as error:\r
+        report("No formula was found, so integrating numerically…")\r
+        value = iterated_value(function, variables, bounds)\r
+        iterated = to_latex(\r
+            sympy.Integral(function, *((variable, *pair) for variable, pair in zip(variables, bounds)))\r
+        )\r
+        return {\r
+            "ok": True,\r
+            "operation": "triple",\r
+            "equationLatex": rf"{iterated} \\approx {shown(value)}",\r
+            "check": numerical_answer_check(value, "the same method with twice as many points"),\r
+            "steps": [*first_steps, no_formula_step(error.function, error.variable)],\r
+            "stepsNote": None,\r
+        }\r
+    steps = [*first_steps, *steps]\r
+    equation = f"{iterated} = {to_latex(value)}"\r
+    if not value.is_Rational:\r
+        equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"\r
+    report("Checking the answer numerically…")\r
+    return {\r
+        "ok": True,\r
+        "operation": "triple",\r
+        "equationLatex": equation,\r
+        "check": numerical_check(function, variables, bounds, value),\r
+        "steps": steps,\r
+        "stepsNote": None,\r
+    }\r
 `,"./python/mathlab/vectors.py":`"""Vectors in 3D: length, dot product, angle, and projection, with steps."""\r
 \r
 import math\r
