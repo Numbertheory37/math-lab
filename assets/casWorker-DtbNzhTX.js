@@ -122,6 +122,7 @@ import mpmath\r
 import sympy\r
 \r
 from mathlab.antiderivatives import find_antiderivative\r
+from mathlab.change_of_variables import change_of_variables\r
 from mathlab.checks import check_derivative, check_with_constants, numeric_function, plot_value\r
 from mathlab.curves import analyze_curve, parse_curve_function, trace\r
 from mathlab.definite import definite_integral\r
@@ -284,6 +285,16 @@ OPERATIONS = {\r
         parse_function(expression_text(request)), request.get("lower"), request.get("upper")\r
     ),\r
     "double": double_request,\r
+    # The transformation's two sides and the bounds in u and v are LaTeX.\r
+    "change": lambda request: change_of_variables(\r
+        parse_function(expression_text(request), (X, Y)),\r
+        request.get("changeKind"),\r
+        request.get("firstLatex"),\r
+        request.get("secondLatex"),\r
+        request.get("order"),\r
+        (request.get("innerLower"), request.get("innerUpper")),\r
+        (request.get("lower"), request.get("upper")),\r
+    ),\r
     "triple": lambda request: triple_integral(\r
         parse_function(expression_text(request), (X, Y, Z)),\r
         request.get("order"),\r
@@ -403,6 +414,248 @@ def run_request(request_json, on_progress=None):\r
     finally:\r
         listen(None)\r
     return json.dumps(response, allow_nan=False)\r
+`,"./python/mathlab/change_of_variables.py":`"""Change of variables in a double integral: with x = x(u, v) and\r
+y = y(u, v), ∬_R f(x, y) dA = ∬_S f(x(u, v), y(u, v)) |∂(x, y)/∂(u, v)| du dv,\r
+where the Jacobian ∂(x, y)/∂(u, v) = x_u y_v − x_v y_u is how much the\r
+transformation stretches area. The student gives u and v in terms of x and y\r
+(solved here for x and y) or x and y in terms of u and v, and the region S."""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.antiderivatives import NoAntiderivative\r
+from mathlab.checks import numeric_function, plot_value\r
+from mathlab.double import (\r
+    OUTLINE_POINTS,\r
+    iterated_integral,\r
+    numerical_check,\r
+    parse_inside_bound,\r
+    parse_outside_bound,\r
+)\r
+from mathlab.expressions import U, V, X, Y, InputError, to_latex\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.numerical import iterated_value, no_formula_step, numerical_answer_check, shown\r
+from mathlab.parsing import constants_in, parse_function\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step, separate\r
+\r
+ORDERS = {"du dv": (U, V), "dv du": (V, U)}\r
+# Points along each direction of S where the Jacobian's sign is sampled.\r
+SIGN_SAMPLES = 5\r
+\r
+\r
+def parse_part(text, name, variables):\r
+    """One side of the transformation, like u = x + y: only its own variables."""\r
+    if not isinstance(text, str) or text.strip() == "":\r
+        raise InputError(f"Enter {name}.")\r
+    try:\r
+        part = parse_function(latex_to_text(text), variables)\r
+    except InputError as error:\r
+        raise InputError(f"{name}: {error}") from error\r
+    if constants_in(part, variables):\r
+        allowed = " and ".join(variable.name for variable in variables)\r
+        raise InputError(f"{name} can use only {allowed}.")\r
+    return part\r
+\r
+\r
+def transformation(kind, first_text, second_text):\r
+    """x and y in terms of u and v, and the step that solved for them (None\r
+    when they were given)."""\r
+    if kind == "xy":\r
+        return parse_part(first_text, "x(u, v)", (U, V)), parse_part(second_text, "y(u, v)", (U, V)), None\r
+    if kind != "uv":\r
+        raise InputError("Choose which you are giving: u and v, or x and y.")\r
+    u_of, v_of = parse_part(first_text, "u(x, y)", (X, Y)), parse_part(second_text, "v(x, y)", (X, Y))\r
+    return solve_for_xy(u_of, v_of)\r
+\r
+\r
+def solve_for_xy(u_of, v_of):\r
+    """x and y in terms of u and v from u = u_of(x, y) and v = v_of(x, y), and\r
+    the step that shows it. Practice problems use it too."""\r
+    try:\r
+        solutions = sympy.solve([sympy.Eq(U, u_of), sympy.Eq(V, v_of)], [X, Y], dict=True)\r
+    except NotImplementedError:\r
+        solutions = []\r
+    if len(solutions) != 1 or set(solutions[0]) != {X, Y}:\r
+        raise InputError(\r
+            "These couldn't be solved for x and y in exactly one way. Enter x and y in terms of u and v "\r
+            "instead."\r
+        )\r
+    x_of, y_of = (sympy.simplify(solutions[0][variable]) for variable in (X, Y))\r
+    step = make_step(\r
+        "Solve for x and y",\r
+        r"The formula needs $x$ and $y$ in terms of $u$ and $v$, so solve the two equations for them.",\r
+        [\r
+            rf"u = {to_latex(u_of)},\\ v = {to_latex(v_of)} \\implies x = {to_latex(x_of)},\\ y = {to_latex(y_of)}",\r
+        ],\r
+    )\r
+    return x_of, y_of, step\r
+\r
+\r
+def sign_on_region(jacobian, inside, outside, inner, outer):\r
+    """1 or -1 where the Jacobian keeps one sign inside S. Raises InputError\r
+    when it changes sign there, so the transformation folds the region over."""\r
+    as_numeric = numeric_function(jacobian, (inside, outside))\r
+    low, high = (numeric_function(bound, (outside,)) for bound in inner)\r
+    a, b = (mpmath.mpf(str(sympy.N(bound, 20))) for bound in outer)\r
+    signs = set()\r
+    for i in range(1, SIGN_SAMPLES + 1):\r
+        o = a + (b - a) * i / (SIGN_SAMPLES + 1)\r
+        start, end = (plot_value(lambda bound=bound: bound(o)) for bound in (low, high))\r
+        if start is None or end is None:\r
+            raise InputError("The inside bounds aren't defined along the whole outside range.")\r
+        for j in range(1, SIGN_SAMPLES + 1):\r
+            value = plot_value(lambda: as_numeric(start + (end - start) * j / (SIGN_SAMPLES + 1), o))\r
+            if value is not None and abs(value) > 1e-12:\r
+                signs.add(1 if value > 0 else -1)\r
+    if len(signs) > 1:\r
+        raise InputError(\r
+            "The Jacobian changes sign inside the region, so the transformation folds it over. Split the "\r
+            "region where the Jacobian is 0."\r
+        )\r
+    return signs.pop() if signs else 1\r
+\r
+\r
+def region_outlines(x_of, y_of, inside, outside, inner, outer):\r
+    """S's boundary in the uv-plane, and its image, R's boundary, in the xy-plane."""\r
+    low, high = (numeric_function(bound, (outside,)) for bound in inner)\r
+    a, b = (float(bound) for bound in outer)\r
+    outside_points = [a + (b - a) * index / (OUTLINE_POINTS - 1) for index in range(OUTLINE_POINTS)]\r
+    edges = [\r
+        [plot_value(lambda o=o, bound=bound: bound(mpmath.mpf(o))) for o in outside_points] for bound in (low, high)\r
+    ]\r
+    if any(value is None for edge in edges for value in edge):\r
+        raise InputError("The inside integral's bounds aren't defined along the whole outside range.")\r
+    # Along the lower edge, up the far side, back along the upper edge, and closed.\r
+    path = [\r
+        *zip(edges[0], outside_points),\r
+        *((edges[0][-1] + (edges[1][-1] - edges[0][-1]) * k / 10, outside_points[-1]) for k in range(1, 10)),\r
+        *zip(reversed(edges[1]), reversed(outside_points)),\r
+        *((edges[1][0] + (edges[0][0] - edges[1][0]) * k / 10, outside_points[0]) for k in range(1, 11)),\r
+    ]\r
+    uv = [(i, o) if inside == U else (o, i) for i, o in path]\r
+    x_numeric, y_numeric = (numeric_function(part, (U, V)) for part in (x_of, y_of))\r
+    xy = [\r
+        tuple(plot_value(lambda part=part: part(mpmath.mpf(u), mpmath.mpf(v))) for part in (x_numeric, y_numeric))\r
+        for u, v in uv\r
+    ]\r
+    if any(value is None for point in xy for value in point):\r
+        raise InputError("x and y aren't defined everywhere on the region's edge.")\r
+    return {\r
+        "uv": {"x": [u for u, _ in uv], "y": [v for _, v in uv]},\r
+        "xy": {"x": [x for x, _ in xy], "y": [y for _, y in xy]},\r
+    }\r
+\r
+\r
+def change_of_variables(function, kind, first_text, second_text, order, inner_texts, outer_texts):\r
+    if order not in ORDERS:\r
+        raise InputError("Choose the order of integration: du dv or dv du.")\r
+    inside, outside = ORDERS[order]\r
+    constants = constants_in(function, (X, Y))\r
+    if constants:\r
+        names = ", ".join(str(constant) for constant in constants)\r
+        raise InputError(\r
+            f"A double integral needs a function of x and y alone, so its answer is a number. Remove {names}."\r
+        )\r
+    x_of, y_of, solve_step = transformation(kind, first_text, second_text)\r
+    inner = tuple(parse_inside_bound(text, name, inside, outside) for text, name in zip(inner_texts, ("lower", "upper")))\r
+    outer = tuple(parse_outside_bound(text, name) for text, name in zip(outer_texts, ("lower", "upper")))\r
+    if not sympy.simplify(outer[1] - outer[0]).is_positive:\r
+        raise InputError("The outside integral's lower bound must be less than its upper bound.")\r
+    response, _ = solve_change(function, x_of, y_of, solve_step, inside, outside, inner, outer)\r
+    return response\r
+\r
+\r
+def solve_change(function, x_of, y_of, solve_step, inside, outside, inner, outer):\r
+    """The response for ∬ f dA with x = x_of(u, v) and y = y_of(u, v) over the\r
+    region S given by inner and outer, and its exact value (None when it was\r
+    computed numerically). solve_step shows how x and y were found, or is\r
+    None when they were given. Practice problems use it too."""\r
+    rows =[[sympy.diff(part, variable) for variable in (U, V)] for part in (x_of, y_of)]\r
+    jacobian = sympy.simplify(rows[0][0] * rows[1][1] - rows[0][1] * rows[1][0])\r
+    if jacobian == 0:\r
+        raise InputError(\r
+            "The Jacobian is 0, so this isn't a change of variables: it squashes the region onto a curve "\r
+            "or a point."\r
+        )\r
+    sign = sign_on_region(jacobian, inside, outside, inner, outer)\r
+    size = sympy.simplify(sign * jacobian)\r
+    graph = region_outlines(x_of, y_of, inside, outside, inner, outer)\r
+\r
+    entries = r" \\\\ ".join(" & ".join(to_latex(entry) for entry in row) for row in rows)\r
+    jacobian_latex = (\r
+        r"\\frac{\\partial(x, y)}{\\partial(u, v)} = "\r
+        r"\\begin{vmatrix} x_u & x_v \\\\ y_u & y_v \\end{vmatrix} = "\r
+        rf"\\begin{{vmatrix}} {entries} \\end{{vmatrix}} = {to_latex(jacobian)}"\r
+    )\r
+    substituted = sympy.simplify(function.subs({X: x_of, Y: y_of}, simultaneous=True))\r
+    integrand = sympy.simplify(substituted * size)\r
+    shown_function = rf"\\left({to_latex(function)}\\right)" if function.is_Add else to_latex(function)\r
+    written = rf"\\iint_R {shown_function}\\, dA"\r
+    iterated = to_latex(sympy.Integral(integrand, (inside, *inner), (outside, *outer)))\r
+    steps = [\r
+        make_step(\r
+            "Change of variables",\r
+            r"With $x = x(u, v)$ and $y = y(u, v)$, the region $R$ in the $xy$-plane comes from a region "\r
+            r"$S$ in the $uv$-plane, and each small piece of area is stretched by the Jacobian's absolute "\r
+            r"value: $dA = \\left|\\frac{\\partial(x, y)}{\\partial(u, v)}\\right| du\\, dv$.",\r
+            [\r
+                r"\\iint_R f(x, y)\\, dA",\r
+                r"\\iint_S f(x(u, v), y(u, v)) \\left|\\frac{\\partial(x, y)}{\\partial(u, v)}\\right| du\\, dv",\r
+            ],\r
+        ),\r
+        solve_step,\r
+        make_step(\r
+            "Jacobian",\r
+            r"The Jacobian is the determinant of the partial derivatives of $x$ and $y$: "\r
+            r"$\\frac{\\partial(x, y)}{\\partial(u, v)} = x_u y_v - x_v y_u$. Its absolute value is the "\r
+            r"factor by which the transformation stretches area.",\r
+            # Two facts, one per line: chained with = they would read J = |J|.\r
+            [separate(jacobian_latex, rf"\\left|\\frac{{\\partial(x, y)}}{{\\partial(u, v)}}\\right| = {to_latex(size)}")],\r
+        ),\r
+        make_step(\r
+            "Write the integrand in u and v",\r
+            r"Replace $x$ and $y$ by their formulas, and multiply by the Jacobian's absolute value.",\r
+            [\r
+                rf"{shown_function} \\left|\\frac{{\\partial(x, y)}}{{\\partial(u, v)}}\\right|",\r
+                rf"{to_latex(substituted)} \\cdot {to_latex(size)}",\r
+                to_latex(integrand),\r
+            ],\r
+        ),\r
+    ]\r
+    steps = [step for step in steps if step is not None]\r
+    solution = {\r
+        "ok": True,\r
+        "operation": "change",\r
+        "jacobianLatex": jacobian_latex,\r
+        "stepsNote": None,\r
+        "graph": graph,\r
+    }\r
+    try:\r
+        _, integral_steps, value = iterated_integral(integrand, inside, outside, inner, outer, written=written)\r
+    except NoAntiderivative as failure:\r
+        report("No formula was found, so integrating numerically…")\r
+        value = iterated_value(integrand, (inside, outside), (inner, outer))\r
+        return {\r
+            **solution,\r
+            "equationLatex": rf"{written} = {iterated} \\approx {shown(value)}",\r
+            "check": numerical_answer_check(value, "the same method with twice as many points"),\r
+            "steps": [*steps, no_formula_step(failure.function, failure.variable)],\r
+        }, None\r
+    # SymPy writes (e - 1/e)/2 as sinh 1, which a Calc III student hasn't met.\r
+    if value.has(sympy.sinh, sympy.cosh, sympy.tanh):\r
+        # factor_terms takes out only the common number: 3(e - e^-1)/4.\r
+        value = sympy.factor_terms(sympy.expand(value.rewrite(sympy.exp)))\r
+    equation = f"{written} = {iterated} = {to_latex(value)}"\r
+    if not value.is_Rational:\r
+        equation += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"\r
+    report("Checking the answer numerically…")\r
+    return {\r
+        **solution,\r
+        "equationLatex": equation,\r
+        "check": numerical_check(integrand, inside, outside, inner, outer, value),\r
+        "steps": [*steps, *integral_steps],\r
+    }, value\r
 `,"./python/mathlab/checks.py":`"""Independent numerical checks of answers, so a wrong answer is flagged."""\r
 \r
 import itertools\r
@@ -3426,11 +3679,13 @@ def in_other_order(function, inside, outside, inner_bounds, outer_bounds):\r
     return [first, *steps], value\r
 \r
 \r
-def iterated_integral(function, inside, outside, inner_bounds, outer_bounds, general=True):\r
+def iterated_integral(function, inside, outside, inner_bounds, outer_bounds, general=True, written=None):\r
     """The iterated integral's LaTeX, its steps, and its exact value: the inside\r
     integral first, with the outside variable held constant, then the outside.\r
     Practice problems use it too. Without general, only the textbook rules\r
-    are tried, and InputError means they found no antiderivative."""\r
+    are tried, and InputError means they found no antiderivative. written is\r
+    the double integral's LaTeX when function isn't what it was written with,\r
+    as after a change to polar coordinates."""\r
     report("Integrating the inside integral…")\r
     inner_antiderivative, _, inner_steps, _ = find_antiderivative(function, inside, general=general)\r
     inner_math, inner_value = evaluate_between(\r
@@ -3459,7 +3714,7 @@ def iterated_integral(function, inside, outside, inner_bounds, outer_bounds, gen
             rf"with respect to \${inside_name}$ first, from \${to_latex(inner_bounds[0])}$ to "\r
             rf"\${to_latex(inner_bounds[1])}$, then with respect to \${outside_name}$ from "\r
             rf"\${to_latex(outer_bounds[0])}$ to \${to_latex(outer_bounds[1])}$.",\r
-            [rf"\\iint_{{R}} {to_latex(function)}\\, dA", iterated],\r
+            [written or rf"\\iint_{{R}} {to_latex(function)}\\, dA", iterated],\r
         ),\r
         make_step(\r
             "Inside integral",\r
@@ -7657,9 +7912,10 @@ def polar_double_integral(function, inner_texts, outer_texts):\r
     integrand, change = change_to_polar(function, to_latex(function))\r
     iterated = to_latex(sympy.Integral(integrand, (R, *inner), (THETA, *outer)))\r
     shown_function = rf"\\left({to_latex(function)}\\right)" if function.is_Add else to_latex(function)\r
-    written = rf"\\iint_R {shown_function}\\, dA = {iterated}"\r
+    double = rf"\\iint_R {shown_function}\\, dA"\r
+    written = f"{double} = {iterated}"\r
     try:\r
-        _, steps, value = iterated_integral(integrand, R, THETA, inner, outer)\r
+        _, steps, value = iterated_integral(integrand, R, THETA, inner, outer, written=double)\r
     except NoAntiderivative as failure:\r
         report("No formula was found, so integrating numerically…")\r
         value = iterated_value(integrand, (R, THETA), (inner, outer))\r
@@ -7694,6 +7950,7 @@ import random\r
 \r
 import sympy\r
 \r
+from mathlab.change_of_variables import solve_change, solve_for_xy\r
 from mathlab.checks import agree_numerically\r
 from mathlab.curves import arc_length, area, build_curve, slope_steps\r
 from mathlab.curl_div import divergence, solve_curl_divergence\r
@@ -7848,6 +8105,36 @@ POLAR_SECTORS = (\r
 )\r
 \r
 \r
+# Linear changes of variables u = ax + by, v = cx + dy, none with Jacobian 0.\r
+LINEAR_CHANGES = ((1, -1, 1, 1), (1, 1, 1, -1), (1, -1, 1, 2), (1, 2, 2, 1), (2, 1, 1, 1))\r
+\r
+\r
+def change_of_variables_problem(rng):\r
+    """∬ f dA over a parallelogram bounded by four lines, which u and v make a\r
+    rectangle, as in Stewart's exercises, with an exact answer."""\r
+    a, b, c, d = rng.choice(LINEAR_CHANGES)\r
+    u_of, v_of = a * X + b * Y, c * X + d * Y\r
+    u_low, v_low = rng.choice([0, 1]), rng.choice([0, 1, 2])\r
+    u_high, v_high = u_low + rng.choice([1, 2]), v_low + rng.choice([1, 2])\r
+    # f is written in x and y the way the problem gives it, like (x - y)(x + 2y).\r
+    in_uv = rng.choice([sympy.Integer(1), U, V, U * V, U**2])\r
+    function = in_uv.subs({U: u_of, V: v_of}, simultaneous=True)\r
+    x_of, y_of, solve_step = solve_for_xy(u_of, v_of)\r
+    u_bounds = (sympy.Integer(u_low), sympy.Integer(u_high))\r
+    v_bounds = (sympy.Integer(v_low), sympy.Integer(v_high))\r
+    response, value = solve_change(function, x_of, y_of, solve_step, U, V, u_bounds, v_bounds)\r
+    shown_function = rf"\\left({to_latex(function)}\\right)" if function.is_Add else to_latex(function)\r
+    u_line, v_line = to_latex(u_of), to_latex(v_of)\r
+    return Problem(\r
+        rf"Evaluate $\\iint_R {shown_function}\\, dA$, where $R$ is the parallelogram bounded by the lines "\r
+        rf"\${u_line} = {u_low}$, \${u_line} = {u_high}$, \${v_line} = {v_low}$, and \${v_line} = {v_high}$. "\r
+        rf"Use $u = {u_line}$ and $v = {v_line}$.",\r
+        value,\r
+        (),\r
+        response["steps"],\r
+    )\r
+\r
+\r
 def polar_double_problem(rng):\r
     """∬ f dA over a disk, a ring, or part of one, where polar coordinates\r
     make the bounds constants, with an exact answer."""\r
@@ -7861,15 +8148,17 @@ def polar_double_problem(rng):\r
     if where is not None:\r
         region = f"the part of {region.removeprefix('the ')} {where}"\r
     integrand, change = change_to_polar(function, to_latex(function))\r
+    shown_function = rf"\\left({to_latex(function)}\\right)" if function.is_Add else to_latex(function)\r
+    double = rf"\\iint_R {shown_function}\\, dA"\r
     _, steps, value = iterated_integral(\r
-        integrand, R, THETA, (sympy.Integer(inner), sympy.Integer(outer)), (sympy.sympify(start), sympy.sympify(end))\r
+        integrand,\r
+        R,\r
+        THETA,\r
+        (sympy.Integer(inner), sympy.Integer(outer)),\r
+        (sympy.sympify(start), sympy.sympify(end)),\r
+        written=double,\r
     )\r
-    return Problem(\r
-        rf"Evaluate $\\iint_R {to_latex(function)}\\, dA$, where $R$ is {region}.",\r
-        value,\r
-        (),\r
-        [change, *steps],\r
-    )\r
+    return Problem(rf"Evaluate \${double}$, where $R$ is {region}.", value, (), [change, *steps])\r
 \r
 \r
 def triple_integral_problem(rng):\r
@@ -8455,6 +8744,7 @@ GENERATORS = {\r
     "partial-derivatives": partial_derivative_problem,\r
     "double-integrals": double_integral_problem,\r
     "polar-double-integrals": polar_double_problem,\r
+    "change-of-variables": change_of_variables_problem,\r
     "triple-integrals": triple_integral_problem,\r
     "parametric-polar": curve_problem,\r
     "space-curves": space_curve_problem,\r
