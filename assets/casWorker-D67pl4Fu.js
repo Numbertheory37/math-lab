@@ -9214,168 +9214,190 @@ def riemann_sum(function, rectangle_texts, divisions, sample):
         "exactLatex": to_latex(exact),
         "surface": {"x": xs, "y": ys, "z": surface},
     }
-`,"./python/mathlab/solid.py":`"""The triple-integrals lesson picture: a solid E, a slice of it, and a line
-through the slice.
-
-The solid is given as a triple integral's bounds. Fixing the outermost
-variable cuts a slice; fixing the middle variable too leaves a line across
-the slice. With f = 1, the innermost integral is the line's length, the
-middle integral is the slice's area, and the outermost integral is the
-solid's volume. Every slider position is computed here at once, so moving
-a slider needs no new request.
-"""
-
-import mpmath
-import sympy
-
-from mathlab.checks import numeric_function
-from mathlab.expressions import X, Y, Z, InputError, to_latex
-from mathlab.region import real_number
-from mathlab.triple import ORDERS, iterated_triple_integral, parse_bounds
-
-# Slider positions: the outermost variable takes OUTER_STEPS + 1 values, and
-# the middle variable MIDDLE_STEPS + 1 values across each slice.
-OUTER_STEPS = 20
-MIDDLE_STEPS = 20
-# Grid points along each side of the boundary surfaces.
-SURFACE_POINTS = 25
-DIGITS = 5
-
-
-def as_float(compute):
-    """compute()'s value as a float, or None where it has no real value."""
-    try:
-        value = real_number(mpmath.mpmathify(compute()))
-    except Exception:  # Undefined points raise many error types; all mean "no value here".
-        return None
-    if isinstance(value, mpmath.mpc) or not mpmath.isfinite(value):
-        return None
-    # Rounded, which keeps the reply small; the picture needs no more digits.
-    return round(float(value), DIGITS)
-
-
-def fractions(steps):
-    return [index / steps for index in range(steps + 1)]
-
-
-class Solid:
-    """The bounds as numeric functions, and a way to place a point
-    (outer, middle, inner) at its (x, y, z) coordinates."""
-
-    def __init__(self, variables, bounds):
-        inner, middle, outer = variables
-        self.inner_low, self.inner_high = (numeric_function(b, (middle, outer)) for b in bounds[0])
-        self.middle_low, self.middle_high = (numeric_function(b, (outer,)) for b in bounds[1])
-        self.outer_low, self.outer_high = (float(sympy.N(b)) for b in bounds[2])
-        # Where each of x, y, z sits in (outer, middle, inner).
-        self.axis = [(outer, middle, inner).index(symbol) for symbol in (X, Y, Z)]
-
-    def outer_at(self, s):
-        return self.outer_low + s * (self.outer_high - self.outer_low)
-
-    def middle_at(self, o, t):
-        low = as_float(lambda: self.middle_low(o))
-        high = as_float(lambda: self.middle_high(o))
-        if low is None or high is None:
-            return None
-        return low + t * (high - low)
-
-    def inner_range(self, m, o):
-        if m is None:
-            return None, None
-        return as_float(lambda: self.inner_low(m, o)), as_float(lambda: self.inner_high(m, o))
-
-    def place(self, o, m, n):
-        """(x, y, z) for the point whose outer, middle, and inner values are o, m, n."""
-        values = (o, m, n)
-        if None in values:
-            return None, None, None
-        return tuple(round(values[index], DIGITS) for index in self.axis)
-
-
-def grid(solid, point_at):
-    """A parametric surface: point_at(u, v) over [0, 1]², as x, y, z rows."""
-    rows = [[point_at(u, v) for u in fractions(SURFACE_POINTS - 1)] for v in fractions(SURFACE_POINTS - 1)]
-    return {
-        name: [[point[index] for point in row] for row in rows]
-        for index, name in enumerate(("x", "y", "z"))
-    }
-
-
-def boundary(solid):
-    """The solid's surface: its bottom and top (innermost bounds), and walls
-    standing on the four edges of the region the middle and outer bounds trace."""
-
-    def on_region(s, t, w=None, level=None):
-        o = solid.outer_at(s)
-        m = solid.middle_at(o, t)
-        low, high = solid.inner_range(m, o)
-        if low is None or high is None:
-            return None, None, None
-        n = {"bottom": low, "top": high}.get(level, None if w is None else low + w * (high - low))
-        return solid.place(o, m, n)
-
-    return [
-        grid(solid, lambda s, t: on_region(s, t, level="bottom")),
-        grid(solid, lambda s, t: on_region(s, t, level="top")),
-        grid(solid, lambda s, w: on_region(s, 0, w)),
-        grid(solid, lambda s, w: on_region(s, 1, w)),
-        grid(solid, lambda t, w: on_region(0, t, w)),
-        grid(solid, lambda t, w: on_region(1, t, w)),
-    ]
-
-
-def solid_picture(order, bound_texts):
-    if order not in ORDERS:
-        raise InputError("Choose the order of integration, such as dz dy dx.")
-    variables = ORDERS[order]
-    bounds = parse_bounds(variables, bound_texts)
-    _, _, (line_length, slice_area, volume) = iterated_triple_integral(sympy.Integer(1), variables, bounds)
-    _, middle, outer = variables
-    length_at = numeric_function(line_length, (middle, outer))
-    area_at = numeric_function(slice_area, (outer,))
-    solid = Solid(variables, bounds)
-
-    positions = []
-    for s in fractions(OUTER_STEPS):
-        o = solid.outer_at(s)
-        lines = []
-        for t in fractions(MIDDLE_STEPS):
-            m = solid.middle_at(o, t)
-            low, high = solid.inner_range(m, o)
-            lines.append(
-                {
-                    "middle": None if m is None else round(m, DIGITS),
-                    "ends": [list(solid.place(o, m, low)), list(solid.place(o, m, high))],
-                    "length": as_float(lambda m=m: length_at(m, o)) if m is not None else None,
-                }
-            )
-        # The slice: the region the lines sweep, as two rows (their low and high ends).
-        slice_surface = {
-            name: [[line["ends"][end][index] for line in lines] for end in (0, 1)]
-            for index, name in enumerate(("x", "y", "z"))
-        }
-        positions.append(
-            {
-                "outer": round(o, DIGITS),
-                "area": as_float(lambda: area_at(o)),
-                "slice": slice_surface,
-                "lines": lines,
-            }
-        )
-
-    volume_value = as_float(lambda: sympy.N(volume, 20))
-    if volume_value is None:
-        raise InputError("This solid's volume has no finite value.")
-    return {
-        "ok": True,
-        "operation": "solid",
-        "variables": [str(variable) for variable in variables],
-        "surfaces": boundary(solid),
-        "positions": positions,
-        "volume": volume_value,
-        "volumeLatex": to_latex(volume),
-    }
+`,"./python/mathlab/solid.py":`"""The triple-integrals lesson picture: a solid E, a slice of it, and a line\r
+through the slice.\r
+\r
+The solid is given as a triple integral's bounds. Fixing the outermost\r
+variable cuts a slice; fixing the middle variable too leaves a line across\r
+the slice. With f = 1, the innermost integral is the line's length, the\r
+middle integral is the slice's area, and the outermost integral is the\r
+solid's volume. Every slider position is computed here at once, so moving\r
+a slider needs no new request.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import numeric_function\r
+from mathlab.expressions import X, Y, Z, InputError, to_latex\r
+from mathlab.region import real_number\r
+from mathlab.triple import ORDERS, iterated_triple_integral, parse_bounds\r
+\r
+# Slider positions: the outermost variable takes OUTER_STEPS + 1 values, and\r
+# the middle variable MIDDLE_STEPS + 1 values across each slice.\r
+OUTER_STEPS = 20\r
+MIDDLE_STEPS = 20\r
+# Grid points along each side of the boundary surfaces.\r
+SURFACE_POINTS = 25\r
+DIGITS = 5\r
+\r
+\r
+def as_float(compute):\r
+    """compute()'s value as a float, or None where it has no real value."""\r
+    try:\r
+        value = real_number(mpmath.mpmathify(compute()))\r
+    except Exception:  # Undefined points raise many error types; all mean "no value here".\r
+        return None\r
+    if isinstance(value, mpmath.mpc) or not mpmath.isfinite(value):\r
+        return None\r
+    # Rounded, which keeps the reply small; the picture needs no more digits.\r
+    return round(float(value), DIGITS)\r
+\r
+\r
+def fractions(steps):\r
+    return [index / steps for index in range(steps + 1)]\r
+\r
+\r
+class Solid:\r
+    """The bounds as numeric functions, and a way to place a point\r
+    (outer, middle, inner) at its (x, y, z) coordinates. In cylindrical or\r
+    spherical coordinates, xyz gives x, y, and z in terms of the variables."""\r
+\r
+    def __init__(self, variables, bounds, xyz=None):\r
+        inner, middle, outer = variables\r
+        self.inner_low, self.inner_high = (numeric_function(b, (middle, outer)) for b in bounds[0])\r
+        self.middle_low, self.middle_high = (numeric_function(b, (outer,)) for b in bounds[1])\r
+        self.outer_low, self.outer_high = (float(sympy.N(b)) for b in bounds[2])\r
+        # Where each of x, y, z sits in (outer, middle, inner), when they are the variables.\r
+        self.axis = None if xyz else [(outer, middle, inner).index(symbol) for symbol in (X, Y, Z)]\r
+        self.to_xyz = sympy.lambdify((outer, middle, inner), xyz, modules="math") if xyz else None\r
+\r
+    def outer_at(self, s):\r
+        return self.outer_low + s * (self.outer_high - self.outer_low)\r
+\r
+    def middle_at(self, o, t):\r
+        low = as_float(lambda: self.middle_low(o))\r
+        high = as_float(lambda: self.middle_high(o))\r
+        if low is None or high is None:\r
+            return None\r
+        return low + t * (high - low)\r
+\r
+    def inner_range(self, m, o):\r
+        if m is None:\r
+            return None, None\r
+        return as_float(lambda: self.inner_low(m, o)), as_float(lambda: self.inner_high(m, o))\r
+\r
+    def place(self, o, m, n):\r
+        """(x, y, z) for the point whose outer, middle, and inner values are o, m, n."""\r
+        values = (o, m, n)\r
+        if None in values:\r
+            return None, None, None\r
+        if self.to_xyz is not None:\r
+            return tuple(round(float(value), DIGITS) for value in self.to_xyz(*values))\r
+        return tuple(round(values[index], DIGITS) for index in self.axis)\r
+\r
+\r
+def grid(solid, point_at):\r
+    """A parametric surface: point_at(u, v) over [0, 1]², as x, y, z rows."""\r
+    rows = [[point_at(u, v) for u in fractions(SURFACE_POINTS - 1)] for v in fractions(SURFACE_POINTS - 1)]\r
+    return {\r
+        name: [[point[index] for point in row] for row in rows]\r
+        for index, name in enumerate(("x", "y", "z"))\r
+    }\r
+\r
+\r
+def boundary(solid):\r
+    """The solid's surface: its bottom and top (innermost bounds), and walls\r
+    standing on the four edges of the region the middle and outer bounds trace."""\r
+\r
+    def on_region(s, t, w=None, level=None):\r
+        o = solid.outer_at(s)\r
+        m = solid.middle_at(o, t)\r
+        low, high = solid.inner_range(m, o)\r
+        if low is None or high is None:\r
+            return None, None, None\r
+        n = {"bottom": low, "top": high}.get(level, None if w is None else low + w * (high - low))\r
+        return solid.place(o, m, n)\r
+\r
+    return [\r
+        grid(solid, lambda s, t: on_region(s, t, level="bottom")),\r
+        grid(solid, lambda s, t: on_region(s, t, level="top")),\r
+        grid(solid, lambda s, w: on_region(s, 0, w)),\r
+        grid(solid, lambda s, w: on_region(s, 1, w)),\r
+        grid(solid, lambda t, w: on_region(0, t, w)),\r
+        grid(solid, lambda t, w: on_region(1, t, w)),\r
+    ]\r
+\r
+\r
+def solid_graph(function, variables, bounds, xyz=None):\r
+    """The Solver's graph of a triple integral: the solid's faces in x, y, and\r
+    z, with f(x, y, z) at every point of them (None where f is undefined)."""\r
+    solid = Solid(variables, bounds, xyz)\r
+    f = numeric_function(function, (X, Y, Z))\r
+\r
+    def f_at(x, y, z):\r
+        if None in (x, y, z):\r
+            return None\r
+        return as_float(lambda: f(mpmath.mpf(x), mpmath.mpf(y), mpmath.mpf(z)))\r
+\r
+    faces = []\r
+    for face in boundary(solid):\r
+        rows = zip(face["x"], face["y"], face["z"])\r
+        faces.append({**face, "f": [[f_at(*point) for point in zip(*row)] for row in rows]})\r
+    return {"faces": faces}\r
+\r
+\r
+def solid_picture(order, bound_texts):\r
+    if order not in ORDERS:\r
+        raise InputError("Choose the order of integration, such as dz dy dx.")\r
+    variables = ORDERS[order]\r
+    bounds = parse_bounds(variables, bound_texts)\r
+    _, _, (line_length, slice_area, volume) = iterated_triple_integral(sympy.Integer(1), variables, bounds)\r
+    _, middle, outer = variables\r
+    length_at = numeric_function(line_length, (middle, outer))\r
+    area_at = numeric_function(slice_area, (outer,))\r
+    solid = Solid(variables, bounds)\r
+\r
+    positions = []\r
+    for s in fractions(OUTER_STEPS):\r
+        o = solid.outer_at(s)\r
+        lines = []\r
+        for t in fractions(MIDDLE_STEPS):\r
+            m = solid.middle_at(o, t)\r
+            low, high = solid.inner_range(m, o)\r
+            lines.append(\r
+                {\r
+                    "middle": None if m is None else round(m, DIGITS),\r
+                    "ends": [list(solid.place(o, m, low)), list(solid.place(o, m, high))],\r
+                    "length": as_float(lambda m=m: length_at(m, o)) if m is not None else None,\r
+                }\r
+            )\r
+        # The slice: the region the lines sweep, as two rows (their low and high ends).\r
+        slice_surface = {\r
+            name: [[line["ends"][end][index] for line in lines] for end in (0, 1)]\r
+            for index, name in enumerate(("x", "y", "z"))\r
+        }\r
+        positions.append(\r
+            {\r
+                "outer": round(o, DIGITS),\r
+                "area": as_float(lambda: area_at(o)),\r
+                "slice": slice_surface,\r
+                "lines": lines,\r
+            }\r
+        )\r
+\r
+    volume_value = as_float(lambda: sympy.N(volume, 20))\r
+    if volume_value is None:\r
+        raise InputError("This solid's volume has no finite value.")\r
+    return {\r
+        "ok": True,\r
+        "operation": "solid",\r
+        "variables": [str(variable) for variable in variables],\r
+        "surfaces": boundary(solid),\r
+        "positions": positions,\r
+        "volume": volume_value,\r
+        "volumeLatex": to_latex(volume),\r
+    }\r
 `,"./python/mathlab/space_curves.py":`"""Space curves: vector functions r(t) = ⟨x(t), y(t), z(t)⟩.
 
 The velocity r'(t) points along the curve, and its length is the speed.
@@ -11418,6 +11440,12 @@ def triple_integral(function, order, bound_texts, coordinates="rectangular"):\r
             f"number. Remove {', '.join(str(constant) for constant in constants)}."\r
         )\r
     bounds = parse_bounds(variables, bound_texts)\r
+    # Imported here because solid imports this module.\r
+    from mathlab.solid import solid_graph\r
+\r
+    # Drawn from f as typed, in x, y, and z, before any change of coordinates.\r
+    report("Drawing the solid…")\r
+    graph = solid_graph(function, variables, bounds, system["xyz"] if system else None)\r
     first_steps = []\r
     if system:\r
         step, function = change_coordinates(function, system)\r
@@ -11437,6 +11465,7 @@ def triple_integral(function, order, bound_texts, coordinates="rectangular"):\r
             "check": numerical_answer_check(value, "the same method with twice as many points"),\r
             "steps": [*first_steps, no_formula_step(error.function, error.variable)],\r
             "stepsNote": None,\r
+            "graph": graph,\r
         }\r
     steps = [*first_steps, *steps]\r
     equation = f"{iterated} = {to_latex(value)}"\r
@@ -11450,6 +11479,7 @@ def triple_integral(function, order, bound_texts, coordinates="rectangular"):\r
         "check": numerical_check(function, variables, bounds, value),\r
         "steps": steps,\r
         "stepsNote": None,\r
+        "graph": graph,\r
     }\r
 `,"./python/mathlab/vectors.py":`"""Vectors in 3D: length, dot product, angle, and projection, with steps."""\r
 \r
