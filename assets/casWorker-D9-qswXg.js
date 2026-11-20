@@ -1,4 +1,4 @@
-const e=/* #__PURE__ */ Object.assign({"./python/mathlab/__init__.py":`"""Math Lab's Python side: SymPy-based calculus with checks and explanations."""
+const e=/* #__PURE__ */ Object.assign({"./python/mathlab/__init__.py":`"""Math Lab's Python side: SymPy-based calculus with checks and explanations."""\r
 `,"./python/mathlab/antiderivatives.py":`"""Finding an antiderivative, with steps when the textbook rules can explain it.\r
 \r
 Shared by indefinite, definite, and double integrals. The variable of\r
@@ -2325,688 +2325,688 @@ def result(integral, function, low, high, steps, value, cuts, reversed_bounds):\
         "graph": graph_samples(function, low, high),\r
         "graphNote": graph_note(low, high, converges),\r
     }\r
-`,"./python/mathlab/derivative_steps.py":`"""Step-by-step derivatives, using the rules taught in Calculus I.
-
-explain_derivative() returns a derivative together with the step that
-explains it. Each rule computes its result from its own formula (for example
-u'v + uv' for a product), so the steps and the answer always match. The
-calculus module double-checks the result against SymPy's diff().
-
-The same rules give partial derivatives: differentiating x^2 y with respect
-to x treats y as a constant, exactly as a student does by hand.
-"""
-
-from dataclasses import dataclass
-
-import sympy
-
-from mathlab.checks import agree_numerically, test_values
-from mathlab.expressions import X, factor_latex, power_base_latex, to_latex
-from mathlab.steps import make_step
-
-# The inner variable of the chain rule. It is real so that the derivative of
-# |u| is sign(u) rather than a formula for complex numbers.
-U = sympy.Dummy("u", real=True)
-
-FUNCTION_NAMES = {
-    sympy.sin: "sine",
-    sympy.cos: "cosine",
-    sympy.tan: "tangent",
-    sympy.sec: "secant",
-    sympy.csc: "cosecant",
-    sympy.cot: "cotangent",
-    sympy.exp: "eˣ",
-    sympy.log: "ln",
-    sympy.asin: "arcsine",
-    sympy.acos: "arccosine",
-    sympy.atan: "arctangent",
-    sympy.sinh: "sinh",
-    sympy.cosh: "cosh",
-    sympy.tanh: "tanh",
-    sympy.Abs: "absolute value",
-}
-
-CHAIN_RULE_ADVICE = (
-    "Differentiate the outside, keep the inside as it is, then multiply by the derivative of the inside."
-)
-
-
-@dataclass(frozen=True)
-class Differentiation:
-    """What to differentiate with respect to, and whether it is a partial derivative."""
-
-    variable: sympy.Symbol = X
-    partial: bool = False
-
-    @property
-    def name(self):
-        return to_latex(self.variable)
-
-    def of(self, expression):
-        """LaTeX for the derivative operator applied to expression, like d/dx[...]."""
-        if self.partial:
-            operator = rf"\\frac{{\\partial}}{{\\partial {self.name}}}"
-        else:
-            operator = rf"\\frac{{d}}{{d{self.name}}}"
-        return rf"{operator}\\left[{to_latex(expression)}\\right]"
-
-
-ORDINARY = Differentiation()
-
-
-def combine_fractions(expression):
-    """Combine fractions when that makes the answer shorter.
-
-    This turns quotient-rule answers like 1/(x+1) - x/(x+1)^2 into 1/(x+1)^2.
-    Full simplification is avoided because it rewrites textbook forms, such as
-    turning 2 sin(x) cos(x) into sin(2x).
-    """
-    combined = sympy.together(expression)
-    # together() also factors sums with no fractions, like x^2 + 2x(x+1), so
-    # only use it when there is a denominator to combine.
-    has_denominator = sympy.denom(combined) != 1
-    if has_denominator and sympy.count_ops(combined) < sympy.count_ops(expression):
-        return combined
-    return expression
-
-
-def derivative_with_steps(function, d=ORDINARY, variables=(X,)):
-    """Return (derivative, steps, steps_note) for the derivative described by d.
-
-    If the step-by-step rules fail or disagree with SymPy's diff(), SymPy's
-    answer is used without steps, and steps_note says so.
-    """
-    sympy_derivative = sympy.diff(function, d.variable)
-    values = test_values(sorted(function.free_symbols - set(variables), key=str))
-    try:
-        derivative, step = explain_derivative(function, d)
-        explained = agree_numerically(derivative.subs(values), sympy_derivative.subs(values), variables)
-    except Exception:  # Steps are extra: a failure in them must not block the answer.
-        explained = False
-    if explained:
-        steps, steps_note = [step], None
-    else:
-        derivative = sympy_derivative
-        steps, steps_note = [], "Steps aren't available for this derivative."
-    combined = combine_fractions(derivative)
-    if combined != derivative and steps:
-        steps.append(
-            make_step(
-                "Simplify",
-                "Combine the fractions into a single fraction.",
-                [to_latex(derivative), to_latex(combined)],
-            )
-        )
-    return combined, steps, steps_note
-
-
-def explain_derivative(function, d=ORDINARY):
-    """Return (derivative, step) for the derivative of function described by d."""
-    if not function.has(d.variable):
-        return constant_rule(function, d)
-    if function == d.variable:
-        return sympy.Integer(1), make_step(
-            f"Derivative of {d.name}",
-            rf"The rate of change of \${d.name}$ with respect to itself is $1$.",
-            [d.of(function), "1"],
-        )
-    if isinstance(function, sympy.Add):
-        return sum_rule(function, d)
-    if isinstance(function, sympy.Mul):
-        return product_or_quotient_rule(function, d)
-    if isinstance(function, sympy.Pow):
-        return power_rule(function, d)
-    if isinstance(function, sympy.Function) and len(function.args) == 1:
-        return function_rule(function, d)
-    derivative = sympy.diff(function, d.variable)
-    return derivative, make_step(
-        "Derivative",
-        "SymPy computed this derivative directly; none of the basic rules applies.",
-        [d.of(function), to_latex(derivative)],
-    )
-
-
-def explain_part(expression, d):
-    """Like explain_derivative, but leaves out steps for linear expressions such as
-    x + 1 or 3x, whose derivatives are obvious."""
-    derivative, step = explain_derivative(expression, d)
-    is_linear = expression.is_polynomial(d.variable) and sympy.degree(expression, d.variable) <= 1
-    return derivative, None if is_linear else step
-
-
-def constant_rule(function, d):
-    if d.partial and function.free_symbols:
-        explanation = (
-            rf"\${to_latex(function)}$ doesn't contain \${d.name}$, so it is treated as a "
-            "constant, and its derivative is $0$."
-        )
-    else:
-        explanation = "A constant never changes, so its derivative is $0$."
-    return sympy.Integer(0), make_step("Constant rule", explanation, [d.of(function), "0"])
-
-
-def sum_rule(function, d):
-    terms = function.as_ordered_terms()
-    parts = [explain_part(term, d) for term in terms]
-    derivative = sympy.Add(*(term_derivative for term_derivative, _ in parts))
-    return derivative, make_step(
-        "Sum rule",
-        "Differentiate each term separately, then add the results.",
-        [d.of(function), " + ".join(d.of(term) for term in terms), to_latex(derivative)],
-        [step for _, step in parts],
-    )
-
-
-def product_or_quotient_rule(function, d):
-    constant, rest = function.as_independent(d.variable, as_Add=False)
-    if constant != 1:
-        return constant_multiple_rule(constant, rest, function, d)
-    factors = function.as_ordered_factors()
-    denominators = [
-        factor for factor in factors if isinstance(factor, sympy.Pow) and factor.exp.is_negative
-    ]
-    numerators = [factor for factor in factors if factor not in denominators]
-    if denominators and numerators:
-        numerator = sympy.Mul(*numerators)
-        denominator = sympy.Mul(*(1 / factor for factor in denominators))
-        return quotient_rule(numerator, denominator, function, d)
-    first, *others = factors
-    return product_rule(first, sympy.Mul(*others), function, d)
-
-
-def constant_multiple_rule(constant, rest, function, d):
-    rest_derivative, rest_step = explain_part(rest, d)
-    derivative = constant * rest_derivative
-    if d.partial and constant.free_symbols:
-        explanation = (
-            rf"\${to_latex(constant)}$ doesn't contain \${d.name}$, so treat it as a constant "
-            "factor and differentiate the rest."
-        )
-    else:
-        explanation = f"Keep the constant \${to_latex(constant)}$ and differentiate the rest."
-    return derivative, make_step(
-        "Constant multiple rule",
-        explanation,
-        [d.of(function), rf"{factor_latex(constant)} \\cdot {d.of(rest)}", to_latex(derivative)],
-        [rest_step],
-    )
-
-
-def product_rule(first, second, function, d):
-    first_derivative, first_step = explain_part(first, d)
-    second_derivative, second_step = explain_part(second, d)
-    derivative = first_derivative * second + first * second_derivative
-    return derivative, make_step(
-        "Product rule",
-        rf"For a product $uv$, $(uv)' = u'v + uv'$. Here $u = {to_latex(first)}$ "
-        rf"and $v = {to_latex(second)}$.",
-        [
-            d.of(function),
-            rf"{d.of(first)} \\cdot {factor_latex(second)} + {factor_latex(first)} \\cdot {d.of(second)}",
-            to_latex(derivative),
-        ],
-        [first_step, second_step],
-    )
-
-
-def quotient_rule(numerator, denominator, function, d):
-    numerator_derivative, numerator_step = explain_part(numerator, d)
-    denominator_derivative, denominator_step = explain_part(denominator, d)
-    derivative = (
-        numerator_derivative * denominator - numerator * denominator_derivative
-    ) / denominator**2
-    formula = (
-        rf"\\frac{{{d.of(numerator)} \\cdot {factor_latex(denominator)} - "
-        rf"{factor_latex(numerator)} \\cdot {d.of(denominator)}}}"
-        rf"{{{power_base_latex(denominator)}^{{2}}}}"
-    )
-    return derivative, make_step(
-        "Quotient rule",
-        r"For a quotient $\\frac{u}{v}$, $\\left(\\frac{u}{v}\\right)' = \\frac{u'v - uv'}{v^{2}}$. "
-        rf"Here $u = {to_latex(numerator)}$ and $v = {to_latex(denominator)}$.",
-        [d.of(function), formula, to_latex(derivative)],
-        [numerator_step, denominator_step],
-    )
-
-
-def power_rule(function, d):
-    base, exponent = function.as_base_exp()
-    if not exponent.has(d.variable):
-        return constant_exponent_rule(base, exponent, function, d)
-    if not base.has(d.variable):
-        return exponential_rule(base, exponent, function, d)
-    return logarithmic_differentiation(base, exponent, function, d)
-
-
-def constant_exponent_rule(base, exponent, function, d):
-    rewrite_note = ""
-    if not (exponent.is_integer and exponent.is_positive):
-        power_form = rf"{power_base_latex(base)}^{{{to_latex(exponent)}}}"
-        rewrite_note = f" Write it as a power first: \${to_latex(function)} = {power_form}$."
-    if base == d.variable:
-        derivative = exponent * base ** (exponent - 1)
-        return derivative, make_step(
-            "Power rule",
-            r"Bring the exponent down and lower it by one: "
-            rf"\${d.of(base ** sympy.Symbol('n'))} = n {d.name}^{{n-1}}$.{rewrite_note}",
-            [d.of(function), to_latex(derivative)],
-        )
-    base_derivative, base_step = explain_part(base, d)
-    outer_derivative = exponent * base ** (exponent - 1)
-    derivative = outer_derivative * base_derivative
-    return derivative, make_step(
-        "Chain rule",
-        rf"The outer function is the power $u^{{{to_latex(exponent)}}}$ (use the power rule) "
-        rf"and the inner function is $u = {to_latex(base)}$. {CHAIN_RULE_ADVICE}{rewrite_note}",
-        [d.of(function), rf"{factor_latex(outer_derivative)} \\cdot {d.of(base)}", to_latex(derivative)],
-        [base_step],
-    )
-
-
-def exponential_rule(base, exponent, function, d):
-    outer_derivative = function * sympy.log(base)
-    if exponent == d.variable:
-        return outer_derivative, make_step(
-            "Exponential rule",
-            rf"\${d.of(sympy.Symbol('a') ** d.variable)} = a^{{{d.name}}} \\ln a$ for a constant base $a$.",
-            [d.of(function), to_latex(outer_derivative)],
-        )
-    exponent_derivative, exponent_step = explain_part(exponent, d)
-    derivative = outer_derivative * exponent_derivative
-    return derivative, make_step(
-        "Chain rule",
-        rf"The outer function is $a^{{u}}$ with $a = {to_latex(base)}$, whose derivative is "
-        rf"$a^{{u}} \\ln a$, and the inner function is $u = {to_latex(exponent)}$. {CHAIN_RULE_ADVICE}",
-        [
-            d.of(function),
-            rf"{factor_latex(outer_derivative)} \\cdot {d.of(exponent)}",
-            to_latex(derivative),
-        ],
-        [exponent_step],
-    )
-
-
-def logarithmic_differentiation(base, exponent, function, d):
-    logarithm = exponent * sympy.log(base)
-    logarithm_derivative, logarithm_step = explain_derivative(logarithm, d)
-    derivative = function * logarithm_derivative
-    return derivative, make_step(
-        "Logarithmic differentiation",
-        rf"Both the base and the exponent contain \${d.name}$, so neither the power rule nor the "
-        rf"exponential rule applies. Rewrite \${to_latex(function)} = e^{{{to_latex(logarithm)}}}$ "
-        "and use the chain rule.",
-        [d.of(function), rf"{factor_latex(function)} \\cdot {d.of(logarithm)}", to_latex(derivative)],
-        [logarithm_step],
-    )
-
-
-def function_rule(function, d):
-    outer = function.func
-    inner = function.args[0]
-    outer_derivative_formula = sympy.diff(outer(U), U)
-    if inner == d.variable:
-        derivative = outer_derivative_formula.subs(U, inner)
-        name = FUNCTION_NAMES.get(outer)
-        return derivative, make_step(
-            f"Derivative of {name}" if name else "Basic derivative",
-            "One of the basic derivatives to know by heart.",
-            [d.of(function), to_latex(derivative)],
-        )
-    inner_derivative, inner_step = explain_part(inner, d)
-    outer_derivative = outer_derivative_formula.subs(U, inner)
-    derivative = outer_derivative * inner_derivative
-    return derivative, make_step(
-        "Chain rule",
-        rf"The outer function is \${to_latex(outer(U))}$, whose derivative is "
-        rf"\${to_latex(outer_derivative_formula)}$, and the inner function is "
-        rf"$u = {to_latex(inner)}$. {CHAIN_RULE_ADVICE}",
-        [d.of(function), rf"{factor_latex(outer_derivative)} \\cdot {d.of(inner)}", to_latex(derivative)],
-        [inner_step],
-    )
-`,"./python/mathlab/directional.py":`"""Directional derivatives and the gradient, for f(x, y) or f(x, y, z).
-
-The directional derivative D_u f is the rate of change of f in the direction
-of a unit vector u: D_u f = ∇f · u. Since ∇f · u = |∇f| cos θ, it is largest,
-|∇f|, when u points along ∇f, and 0 when u is perpendicular to ∇f.
-"""
-
-import mpmath
-import sympy
-
-from mathlab.checks import numeric_function, plot_value
-from mathlab.definite import parse_bound
-from mathlab.derivative_steps import Differentiation, derivative_with_steps
-from mathlab.expressions import X, Y, Z, InputError, to_latex
-from mathlab.multivariable import sample_square, sample_surface
-from mathlab.parsing import constants_in
-from mathlab.progress import report
-from mathlab.steps import make_step, separate
-from mathlab.vectors import vector_latex
-
-CHECK_DIGITS = 30
-CHECK_TOLERANCE = mpmath.mpf("1e-12")
-# The lesson picture's directions, every this many degrees.
-ANGLE_STEP = 15
-SLICE_REACH = 1.5
-SLICE_POINTS = 41
-# The lesson picture shows a fixed square this far on each side of the point,
-# like the partial derivatives picture: an automatic window grows to fit
-# e^y and hides the slope near the point.
-PICTURE_HALF_WIDTH = 1.5
-
-
-def latex_value(value):
-    text = to_latex(value)
-    if not value.is_Rational and value.is_real:
-        text += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"
-    return text
-
-
-def number(text, name):
-    """A coordinate typed in a math box: an exact, finite number. A decimal
-    like 1.1 becomes the fraction 11/10, so answers stay exact."""
-    value = parse_bound(text, name)
-    if value.is_infinite:
-        raise InputError(f"The {name} must be a number.")
-    return sympy.nsimplify(value, rational=True) if value.has(sympy.Float) else value
-
-
-def parse_problem(function, point_texts, direction):
-    """The variables, the point, and the direction vector, all exact."""
-    texts = [text if isinstance(text, str) else "" for text in (point_texts or [])]
-    texts += [""] * (3 - len(texts))
-    three = function.has(Z) or texts[2].strip() != ""
-    variables = (X, Y, Z) if three else (X, Y)
-    names = ("x", "y", "z")[: len(variables)]
-    constants = constants_in(function, variables)
-    if constants:
-        raise InputError(
-            f"f must use only {', '.join(names)}, so the answers are numbers. "
-            f"Remove {', '.join(str(constant) for constant in constants)}."
-        )
-    point = tuple(number(texts[index], f"point's {name}") for index, name in enumerate(names))
-    if not isinstance(direction, dict):
-        raise InputError("Give the direction as a vector or, for f(x, y), an angle.")
-    if direction.get("kind") == "angle":
-        if three:
-            raise InputError("An angle gives a direction in the plane; for f(x, y, z), give a vector.")
-        angle = number(direction.get("angle", ""), "angle")
-        vector = sympy.Matrix([sympy.cos(angle), sympy.sin(angle)])
-        given = ("angle", angle)
-    else:
-        components = list(direction.get("vector") or [])
-        components += [""] * (len(variables) - len(components))
-        vector = sympy.Matrix(
-            [number(text, f"direction's {name} component") for text, name in zip(components, names)]
-        )
-        if all(component == 0 for component in vector):
-            raise InputError("The direction can't be the zero vector: it has no direction.")
-        given = ("vector", vector)
-    return variables, point, vector, given
-
-
-def gradient_steps(function, variables, name="f"):
-    """∇f (or ∇g, for another name): each partial derivative with its steps."""
-    partials, substeps = [], []
-    for variable in variables:
-        d = Differentiation(variable, partial=True)
-        derivative, steps, _ = derivative_with_steps(function, d, variables)
-        partials.append(derivative)
-        substeps.append(
-            make_step(
-                f"Partial derivative in {d.name}",
-                rf"Differentiate with respect to \${d.name}$, treating the other variables as constants.",
-                [d.of(function), to_latex(derivative)],
-                steps,
-            )
-        )
-    gradient = sympy.Matrix(partials)
-    step = make_step(
-        "Gradient",
-        r"The gradient collects the partial derivatives into one vector: "
-        rf"$\\nabla {name} = \\langle {name}_x, {name}_y \\rangle$, or "
-        rf"$\\langle {name}_x, {name}_y, {name}_z \\rangle$.",
-        [rf"\\nabla {name} = {vector_latex(gradient)}"],
-        substeps,
-    )
-    return step, gradient
-
-
-def numerical_rate(function, variables, point, unit):
-    """The rate of change of f along the unit vector, by numerical differentiation."""
-    as_numeric = numeric_function(function, variables)
-    with mpmath.workdps(CHECK_DIGITS):
-        start = [mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in point]
-        direction = [mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in unit]
-        try:
-            return mpmath.diff(
-                lambda s: as_numeric(*(p + s * d for p, d in zip(start, direction))), 0
-            )
-        except Exception:  # Numerical differentiation fails in many ways; all mean "no value".
-            return None
-
-
-def check_against(numeric, exact, what):
-    if numeric is None or isinstance(numeric, mpmath.mpc):
-        return {"status": "unchecked", "detail": f"The {what} couldn't be checked numerically."}
-    with mpmath.workdps(CHECK_DIGITS):
-        expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))
-        shown = mpmath.nstr(numeric, 10)
-        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):
-            return {
-                "status": "verified",
-                "detail": f"Numerical differentiation gives \${shown}$ for the {what}, matching "
-                "the exact answer.",
-            }
-    return {
-        "status": "failed",
-        "detail": f"Numerical differentiation gives \${shown}$ for the {what}, which doesn't "
-        "match. Treat this answer with caution.",
-    }
-
-
-def slice_curve(function, point, unit, rate):
-    """For f(x, y): the slice of the surface through the point in direction u,
-    and the slice's tangent line, whose slope is D_u f."""
-    as_numeric = numeric_function(function, (X, Y))
-    a, b = (float(sympy.N(value)) for value in point)
-    u = [float(sympy.N(value)) for value in unit]
-    z0 = float(sympy.N(function.subs({X: point[0], Y: point[1]})))
-    steps = [SLICE_REACH * (2 * index / (SLICE_POINTS - 1) - 1) for index in range(SLICE_POINTS)]
-    slope = float(sympy.N(rate))
-    reach = SLICE_REACH * 0.6
-    return {
-        "slice": {
-            "x": [a + s * u[0] for s in steps],
-            "y": [b + s * u[1] for s in steps],
-            "z": [
-                plot_value(lambda s=s: as_numeric(mpmath.mpf(a + s * u[0]), mpmath.mpf(b + s * u[1])))
-                for s in steps
-            ],
-        },
-        "tangent": {
-            "x": [a - reach * u[0], a + reach * u[0]],
-            "y": [b - reach * u[1], b + reach * u[1]],
-            "z": [z0 - reach * slope, z0 + reach * slope],
-        },
-    }
-
-
-def solve_directional(function, variables, point, vector, given):
-    """The steps, and the values the answer shows: the gradient (in general and
-    at the point), the unit vector, D_u f, and the largest rate |∇f|. given is
-    ("angle", θ) or ("vector", v)."""
-    substitutions = dict(zip(variables, point))
-    at = rf"\\left({', '.join(to_latex(value) for value in point)}\\right)"
-    if not sympy.simplify(function.subs(substitutions)).is_finite:
-        raise InputError(f"f isn't defined at \${at}$. Choose another point.")
-    report("Finding the gradient…")
-    gradient_step, gradient = gradient_steps(function, variables)
-    gradient_here = gradient.subs(substitutions).applyfunc(sympy.simplify)
-    if not all(component.is_finite for component in gradient_here):
-        raise InputError(
-            f"A partial derivative of f isn't defined at \${at}$, so there is no gradient there."
-        )
-    length = sympy.simplify(sympy.sqrt(vector.dot(vector)))
-    unit = (vector / length).applyfunc(sympy.simplify)
-    rate = sympy.simplify(gradient_here.dot(unit))
-    largest = sympy.simplify(sympy.sqrt(gradient_here.dot(gradient_here)))
-
-    if given[0] == "angle":
-        unit_step = make_step(
-            "Unit vector",
-            r"A direction at angle $\\theta$ from the positive $x$-axis is the unit vector "
-            r"$\\mathbf{u} = \\langle \\cos\\theta, \\sin\\theta \\rangle$.",
-            [
-                rf"\\mathbf{{u}} = \\langle \\cos {to_latex(given[1])}, \\sin {to_latex(given[1])} \\rangle",
-                vector_latex(unit),
-            ],
-        )
-    else:
-        unit_step = make_step(
-            "Unit vector",
-            r"A directional derivative needs a unit vector, so divide the direction by its "
-            r"length: $\\mathbf{u} = \\frac{\\mathbf{v}}{|\\mathbf{v}|}$.",
-            [
-                separate(
-                    rf"|\\mathbf{{v}}| = {to_latex(length)}",
-                    rf"\\mathbf{{u}} = \\frac{{\\mathbf{{v}}}}{{|\\mathbf{{v}}|}} = {vector_latex(unit)}",
-                )
-            ],
-        )
-    steps = [
-        gradient_step,
-        make_step(
-            "Gradient at the point",
-            rf"Put the point \${at}$ into each component of $\\nabla f$.",
-            [rf"\\nabla f{at} = {vector_latex(gradient_here)}"],
-        ),
-        unit_step,
-        make_step(
-            "Directional derivative",
-            r"$D_{\\mathbf{u}} f = \\nabla f \\cdot \\mathbf{u}$: the rate of change of $f$ per unit of "
-            r"distance moved in the direction $\\mathbf{u}$.",
-            [
-                rf"D_{{\\mathbf{{u}}}} f{at} = {vector_latex(gradient_here)} \\cdot {vector_latex(unit)}",
-                latex_value(rate),
-            ],
-        ),
-    ]
-    if largest == 0:
-        steps.append(
-            make_step(
-                "Maximum rate of change",
-                rf"$\\nabla f{at} = \\mathbf{{0}}$, so $f$ has a critical point here: its rate of "
-                r"change is $0$ in every direction.",
-                [],
-            )
-        )
-        largest_result = r"0 \\text{ (a critical point: } \\nabla f = \\mathbf{0})"
-    else:
-        steps.append(
-            make_step(
-                "Maximum rate of change",
-                r"Since $D_{\\mathbf{u}} f = |\\nabla f| \\cos\\theta$, where $\\theta$ is the angle "
-                r"between $\\nabla f$ and $\\mathbf{u}$, it is largest, $|\\nabla f|$, when "
-                r"$\\mathbf{u}$ points along $\\nabla f$ ($\\theta = 0$).",
-                [rf"|\\nabla f{at}| = {latex_value(largest)}"],
-            )
-        )
-        largest_result = rf"{latex_value(largest)}, \\text{{ along }} {vector_latex(gradient_here)}"
-    return {
-        "at": at,
-        "steps": steps,
-        "gradient": gradient,
-        "gradient_here": gradient_here,
-        "unit": unit,
-        "rate": rate,
-        "largest": largest,
-        "largest_result": largest_result,
-    }
-
-
-def directional_derivative(function, point_texts, direction):
-    variables, point, vector, given = parse_problem(function, point_texts, direction)
-    solved = solve_directional(function, variables, point, vector, given)
-    at, steps, unit, rate, largest = (solved[key] for key in ("at", "steps", "unit", "rate", "largest"))
-    gradient, gradient_here = solved["gradient"], solved["gradient_here"]
-    report("Checking the answer numerically…")
-    checks = [
-        {
-            "label": "Directional derivative",
-            "check": check_against(numerical_rate(function, variables, point, unit), rate, "directional derivative"),
-        }
-    ]
-    if largest != 0:
-        steepest = (gradient_here / largest).applyfunc(sympy.simplify)
-        checks.append(
-            {
-                "label": "Maximum rate",
-                "check": check_against(
-                    numerical_rate(function, variables, point, steepest), largest, "maximum rate"
-                ),
-            }
-        )
-    point_names = ", ".join(str(variable) for variable in variables)
-    return {
-        "ok": True,
-        "operation": "directional",
-        "functionLatex": rf"f({point_names}) = {to_latex(function)}",
-        "results": [
-            {"label": "Gradient", "latex": rf"\\nabla f = {vector_latex(gradient)}"},
-            {"label": "Gradient at the point", "latex": rf"\\nabla f{at} = {vector_latex(gradient_here)}"},
-            {"label": "Unit vector", "latex": rf"\\mathbf{{u}} = {vector_latex(unit)}"},
-            {"label": "Directional derivative", "latex": rf"D_{{\\mathbf{{u}}}} f{at} = {latex_value(rate)}"},
-            {"label": "Maximum rate of change", "latex": solved["largest_result"]},
-        ],
-        "checks": checks,
-        "steps": steps,
-        # f(x, y, z) has no surface to draw.
-        "graph": (
-            {"surface": sample_surface(function, point), **slice_curve(function, point, unit, rate)}
-            if len(variables) == 2
-            else None
-        ),
-    }
-
-
-def direction_picture(function, point_texts):
-    """The lesson picture, for f(x, y) at a point: the surface, ∇f there, and for
-    every ANGLE_STEP degrees the slice in that direction, its tangent line, and
-    D_u f."""
-    variables, point, _, _ = parse_problem(function, point_texts, {"kind": "angle", "angle": "0"})
-    gradient = [sympy.diff(function, variable) for variable in variables]
-    here = [float(sympy.N(component.subs(dict(zip(variables, point))))) for component in gradient]
-    directions = []
-    for degrees in range(0, 360, ANGLE_STEP):
-        angle = sympy.pi * degrees / 180
-        unit = sympy.Matrix([sympy.cos(angle), sympy.sin(angle)])
-        rate = sympy.Matrix(here).dot(unit)
-        graph = slice_curve(function, point, unit, rate)
-        directions.append(
-            {
-                "degrees": degrees,
-                "rate": round(float(sympy.N(rate)), 6),
-                "slice": graph["slice"],
-                "tangent": graph["tangent"],
-            }
-        )
-    return {
-        "ok": True,
-        "operation": "directions",
-        "point": [float(sympy.N(value)) for value in point],
-        "value": float(sympy.N(function.subs(dict(zip(variables, point))))),
-        "gradient": here,
-        "surface": picture_surface(function, point),
-        "directions": directions,
-    }
-
-
-def picture_surface(function, point):
-    as_numeric = numeric_function(function, (X, Y))
-    xs, ys, z = sample_square(as_numeric, point, PICTURE_HALF_WIDTH)
-    value = float(sympy.N(function.subs({X: point[0], Y: point[1]})))
-    return {"x": xs, "y": ys, "z": z, "point": [float(sympy.N(point[0])), float(sympy.N(point[1])), value]}
+`,"./python/mathlab/derivative_steps.py":`"""Step-by-step derivatives, using the rules taught in Calculus I.\r
+\r
+explain_derivative() returns a derivative together with the step that\r
+explains it. Each rule computes its result from its own formula (for example\r
+u'v + uv' for a product), so the steps and the answer always match. The\r
+calculus module double-checks the result against SymPy's diff().\r
+\r
+The same rules give partial derivatives: differentiating x^2 y with respect\r
+to x treats y as a constant, exactly as a student does by hand.\r
+"""\r
+\r
+from dataclasses import dataclass\r
+\r
+import sympy\r
+\r
+from mathlab.checks import agree_numerically, test_values\r
+from mathlab.expressions import X, factor_latex, power_base_latex, to_latex\r
+from mathlab.steps import make_step\r
+\r
+# The inner variable of the chain rule. It is real so that the derivative of\r
+# |u| is sign(u) rather than a formula for complex numbers.\r
+U = sympy.Dummy("u", real=True)\r
+\r
+FUNCTION_NAMES = {\r
+    sympy.sin: "sine",\r
+    sympy.cos: "cosine",\r
+    sympy.tan: "tangent",\r
+    sympy.sec: "secant",\r
+    sympy.csc: "cosecant",\r
+    sympy.cot: "cotangent",\r
+    sympy.exp: "eˣ",\r
+    sympy.log: "ln",\r
+    sympy.asin: "arcsine",\r
+    sympy.acos: "arccosine",\r
+    sympy.atan: "arctangent",\r
+    sympy.sinh: "sinh",\r
+    sympy.cosh: "cosh",\r
+    sympy.tanh: "tanh",\r
+    sympy.Abs: "absolute value",\r
+}\r
+\r
+CHAIN_RULE_ADVICE = (\r
+    "Differentiate the outside, keep the inside as it is, then multiply by the derivative of the inside."\r
+)\r
+\r
+\r
+@dataclass(frozen=True)\r
+class Differentiation:\r
+    """What to differentiate with respect to, and whether it is a partial derivative."""\r
+\r
+    variable: sympy.Symbol = X\r
+    partial: bool = False\r
+\r
+    @property\r
+    def name(self):\r
+        return to_latex(self.variable)\r
+\r
+    def of(self, expression):\r
+        """LaTeX for the derivative operator applied to expression, like d/dx[...]."""\r
+        if self.partial:\r
+            operator = rf"\\frac{{\\partial}}{{\\partial {self.name}}}"\r
+        else:\r
+            operator = rf"\\frac{{d}}{{d{self.name}}}"\r
+        return rf"{operator}\\left[{to_latex(expression)}\\right]"\r
+\r
+\r
+ORDINARY = Differentiation()\r
+\r
+\r
+def combine_fractions(expression):\r
+    """Combine fractions when that makes the answer shorter.\r
+\r
+    This turns quotient-rule answers like 1/(x+1) - x/(x+1)^2 into 1/(x+1)^2.\r
+    Full simplification is avoided because it rewrites textbook forms, such as\r
+    turning 2 sin(x) cos(x) into sin(2x).\r
+    """\r
+    combined = sympy.together(expression)\r
+    # together() also factors sums with no fractions, like x^2 + 2x(x+1), so\r
+    # only use it when there is a denominator to combine.\r
+    has_denominator = sympy.denom(combined) != 1\r
+    if has_denominator and sympy.count_ops(combined) < sympy.count_ops(expression):\r
+        return combined\r
+    return expression\r
+\r
+\r
+def derivative_with_steps(function, d=ORDINARY, variables=(X,)):\r
+    """Return (derivative, steps, steps_note) for the derivative described by d.\r
+\r
+    If the step-by-step rules fail or disagree with SymPy's diff(), SymPy's\r
+    answer is used without steps, and steps_note says so.\r
+    """\r
+    sympy_derivative = sympy.diff(function, d.variable)\r
+    values = test_values(sorted(function.free_symbols - set(variables), key=str))\r
+    try:\r
+        derivative, step = explain_derivative(function, d)\r
+        explained = agree_numerically(derivative.subs(values), sympy_derivative.subs(values), variables)\r
+    except Exception:  # Steps are extra: a failure in them must not block the answer.\r
+        explained = False\r
+    if explained:\r
+        steps, steps_note = [step], None\r
+    else:\r
+        derivative = sympy_derivative\r
+        steps, steps_note = [], "Steps aren't available for this derivative."\r
+    combined = combine_fractions(derivative)\r
+    if combined != derivative and steps:\r
+        steps.append(\r
+            make_step(\r
+                "Simplify",\r
+                "Combine the fractions into a single fraction.",\r
+                [to_latex(derivative), to_latex(combined)],\r
+            )\r
+        )\r
+    return combined, steps, steps_note\r
+\r
+\r
+def explain_derivative(function, d=ORDINARY):\r
+    """Return (derivative, step) for the derivative of function described by d."""\r
+    if not function.has(d.variable):\r
+        return constant_rule(function, d)\r
+    if function == d.variable:\r
+        return sympy.Integer(1), make_step(\r
+            f"Derivative of {d.name}",\r
+            rf"The rate of change of \${d.name}$ with respect to itself is $1$.",\r
+            [d.of(function), "1"],\r
+        )\r
+    if isinstance(function, sympy.Add):\r
+        return sum_rule(function, d)\r
+    if isinstance(function, sympy.Mul):\r
+        return product_or_quotient_rule(function, d)\r
+    if isinstance(function, sympy.Pow):\r
+        return power_rule(function, d)\r
+    if isinstance(function, sympy.Function) and len(function.args) == 1:\r
+        return function_rule(function, d)\r
+    derivative = sympy.diff(function, d.variable)\r
+    return derivative, make_step(\r
+        "Derivative",\r
+        "SymPy computed this derivative directly; none of the basic rules applies.",\r
+        [d.of(function), to_latex(derivative)],\r
+    )\r
+\r
+\r
+def explain_part(expression, d):\r
+    """Like explain_derivative, but leaves out steps for linear expressions such as\r
+    x + 1 or 3x, whose derivatives are obvious."""\r
+    derivative, step = explain_derivative(expression, d)\r
+    is_linear = expression.is_polynomial(d.variable) and sympy.degree(expression, d.variable) <= 1\r
+    return derivative, None if is_linear else step\r
+\r
+\r
+def constant_rule(function, d):\r
+    if d.partial and function.free_symbols:\r
+        explanation = (\r
+            rf"\${to_latex(function)}$ doesn't contain \${d.name}$, so it is treated as a "\r
+            "constant, and its derivative is $0$."\r
+        )\r
+    else:\r
+        explanation = "A constant never changes, so its derivative is $0$."\r
+    return sympy.Integer(0), make_step("Constant rule", explanation, [d.of(function), "0"])\r
+\r
+\r
+def sum_rule(function, d):\r
+    terms = function.as_ordered_terms()\r
+    parts = [explain_part(term, d) for term in terms]\r
+    derivative = sympy.Add(*(term_derivative for term_derivative, _ in parts))\r
+    return derivative, make_step(\r
+        "Sum rule",\r
+        "Differentiate each term separately, then add the results.",\r
+        [d.of(function), " + ".join(d.of(term) for term in terms), to_latex(derivative)],\r
+        [step for _, step in parts],\r
+    )\r
+\r
+\r
+def product_or_quotient_rule(function, d):\r
+    constant, rest = function.as_independent(d.variable, as_Add=False)\r
+    if constant != 1:\r
+        return constant_multiple_rule(constant, rest, function, d)\r
+    factors = function.as_ordered_factors()\r
+    denominators = [\r
+        factor for factor in factors if isinstance(factor, sympy.Pow) and factor.exp.is_negative\r
+    ]\r
+    numerators = [factor for factor in factors if factor not in denominators]\r
+    if denominators and numerators:\r
+        numerator = sympy.Mul(*numerators)\r
+        denominator = sympy.Mul(*(1 / factor for factor in denominators))\r
+        return quotient_rule(numerator, denominator, function, d)\r
+    first, *others = factors\r
+    return product_rule(first, sympy.Mul(*others), function, d)\r
+\r
+\r
+def constant_multiple_rule(constant, rest, function, d):\r
+    rest_derivative, rest_step = explain_part(rest, d)\r
+    derivative = constant * rest_derivative\r
+    if d.partial and constant.free_symbols:\r
+        explanation = (\r
+            rf"\${to_latex(constant)}$ doesn't contain \${d.name}$, so treat it as a constant "\r
+            "factor and differentiate the rest."\r
+        )\r
+    else:\r
+        explanation = f"Keep the constant \${to_latex(constant)}$ and differentiate the rest."\r
+    return derivative, make_step(\r
+        "Constant multiple rule",\r
+        explanation,\r
+        [d.of(function), rf"{factor_latex(constant)} \\cdot {d.of(rest)}", to_latex(derivative)],\r
+        [rest_step],\r
+    )\r
+\r
+\r
+def product_rule(first, second, function, d):\r
+    first_derivative, first_step = explain_part(first, d)\r
+    second_derivative, second_step = explain_part(second, d)\r
+    derivative = first_derivative * second + first * second_derivative\r
+    return derivative, make_step(\r
+        "Product rule",\r
+        rf"For a product $uv$, $(uv)' = u'v + uv'$. Here $u = {to_latex(first)}$ "\r
+        rf"and $v = {to_latex(second)}$.",\r
+        [\r
+            d.of(function),\r
+            rf"{d.of(first)} \\cdot {factor_latex(second)} + {factor_latex(first)} \\cdot {d.of(second)}",\r
+            to_latex(derivative),\r
+        ],\r
+        [first_step, second_step],\r
+    )\r
+\r
+\r
+def quotient_rule(numerator, denominator, function, d):\r
+    numerator_derivative, numerator_step = explain_part(numerator, d)\r
+    denominator_derivative, denominator_step = explain_part(denominator, d)\r
+    derivative = (\r
+        numerator_derivative * denominator - numerator * denominator_derivative\r
+    ) / denominator**2\r
+    formula = (\r
+        rf"\\frac{{{d.of(numerator)} \\cdot {factor_latex(denominator)} - "\r
+        rf"{factor_latex(numerator)} \\cdot {d.of(denominator)}}}"\r
+        rf"{{{power_base_latex(denominator)}^{{2}}}}"\r
+    )\r
+    return derivative, make_step(\r
+        "Quotient rule",\r
+        r"For a quotient $\\frac{u}{v}$, $\\left(\\frac{u}{v}\\right)' = \\frac{u'v - uv'}{v^{2}}$. "\r
+        rf"Here $u = {to_latex(numerator)}$ and $v = {to_latex(denominator)}$.",\r
+        [d.of(function), formula, to_latex(derivative)],\r
+        [numerator_step, denominator_step],\r
+    )\r
+\r
+\r
+def power_rule(function, d):\r
+    base, exponent = function.as_base_exp()\r
+    if not exponent.has(d.variable):\r
+        return constant_exponent_rule(base, exponent, function, d)\r
+    if not base.has(d.variable):\r
+        return exponential_rule(base, exponent, function, d)\r
+    return logarithmic_differentiation(base, exponent, function, d)\r
+\r
+\r
+def constant_exponent_rule(base, exponent, function, d):\r
+    rewrite_note = ""\r
+    if not (exponent.is_integer and exponent.is_positive):\r
+        power_form = rf"{power_base_latex(base)}^{{{to_latex(exponent)}}}"\r
+        rewrite_note = f" Write it as a power first: \${to_latex(function)} = {power_form}$."\r
+    if base == d.variable:\r
+        derivative = exponent * base ** (exponent - 1)\r
+        return derivative, make_step(\r
+            "Power rule",\r
+            r"Bring the exponent down and lower it by one: "\r
+            rf"\${d.of(base ** sympy.Symbol('n'))} = n {d.name}^{{n-1}}$.{rewrite_note}",\r
+            [d.of(function), to_latex(derivative)],\r
+        )\r
+    base_derivative, base_step = explain_part(base, d)\r
+    outer_derivative = exponent * base ** (exponent - 1)\r
+    derivative = outer_derivative * base_derivative\r
+    return derivative, make_step(\r
+        "Chain rule",\r
+        rf"The outer function is the power $u^{{{to_latex(exponent)}}}$ (use the power rule) "\r
+        rf"and the inner function is $u = {to_latex(base)}$. {CHAIN_RULE_ADVICE}{rewrite_note}",\r
+        [d.of(function), rf"{factor_latex(outer_derivative)} \\cdot {d.of(base)}", to_latex(derivative)],\r
+        [base_step],\r
+    )\r
+\r
+\r
+def exponential_rule(base, exponent, function, d):\r
+    outer_derivative = function * sympy.log(base)\r
+    if exponent == d.variable:\r
+        return outer_derivative, make_step(\r
+            "Exponential rule",\r
+            rf"\${d.of(sympy.Symbol('a') ** d.variable)} = a^{{{d.name}}} \\ln a$ for a constant base $a$.",\r
+            [d.of(function), to_latex(outer_derivative)],\r
+        )\r
+    exponent_derivative, exponent_step = explain_part(exponent, d)\r
+    derivative = outer_derivative * exponent_derivative\r
+    return derivative, make_step(\r
+        "Chain rule",\r
+        rf"The outer function is $a^{{u}}$ with $a = {to_latex(base)}$, whose derivative is "\r
+        rf"$a^{{u}} \\ln a$, and the inner function is $u = {to_latex(exponent)}$. {CHAIN_RULE_ADVICE}",\r
+        [\r
+            d.of(function),\r
+            rf"{factor_latex(outer_derivative)} \\cdot {d.of(exponent)}",\r
+            to_latex(derivative),\r
+        ],\r
+        [exponent_step],\r
+    )\r
+\r
+\r
+def logarithmic_differentiation(base, exponent, function, d):\r
+    logarithm = exponent * sympy.log(base)\r
+    logarithm_derivative, logarithm_step = explain_derivative(logarithm, d)\r
+    derivative = function * logarithm_derivative\r
+    return derivative, make_step(\r
+        "Logarithmic differentiation",\r
+        rf"Both the base and the exponent contain \${d.name}$, so neither the power rule nor the "\r
+        rf"exponential rule applies. Rewrite \${to_latex(function)} = e^{{{to_latex(logarithm)}}}$ "\r
+        "and use the chain rule.",\r
+        [d.of(function), rf"{factor_latex(function)} \\cdot {d.of(logarithm)}", to_latex(derivative)],\r
+        [logarithm_step],\r
+    )\r
+\r
+\r
+def function_rule(function, d):\r
+    outer = function.func\r
+    inner = function.args[0]\r
+    outer_derivative_formula = sympy.diff(outer(U), U)\r
+    if inner == d.variable:\r
+        derivative = outer_derivative_formula.subs(U, inner)\r
+        name = FUNCTION_NAMES.get(outer)\r
+        return derivative, make_step(\r
+            f"Derivative of {name}" if name else "Basic derivative",\r
+            "One of the basic derivatives to know by heart.",\r
+            [d.of(function), to_latex(derivative)],\r
+        )\r
+    inner_derivative, inner_step = explain_part(inner, d)\r
+    outer_derivative = outer_derivative_formula.subs(U, inner)\r
+    derivative = outer_derivative * inner_derivative\r
+    return derivative, make_step(\r
+        "Chain rule",\r
+        rf"The outer function is \${to_latex(outer(U))}$, whose derivative is "\r
+        rf"\${to_latex(outer_derivative_formula)}$, and the inner function is "\r
+        rf"$u = {to_latex(inner)}$. {CHAIN_RULE_ADVICE}",\r
+        [d.of(function), rf"{factor_latex(outer_derivative)} \\cdot {d.of(inner)}", to_latex(derivative)],\r
+        [inner_step],\r
+    )\r
+`,"./python/mathlab/directional.py":`"""Directional derivatives and the gradient, for f(x, y) or f(x, y, z).\r
+\r
+The directional derivative D_u f is the rate of change of f in the direction\r
+of a unit vector u: D_u f = ∇f · u. Since ∇f · u = |∇f| cos θ, it is largest,\r
+|∇f|, when u points along ∇f, and 0 when u is perpendicular to ∇f.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import numeric_function, plot_value\r
+from mathlab.definite import parse_bound\r
+from mathlab.derivative_steps import Differentiation, derivative_with_steps\r
+from mathlab.expressions import X, Y, Z, InputError, to_latex\r
+from mathlab.multivariable import sample_square, sample_surface\r
+from mathlab.parsing import constants_in\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step, separate\r
+from mathlab.vectors import vector_latex\r
+\r
+CHECK_DIGITS = 30\r
+CHECK_TOLERANCE = mpmath.mpf("1e-12")\r
+# The lesson picture's directions, every this many degrees.\r
+ANGLE_STEP = 15\r
+SLICE_REACH = 1.5\r
+SLICE_POINTS = 41\r
+# The lesson picture shows a fixed square this far on each side of the point,\r
+# like the partial derivatives picture: an automatic window grows to fit\r
+# e^y and hides the slope near the point.\r
+PICTURE_HALF_WIDTH = 1.5\r
+\r
+\r
+def latex_value(value):\r
+    text = to_latex(value)\r
+    if not value.is_Rational and value.is_real:\r
+        text += rf" \\approx {mpmath.nstr(mpmath.mpf(str(sympy.N(value, 15))), 6)}"\r
+    return text\r
+\r
+\r
+def number(text, name):\r
+    """A coordinate typed in a math box: an exact, finite number. A decimal\r
+    like 1.1 becomes the fraction 11/10, so answers stay exact."""\r
+    value = parse_bound(text, name)\r
+    if value.is_infinite:\r
+        raise InputError(f"The {name} must be a number.")\r
+    return sympy.nsimplify(value, rational=True) if value.has(sympy.Float) else value\r
+\r
+\r
+def parse_problem(function, point_texts, direction):\r
+    """The variables, the point, and the direction vector, all exact."""\r
+    texts = [text if isinstance(text, str) else "" for text in (point_texts or [])]\r
+    texts += [""] * (3 - len(texts))\r
+    three = function.has(Z) or texts[2].strip() != ""\r
+    variables = (X, Y, Z) if three else (X, Y)\r
+    names = ("x", "y", "z")[: len(variables)]\r
+    constants = constants_in(function, variables)\r
+    if constants:\r
+        raise InputError(\r
+            f"f must use only {', '.join(names)}, so the answers are numbers. "\r
+            f"Remove {', '.join(str(constant) for constant in constants)}."\r
+        )\r
+    point = tuple(number(texts[index], f"point's {name}") for index, name in enumerate(names))\r
+    if not isinstance(direction, dict):\r
+        raise InputError("Give the direction as a vector or, for f(x, y), an angle.")\r
+    if direction.get("kind") == "angle":\r
+        if three:\r
+            raise InputError("An angle gives a direction in the plane; for f(x, y, z), give a vector.")\r
+        angle = number(direction.get("angle", ""), "angle")\r
+        vector = sympy.Matrix([sympy.cos(angle), sympy.sin(angle)])\r
+        given = ("angle", angle)\r
+    else:\r
+        components = list(direction.get("vector") or [])\r
+        components += [""] * (len(variables) - len(components))\r
+        vector = sympy.Matrix(\r
+            [number(text, f"direction's {name} component") for text, name in zip(components, names)]\r
+        )\r
+        if all(component == 0 for component in vector):\r
+            raise InputError("The direction can't be the zero vector: it has no direction.")\r
+        given = ("vector", vector)\r
+    return variables, point, vector, given\r
+\r
+\r
+def gradient_steps(function, variables, name="f"):\r
+    """∇f (or ∇g, for another name): each partial derivative with its steps."""\r
+    partials, substeps = [], []\r
+    for variable in variables:\r
+        d = Differentiation(variable, partial=True)\r
+        derivative, steps, _ = derivative_with_steps(function, d, variables)\r
+        partials.append(derivative)\r
+        substeps.append(\r
+            make_step(\r
+                f"Partial derivative in {d.name}",\r
+                rf"Differentiate with respect to \${d.name}$, treating the other variables as constants.",\r
+                [d.of(function), to_latex(derivative)],\r
+                steps,\r
+            )\r
+        )\r
+    gradient = sympy.Matrix(partials)\r
+    step = make_step(\r
+        "Gradient",\r
+        r"The gradient collects the partial derivatives into one vector: "\r
+        rf"$\\nabla {name} = \\langle {name}_x, {name}_y \\rangle$, or "\r
+        rf"$\\langle {name}_x, {name}_y, {name}_z \\rangle$.",\r
+        [rf"\\nabla {name} = {vector_latex(gradient)}"],\r
+        substeps,\r
+    )\r
+    return step, gradient\r
+\r
+\r
+def numerical_rate(function, variables, point, unit):\r
+    """The rate of change of f along the unit vector, by numerical differentiation."""\r
+    as_numeric = numeric_function(function, variables)\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        start = [mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in point]\r
+        direction = [mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in unit]\r
+        try:\r
+            return mpmath.diff(\r
+                lambda s: as_numeric(*(p + s * d for p, d in zip(start, direction))), 0\r
+            )\r
+        except Exception:  # Numerical differentiation fails in many ways; all mean "no value".\r
+            return None\r
+\r
+\r
+def check_against(numeric, exact, what):\r
+    if numeric is None or isinstance(numeric, mpmath.mpc):\r
+        return {"status": "unchecked", "detail": f"The {what} couldn't be checked numerically."}\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))\r
+        shown = mpmath.nstr(numeric, 10)\r
+        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"Numerical differentiation gives \${shown}$ for the {what}, matching "\r
+                "the exact answer.",\r
+            }\r
+    return {\r
+        "status": "failed",\r
+        "detail": f"Numerical differentiation gives \${shown}$ for the {what}, which doesn't "\r
+        "match. Treat this answer with caution.",\r
+    }\r
+\r
+\r
+def slice_curve(function, point, unit, rate):\r
+    """For f(x, y): the slice of the surface through the point in direction u,\r
+    and the slice's tangent line, whose slope is D_u f."""\r
+    as_numeric = numeric_function(function, (X, Y))\r
+    a, b = (float(sympy.N(value)) for value in point)\r
+    u = [float(sympy.N(value)) for value in unit]\r
+    z0 = float(sympy.N(function.subs({X: point[0], Y: point[1]})))\r
+    steps = [SLICE_REACH * (2 * index / (SLICE_POINTS - 1) - 1) for index in range(SLICE_POINTS)]\r
+    slope = float(sympy.N(rate))\r
+    reach = SLICE_REACH * 0.6\r
+    return {\r
+        "slice": {\r
+            "x": [a + s * u[0] for s in steps],\r
+            "y": [b + s * u[1] for s in steps],\r
+            "z": [\r
+                plot_value(lambda s=s: as_numeric(mpmath.mpf(a + s * u[0]), mpmath.mpf(b + s * u[1])))\r
+                for s in steps\r
+            ],\r
+        },\r
+        "tangent": {\r
+            "x": [a - reach * u[0], a + reach * u[0]],\r
+            "y": [b - reach * u[1], b + reach * u[1]],\r
+            "z": [z0 - reach * slope, z0 + reach * slope],\r
+        },\r
+    }\r
+\r
+\r
+def solve_directional(function, variables, point, vector, given):\r
+    """The steps, and the values the answer shows: the gradient (in general and\r
+    at the point), the unit vector, D_u f, and the largest rate |∇f|. given is\r
+    ("angle", θ) or ("vector", v)."""\r
+    substitutions = dict(zip(variables, point))\r
+    at = rf"\\left({', '.join(to_latex(value) for value in point)}\\right)"\r
+    if not sympy.simplify(function.subs(substitutions)).is_finite:\r
+        raise InputError(f"f isn't defined at \${at}$. Choose another point.")\r
+    report("Finding the gradient…")\r
+    gradient_step, gradient = gradient_steps(function, variables)\r
+    gradient_here = gradient.subs(substitutions).applyfunc(sympy.simplify)\r
+    if not all(component.is_finite for component in gradient_here):\r
+        raise InputError(\r
+            f"A partial derivative of f isn't defined at \${at}$, so there is no gradient there."\r
+        )\r
+    length = sympy.simplify(sympy.sqrt(vector.dot(vector)))\r
+    unit = (vector / length).applyfunc(sympy.simplify)\r
+    rate = sympy.simplify(gradient_here.dot(unit))\r
+    largest = sympy.simplify(sympy.sqrt(gradient_here.dot(gradient_here)))\r
+\r
+    if given[0] == "angle":\r
+        unit_step = make_step(\r
+            "Unit vector",\r
+            r"A direction at angle $\\theta$ from the positive $x$-axis is the unit vector "\r
+            r"$\\mathbf{u} = \\langle \\cos\\theta, \\sin\\theta \\rangle$.",\r
+            [\r
+                rf"\\mathbf{{u}} = \\langle \\cos {to_latex(given[1])}, \\sin {to_latex(given[1])} \\rangle",\r
+                vector_latex(unit),\r
+            ],\r
+        )\r
+    else:\r
+        unit_step = make_step(\r
+            "Unit vector",\r
+            r"A directional derivative needs a unit vector, so divide the direction by its "\r
+            r"length: $\\mathbf{u} = \\frac{\\mathbf{v}}{|\\mathbf{v}|}$.",\r
+            [\r
+                separate(\r
+                    rf"|\\mathbf{{v}}| = {to_latex(length)}",\r
+                    rf"\\mathbf{{u}} = \\frac{{\\mathbf{{v}}}}{{|\\mathbf{{v}}|}} = {vector_latex(unit)}",\r
+                )\r
+            ],\r
+        )\r
+    steps = [\r
+        gradient_step,\r
+        make_step(\r
+            "Gradient at the point",\r
+            rf"Put the point \${at}$ into each component of $\\nabla f$.",\r
+            [rf"\\nabla f{at} = {vector_latex(gradient_here)}"],\r
+        ),\r
+        unit_step,\r
+        make_step(\r
+            "Directional derivative",\r
+            r"$D_{\\mathbf{u}} f = \\nabla f \\cdot \\mathbf{u}$: the rate of change of $f$ per unit of "\r
+            r"distance moved in the direction $\\mathbf{u}$.",\r
+            [\r
+                rf"D_{{\\mathbf{{u}}}} f{at} = {vector_latex(gradient_here)} \\cdot {vector_latex(unit)}",\r
+                latex_value(rate),\r
+            ],\r
+        ),\r
+    ]\r
+    if largest == 0:\r
+        steps.append(\r
+            make_step(\r
+                "Maximum rate of change",\r
+                rf"$\\nabla f{at} = \\mathbf{{0}}$, so $f$ has a critical point here: its rate of "\r
+                r"change is $0$ in every direction.",\r
+                [],\r
+            )\r
+        )\r
+        largest_result = r"0 \\text{ (a critical point: } \\nabla f = \\mathbf{0})"\r
+    else:\r
+        steps.append(\r
+            make_step(\r
+                "Maximum rate of change",\r
+                r"Since $D_{\\mathbf{u}} f = |\\nabla f| \\cos\\theta$, where $\\theta$ is the angle "\r
+                r"between $\\nabla f$ and $\\mathbf{u}$, it is largest, $|\\nabla f|$, when "\r
+                r"$\\mathbf{u}$ points along $\\nabla f$ ($\\theta = 0$).",\r
+                [rf"|\\nabla f{at}| = {latex_value(largest)}"],\r
+            )\r
+        )\r
+        largest_result = rf"{latex_value(largest)}, \\text{{ along }} {vector_latex(gradient_here)}"\r
+    return {\r
+        "at": at,\r
+        "steps": steps,\r
+        "gradient": gradient,\r
+        "gradient_here": gradient_here,\r
+        "unit": unit,\r
+        "rate": rate,\r
+        "largest": largest,\r
+        "largest_result": largest_result,\r
+    }\r
+\r
+\r
+def directional_derivative(function, point_texts, direction):\r
+    variables, point, vector, given = parse_problem(function, point_texts, direction)\r
+    solved = solve_directional(function, variables, point, vector, given)\r
+    at, steps, unit, rate, largest = (solved[key] for key in ("at", "steps", "unit", "rate", "largest"))\r
+    gradient, gradient_here = solved["gradient"], solved["gradient_here"]\r
+    report("Checking the answer numerically…")\r
+    checks = [\r
+        {\r
+            "label": "Directional derivative",\r
+            "check": check_against(numerical_rate(function, variables, point, unit), rate, "directional derivative"),\r
+        }\r
+    ]\r
+    if largest != 0:\r
+        steepest = (gradient_here / largest).applyfunc(sympy.simplify)\r
+        checks.append(\r
+            {\r
+                "label": "Maximum rate",\r
+                "check": check_against(\r
+                    numerical_rate(function, variables, point, steepest), largest, "maximum rate"\r
+                ),\r
+            }\r
+        )\r
+    point_names = ", ".join(str(variable) for variable in variables)\r
+    return {\r
+        "ok": True,\r
+        "operation": "directional",\r
+        "functionLatex": rf"f({point_names}) = {to_latex(function)}",\r
+        "results": [\r
+            {"label": "Gradient", "latex": rf"\\nabla f = {vector_latex(gradient)}"},\r
+            {"label": "Gradient at the point", "latex": rf"\\nabla f{at} = {vector_latex(gradient_here)}"},\r
+            {"label": "Unit vector", "latex": rf"\\mathbf{{u}} = {vector_latex(unit)}"},\r
+            {"label": "Directional derivative", "latex": rf"D_{{\\mathbf{{u}}}} f{at} = {latex_value(rate)}"},\r
+            {"label": "Maximum rate of change", "latex": solved["largest_result"]},\r
+        ],\r
+        "checks": checks,\r
+        "steps": steps,\r
+        # f(x, y, z) has no surface to draw.\r
+        "graph": (\r
+            {"surface": sample_surface(function, point), **slice_curve(function, point, unit, rate)}\r
+            if len(variables) == 2\r
+            else None\r
+        ),\r
+    }\r
+\r
+\r
+def direction_picture(function, point_texts):\r
+    """The lesson picture, for f(x, y) at a point: the surface, ∇f there, and for\r
+    every ANGLE_STEP degrees the slice in that direction, its tangent line, and\r
+    D_u f."""\r
+    variables, point, _, _ = parse_problem(function, point_texts, {"kind": "angle", "angle": "0"})\r
+    gradient = [sympy.diff(function, variable) for variable in variables]\r
+    here = [float(sympy.N(component.subs(dict(zip(variables, point))))) for component in gradient]\r
+    directions = []\r
+    for degrees in range(0, 360, ANGLE_STEP):\r
+        angle = sympy.pi * degrees / 180\r
+        unit = sympy.Matrix([sympy.cos(angle), sympy.sin(angle)])\r
+        rate = sympy.Matrix(here).dot(unit)\r
+        graph = slice_curve(function, point, unit, rate)\r
+        directions.append(\r
+            {\r
+                "degrees": degrees,\r
+                "rate": round(float(sympy.N(rate)), 6),\r
+                "slice": graph["slice"],\r
+                "tangent": graph["tangent"],\r
+            }\r
+        )\r
+    return {\r
+        "ok": True,\r
+        "operation": "directions",\r
+        "point": [float(sympy.N(value)) for value in point],\r
+        "value": float(sympy.N(function.subs(dict(zip(variables, point))))),\r
+        "gradient": here,\r
+        "surface": picture_surface(function, point),\r
+        "directions": directions,\r
+    }\r
+\r
+\r
+def picture_surface(function, point):\r
+    as_numeric = numeric_function(function, (X, Y))\r
+    xs, ys, z = sample_square(as_numeric, point, PICTURE_HALF_WIDTH)\r
+    value = float(sympy.N(function.subs({X: point[0], Y: point[1]})))\r
+    return {"x": xs, "y": ys, "z": z, "point": [float(sympy.N(point[0])), float(sympy.N(point[1])), value]}\r
 `,"./python/mathlab/divergence_theorem.py":`"""The divergence theorem: the flux of F out through the boundary of a solid E\r
 equals the triple integral of its divergence over E,\r
 \r
@@ -3746,6 +3746,158 @@ def iterated_integral(function, inside, outside, inner_bounds, outer_bounds, gen
         for step in steps:\r
             step["formulas"] = [formula]\r
     return iterated, steps, value\r
+`,"./python/mathlab/equation_answers.py":`"""Practice answers that are a whole line or plane instead of one number.\r
+\r
+A line can be written many ways: any point on it, and any nonzero multiple of\r
+its direction. So a typed line is right when its direction is parallel to the\r
+expected direction and its point lies on the expected line. A plane's\r
+equation can be multiplied by any nonzero number, so a typed plane is right\r
+when its normal is parallel to the expected normal and a point of the\r
+expected plane satisfies it.\r
+"""\r
+\r
+import re\r
+\r
+import sympy\r
+\r
+from mathlab.expressions import T, X, Y, Z, InputError\r
+from mathlab.latex_input import latex_to_text\r
+from mathlab.parsing import parse_function\r
+from mathlab.planes import plane_equation_latex\r
+\r
+LINE_HELP = "Type the line as (x₀, y₀, z₀) + t(a, b, c), or as x = …, y = …, z = …, using t."\r
+PLANE_HELP = "Type the plane's whole equation, such as 2x - y + 3z = 5."\r
+\r
+# \\left and \\right before a bracket only size it.\r
+SIZING = re.compile(r"\\\\m?(?:left|right)(?=[()\\[\\]<>.]|\\\\langle|\\\\rangle|\\\\lt|\\\\gt)")\r
+# Angle brackets, typed or pasted, read as parentheses.\r
+ANGLE_BRACKETS = [(r"\\langle", "("), (r"\\rangle", ")"), (r"\\lt", "("), (r"\\gt", ")"), ("<", "("), (">", ")")]\r
+# x = ..., y = ..., z = ...: the separators between the three.\r
+SEPARATORS = re.compile(r"(?:\\\\,|\\\\;|\\\\:|\\\\quad|\\\\qquad|\\\\text\\{[^}]*\\}|,|;|\\s)+$")\r
+PARAMETRIC = re.compile(r"(?<![A-Za-z\\\\])([xyz])\\s*=")\r
+# Spaces, and spacing like \\, in t\\,(3, -1, -2), before a vector.\r
+TRAILING_SPACE = re.compile(r"(?:\\\\[,;:! ]|\\\\q?quad|\\s)+$")\r
+\r
+\r
+def latex_number(latex, variables):\r
+    return parse_function(latex_to_text(latex), variables)\r
+\r
+\r
+def vector_groups(latex):\r
+    """The (start, end, components) of each top-level ( , , ) in latex."""\r
+    groups, stack = [], []\r
+    for index, character in enumerate(latex):\r
+        if character in "([{":\r
+            stack.append([character, index, []])\r
+        elif character in ")]}":\r
+            if not stack:\r
+                raise InputError(LINE_HELP)\r
+            opening, start, commas = stack.pop()\r
+            if opening == "(" and character == ")" and commas and not stack:\r
+                cuts = [start, *commas, index]\r
+                parts = [latex[a + 1 : b] for a, b in zip(cuts, cuts[1:])]\r
+                groups.append((start, index + 1, parts))\r
+        elif character == "," and stack and stack[-1][0] == "(":\r
+            stack[-1][2].append(index)\r
+    if stack:\r
+        raise InputError(LINE_HELP)\r
+    return groups\r
+\r
+\r
+def coordinates_from_vectors(latex):\r
+    """x(t), y(t), z(t) from a vector form like (2, -1, 0) + t(3, -1, -2): each\r
+    vector is replaced by one of its components, and what is left is read."""\r
+    groups = vector_groups(latex)\r
+    if not groups or any(len(parts) != 3 for _, _, parts in groups):\r
+        raise InputError(LINE_HELP)\r
+    coordinates = []\r
+    for k in range(3):\r
+        pieces, last = [], 0\r
+        for start, end, parts in groups:\r
+            before = TRAILING_SPACE.sub("", latex[last:start])\r
+            after = latex[end:].lstrip()\r
+            # t(3, -1, -2) and (3, -1, -2)t are products, written out so the\r
+            # component isn't read as a function's argument.\r
+            times_before = r"\\cdot" if before and (before[-1].isalnum() or before[-1] in ")}") else ""\r
+            times_after = r"\\cdot" if after and after[0].isalnum() else ""\r
+            pieces += [latex[last:start], rf"{times_before}\\left({parts[k]}\\right){times_after}"]\r
+            last = end\r
+        pieces.append(latex[last:])\r
+        coordinates.append(latex_number("".join(pieces), (T,)))\r
+    return coordinates\r
+\r
+\r
+def coordinates_from_equations(latex):\r
+    """x(t), y(t), z(t) from x = 2 + 3t, y = -1 - t, z = -2t."""\r
+    pieces = PARAMETRIC.split(latex)\r
+    found = dict(zip(pieces[1::2], pieces[2::2]))\r
+    if pieces[0].strip(" ,;") or sorted(found) != ["x", "y", "z"]:\r
+        raise InputError(LINE_HELP)\r
+    return [latex_number(SEPARATORS.sub("", found[name]), (T,)) for name in "xyz"]\r
+\r
+\r
+def parse_line_answer(latex):\r
+    """A typed line as (point, direction), each a 3 by 1 matrix."""\r
+    latex = SIZING.sub("", latex.strip())\r
+    for written, read in ANGLE_BRACKETS:\r
+        latex = latex.replace(written, read)\r
+    if len(PARAMETRIC.findall(latex)) == 3:\r
+        coordinates = coordinates_from_equations(latex)\r
+    else:\r
+        # r(t) = ... : only the right side is the line.\r
+        coordinates = coordinates_from_vectors(latex.split("=")[-1])\r
+    point, direction = [], []\r
+    for coordinate in coordinates:\r
+        coordinate = sympy.expand(coordinate)\r
+        if coordinate.free_symbols - {T} or sympy.diff(coordinate, T, 2) != 0:\r
+            raise InputError("Each coordinate of a line is a number plus a number times t.")\r
+        point.append(coordinate.subs(T, 0))\r
+        direction.append(sympy.diff(coordinate, T))\r
+    point, direction = sympy.Matrix(point), sympy.Matrix(direction)\r
+    if direction == sympy.zeros(3, 1):\r
+        raise InputError("That is a single point. A line needs t, like (2, -1, 0) + t(3, -1, -2).")\r
+    return point, direction\r
+\r
+\r
+def parse_plane_answer(latex):\r
+    """A typed plane as (normal, d), for normal · (x, y, z) = d."""\r
+    sides = latex.strip().split("=")\r
+    if len(sides) != 2 or not all(side.strip() for side in sides):\r
+        raise InputError(PLANE_HELP)\r
+    left, right = (latex_number(side, (X, Y, Z)) for side in sides)\r
+    expression = sympy.expand(left - right)\r
+    normal = sympy.Matrix([sympy.diff(expression, variable) for variable in (X, Y, Z)])\r
+    if expression.free_symbols - {X, Y, Z} or any(entry.free_symbols for entry in normal):\r
+        raise InputError("A plane's equation has only x, y, and z, each times a number.")\r
+    if normal == sympy.zeros(3, 1):\r
+        raise InputError(PLANE_HELP)\r
+    return normal, -expression.subs({X: 0, Y: 0, Z: 0})\r
+\r
+\r
+def parallel(a, b):\r
+    return all(sympy.simplify(entry) == 0 for entry in a.cross(b))\r
+\r
+\r
+def same_line(answer, expected):\r
+    (point, direction), (expected_point, expected_direction) = answer, expected\r
+    return parallel(direction, expected_direction) and parallel(point - expected_point, expected_direction)\r
+\r
+\r
+def point_on_plane(normal, d):\r
+    index = next(i for i, entry in enumerate(normal) if entry != 0)\r
+    point = sympy.zeros(3, 1)\r
+    point[index] = d / normal[index]\r
+    return point\r
+\r
+\r
+def same_plane(answer, expected):\r
+    (normal, d), (expected_normal, expected_d) = answer, expected\r
+    point = point_on_plane(expected_normal, expected_d)\r
+    return parallel(normal, expected_normal) and sympy.simplify(normal.dot(point) - d) == 0\r
+\r
+\r
+def plane_latex(normal, d):\r
+    return plane_equation_latex(*normal, d)\r
 `,"./python/mathlab/expressions.py":`"""Shared symbols, the input error, and printing math as LaTeX."""\r
 \r
 import sympy\r
@@ -4989,363 +5141,363 @@ EXPLAINERS = {\r
 for _rule_name in SPECIAL_FUNCTION_RULES:\r
     if hasattr(manualintegrate, _rule_name):\r
         EXPLAINERS[getattr(manualintegrate, _rule_name)] = explain_special_function\r
-`,"./python/mathlab/integral_strategies.py":`"""Extra integration strategies, tried when the textbook rules alone fail.
-
-SymPy's general algorithms can run for many minutes on integrals a student
-could do by hand with the right rewrite. This module does those rewrites:
-
-Trig with one angle. In 7 sin^2(2x+3) / cos^3(2x-3), substitute u = 2x - 3
-(the angle in the denominator), expand sin(u + 6) with the angle-addition
-formula, and write each term with tan and sec. The pieces are then standard
-integrals. This finishes in about a second, while SymPy alone did not finish
-in five minutes.
-"""
-
-import sympy
-from sympy.integrals.manualintegrate import manualintegrate
-
-from mathlab.expressions import X, differential_latex, to_latex
-from mathlab.steps import make_step
-
-U = sympy.Dummy("u", real=True)
-
-
-def trig_angles(function):
-    return {atom.args[0] for atom in function.atoms(sympy.sin, sympy.cos, sympy.tan, sympy.sec, sympy.csc, sympy.cot)}
-
-
-def tan_sec_term(term):
-    """sin(t)^a / cos(t)^b with b >= a becomes tan(t)^a sec(t)^(b - a);
-    any other 1/cos(t)^b becomes sec(t)^b."""
-    powers = term.as_powers_dict()
-    for factor, exponent in powers.items():
-        if isinstance(factor, sympy.cos) and exponent.is_negative:
-            angle = factor.args[0]
-            sine = sympy.sympify(powers.get(sympy.sin(angle), 0))
-            cosine = -exponent
-            if sine.is_nonnegative and sine <= cosine:
-                rest = term / (sympy.sin(angle) ** sine * sympy.cos(angle) ** exponent)
-                return rest * sympy.tan(angle) ** sine * sympy.sec(angle) ** (cosine - sine)
-    return term
-
-
-def with_tan_and_sec(expression):
-    return sympy.Add(*(tan_sec_term(term) for term in sympy.Add.make_args(sympy.expand(expression))))
-
-
-def finish_remaining_integrals(expression):
-    """Do any integrals the textbook rules left undone; each is small by now."""
-    return expression.replace(
-        lambda part: isinstance(part, sympy.Integral),
-        lambda part: sympy.integrate(part.function, *part.limits),
-    )
-
-
-def integrate_with_one_angle(function):
-    """Return (antiderivative, steps), or None if this strategy doesn't apply.
-
-    Applies when the trig functions' angles are linear in x with the same
-    slope, like 2x + 3 and 2x - 3, and some trig function is in a denominator.
-    """
-    angles = trig_angles(function)
-    linear = [angle for angle in angles if angle.is_polynomial(X) and sympy.degree(angle, X) == 1]
-    if not angles or len(linear) != len(angles):
-        return None
-    slopes = {sympy.Poly(angle, X).coeffs()[0] for angle in linear}
-    in_denominator = {
-        power.base.args[0]
-        for power in function.atoms(sympy.Pow)
-        if power.exp.is_negative and isinstance(power.base, (sympy.sin, sympy.cos))
-    }
-    if len(slopes) != 1 or not in_denominator:
-        return None
-    slope = slopes.pop()
-    angle = sorted(in_denominator, key=str)[0]
-    x_in_terms_of_u = sympy.solve(sympy.Eq(angle, U), X)[0]
-    expanded = sympy.expand(sympy.expand_trig(function.subs(X, x_in_terms_of_u) / slope))
-    rewritten = with_tan_and_sec(expanded)
-    in_u = finish_remaining_integrals(manualintegrate(rewritten, U))
-    if in_u.has(sympy.Integral):
-        return None
-    antiderivative = in_u.subs(U, angle)
-    steps = [
-        make_step(
-            "Substitution",
-            rf"Let $u = {to_latex(angle)}$, the angle in the denominator, so "
-            rf"$du = {differential_latex(slope, X)}$. Write every other angle in terms of $u$ "
-            r"and expand it with the angle-addition formulas, such as "
-            r"$\\sin(a + b) = \\sin a \\cos b + \\cos a \\sin b$.",
-            [to_latex(sympy.Integral(function, X)), to_latex(sympy.Integral(expanded, U))],
-        ),
-        make_step(
-            "Rewrite with tan and sec",
-            r"Divide through by the cosines: $\\frac{\\sin u}{\\cos u} = \\tan u$ and "
-            r"$\\frac{1}{\\cos u} = \\sec u$. Each term becomes a standard integral.",
-            [to_latex(sympy.Integral(expanded, U)), to_latex(sympy.Integral(rewritten, U))],
-        ),
-        make_step(
-            "Integrate term by term",
-            r"Use the standard integrals of $\\sec u$, $\\sec u \\tan u$, $\\sec^{2} u$, and "
-            r"$\\tan^{2} u \\sec u$ (by parts), then substitute "
-            rf"$u = {to_latex(angle)}$ back.",
-            [to_latex(sympy.Integral(rewritten, U)), to_latex(in_u), to_latex(antiderivative)],
-        ),
-    ]
-    return antiderivative, steps
-`,"./python/mathlab/latex_input.py":`"""Translate LaTeX from the math input box (MathLive) into text the parser reads.
-
-The box shows real math, so the translation follows how a textbook reads what
-is on screen: sin x cos x is sin(x)·cos(x), sin 2x is sin(2x), sin²x is
-(sin x)², sin⁻¹x is arcsin x, and log₂ x is log base 2 of x. Only known
-commands are translated; anything else is reported, never passed through.
-"""
-
-import re
-
-from mathlab.expressions import InputError
-
-TOKEN = re.compile(r"\\\\[A-Za-z]+|\\\\.|\\d+(?:\\.\\d+)?|\\S")
-
-FUNCTIONS = {
-    **{
-        name: name
-        for name in (
-            "sin cos tan sec csc cot sinh cosh tanh coth arcsin arccos arctan ln log exp"
-        ).split()
-    },
-    "arcsec": "arcsec",
-    "arccsc": "arccsc",
-    "arccot": "arccot",
-}
-
-# Functions whose -1 power means the inverse function: sin⁻¹ x is arcsin x.
-INVERTIBLE = set("sin cos tan sec csc cot sinh cosh tanh".split())
-
-# Functions spelled with \\operatorname{...}.
-OPERATOR_NAMES = {
-    "sech",
-    "csch",
-    "coth",
-    "arcsec",
-    "arccsc",
-    "arccot",
-    "arcsinh",
-    "arccosh",
-    "arctanh",
-    "sgn",
-    "sign",
-    "erf",
-    "floor",
-    "ceil",
-    "abs",
-}
-
-GREEK = {
-    "alpha",
-    "theta",
-    "phi",
-    "varphi",
-    "omega",
-    "lambda",
-    "mu",
-    "sigma",
-    "tau",
-    "rho",
-    "delta",
-    "epsilon",
-    "varepsilon",
-    "psi",
-    "xi",
-    "eta",
-    "kappa",
-    "nu",
-}
-GREEK_SPELLINGS = {"lambda": "lamda", "varphi": "phi", "varepsilon": "epsilon"}
-
-SYMBOLS = {
-    r"\\pi": "pi",
-    r"\\infty": "oo",
-    r"\\cdot": "*",
-    r"\\times": "*",
-    r"\\ast": "*",
-    r"\\div": "/",
-    r"\\exponentialE": "e",
-    r"\\Gamma": "gamma",
-    r"\\lvert": "|",
-    r"\\rvert": "|",
-    r"\\vert": "|",
-    r"\\mid": "|",
-}
-
-# Spacing and size commands, which don't change the math (they can arrive in
-# pasted LaTeX).
-SPACING = {r"\\,", r"\\;", r"\\:", r"\\!", r"\\ ", r"\\quad", r"\\qquad", r"\\displaystyle", r"\\textstyle"}
-
-# Brackets. \\mleft and \\mright are MathLive's spellings of \\left and \\right.
-LEFT_COMMANDS = {r"\\left", r"\\mleft"}
-RIGHT_COMMANDS = {r"\\right", r"\\mright"}
-OPENING_TOKENS = {"(", "[", *LEFT_COMMANDS}
-CLOSING_TOKENS = {")", "]", *RIGHT_COMMANDS}
-ABSOLUTE_VALUE_BARS = {"|", r"\\vert", r"\\lvert"}
-
-# A function's argument ends at these, so sin x cos x is sin(x)·cos(x).
-ARGUMENT_ENDS = {"+", "-", "=", ",", "/", "}", r"\\cdot", r"\\times", r"\\div", *CLOSING_TOKENS}
-
-
-class LatexReader:
-    def __init__(self, latex):
-        self.tokens = TOKEN.findall(latex)
-        self.position = 0
-
-    def peek(self):
-        return self.tokens[self.position] if self.position < len(self.tokens) else None
-
-    def take(self):
-        token = self.peek()
-        if token is None:
-            raise InputError("The expression seems to be unfinished.")
-        self.position += 1
-        return token
-
-    def skip_spacing(self):
-        while self.peek() in SPACING:
-            self.position += 1
-
-    def read(self, stop=lambda token: False):
-        """Read until stop(token) is true or the input ends; return plain text."""
-        parts = []
-        while True:
-            self.skip_spacing()
-            token = self.peek()
-            if token is None or stop(token):
-                return " ".join(parts)
-            parts.append(self.atom())
-
-    def group(self):
-        """One argument: {...} or a single item, like the 2 in x^2."""
-        self.skip_spacing()
-        if self.peek() == "{":
-            self.take()
-            text = self.read(lambda token: token == "}")
-            self.take()
-            return text
-        return self.atom()
-
-    def delimited(self):
-        """A bracketed group, as text with its brackets.
-
-        Brackets pair up by counting, not by kind. The math box can store
-        7(sin(2x+3))^2 as 7( \\\\sin\\\\left(2x+3) \\\\right)^2 -- the ) typed
-        inside sin's brackets closes them, and sin's \\\\right) closes the
-        first (. Pairing by kind would misread that; counting matches what
-        is on screen.
-        """
-        token = self.take()
-        is_absolute_value = False
-        if token in LEFT_COMMANDS:
-            bracket = self.take()
-            is_absolute_value = bracket in ABSOLUTE_VALUE_BARS
-        parts = []
-        while True:
-            self.skip_spacing()
-            next_token = self.peek()
-            if next_token is None:
-                raise InputError("A bracket is never closed. Add the missing ).")
-            if next_token in CLOSING_TOKENS:
-                self.take()
-                if next_token in RIGHT_COMMANDS:
-                    self.take()  # The bracket's shape, such as ) or |.
-                inner = " ".join(parts)
-                return f"abs({inner})" if is_absolute_value else f"({inner})"
-            parts.append(self.atom())
-
-    def function(self, name):
-        """A function and its argument, following textbook conventions."""
-        self.skip_spacing()
-        power = None
-        base = None
-        if self.peek() == "_" and name == "log":
-            self.take()
-            base = self.group()
-        if self.peek() == "^":
-            self.take()
-            power = self.group()
-        self.skip_spacing()
-        if self.peek() in OPENING_TOKENS:
-            argument = self.delimited()
-        else:
-            argument = f"({self.read(lambda token: token in ARGUMENT_ENDS or self.is_function(token))})"
-            if argument == "()":
-                raise InputError(f"{name} needs something to act on, like {name}(x).")
-        if name in INVERTIBLE and power is not None and power.replace(" ", "") in ("-1", "(-1)"):
-            # sin⁻¹ x means arcsin x, not 1/sin x.
-            name, power = f"arc{name}", None
-        call = f"log({argument}, {base})" if base is not None else f"{name}({argument})"
-        return f"({call})^({power})" if power is not None else call
-
-    def is_function(self, token):
-        if token == r"\\operatorname":
-            return True
-        return token.startswith("\\\\") and token[1:] in FUNCTIONS
-
-    def atom(self):
-        token = self.take()
-        if token in OPENING_TOKENS:
-            self.position -= 1
-            return self.delimited()
-        if token in CLOSING_TOKENS or token == "}":
-            raise InputError("There's an extra closing bracket.")
-        if token == r"\\placeholder":
-            raise InputError("Fill in the empty boxes first.")
-        if token == "{":
-            text = self.read(lambda next_token: next_token == "}")
-            self.take()
-            return f"({text})"
-        if token == "^":
-            return f"^({self.group()})"
-        if token == "_":
-            raise InputError("Subscripts aren't supported here, except in log_b.")
-        if token in (r"\\frac", r"\\dfrac", r"\\tfrac"):
-            numerator = self.group()
-            denominator = self.group()
-            return f"(({numerator})/({denominator}))"
-        if token == r"\\sqrt":
-            if self.peek() == "[":
-                self.take()
-                index = self.read(lambda next_token: next_token == "]")
-                self.take()
-                return f"root({self.group()}, {index})"
-            return f"sqrt({self.group()})"
-        if token == r"\\operatorname":
-            name = self.group().replace(" ", "")
-            if name not in OPERATOR_NAMES:
-                raise InputError(f"I don't know the function {name} yet.")
-            return self.function(name)
-        if token in (r"\\mathrm", r"\\text", r"\\mathit"):
-            text = self.group().replace(" ", "")
-            if text in ("e", "d", "x", "y") or text in FUNCTIONS:
-                return self.function(text) if text in FUNCTIONS else text
-            raise InputError(f'I can\\'t read the text "{text}" here.')
-        if token.startswith("\\\\") and token[1:] in FUNCTIONS:
-            return self.function(FUNCTIONS[token[1:]])
-        if token.startswith("\\\\") and token[1:] in GREEK:
-            return GREEK_SPELLINGS.get(token[1:], token[1:])
-        if token in SYMBOLS:
-            return SYMBOLS[token]
-        if token in SPACING:
-            return ""
-        if token.startswith("\\\\"):
-            raise InputError(f"I can't read {token} yet.")
-        return token
-
-
-def latex_to_text(latex):
-    """Plain text for the parser, from LaTeX typed in the math input box."""
-    reader = LatexReader(latex)
-    text = reader.read()
-    if reader.peek() is not None:
-        raise InputError("Check the brackets: one of them doesn't pair up.")
-    return text
+`,"./python/mathlab/integral_strategies.py":`"""Extra integration strategies, tried when the textbook rules alone fail.\r
+\r
+SymPy's general algorithms can run for many minutes on integrals a student\r
+could do by hand with the right rewrite. This module does those rewrites:\r
+\r
+Trig with one angle. In 7 sin^2(2x+3) / cos^3(2x-3), substitute u = 2x - 3\r
+(the angle in the denominator), expand sin(u + 6) with the angle-addition\r
+formula, and write each term with tan and sec. The pieces are then standard\r
+integrals. This finishes in about a second, while SymPy alone did not finish\r
+in five minutes.\r
+"""\r
+\r
+import sympy\r
+from sympy.integrals.manualintegrate import manualintegrate\r
+\r
+from mathlab.expressions import X, differential_latex, to_latex\r
+from mathlab.steps import make_step\r
+\r
+U = sympy.Dummy("u", real=True)\r
+\r
+\r
+def trig_angles(function):\r
+    return {atom.args[0] for atom in function.atoms(sympy.sin, sympy.cos, sympy.tan, sympy.sec, sympy.csc, sympy.cot)}\r
+\r
+\r
+def tan_sec_term(term):\r
+    """sin(t)^a / cos(t)^b with b >= a becomes tan(t)^a sec(t)^(b - a);\r
+    any other 1/cos(t)^b becomes sec(t)^b."""\r
+    powers = term.as_powers_dict()\r
+    for factor, exponent in powers.items():\r
+        if isinstance(factor, sympy.cos) and exponent.is_negative:\r
+            angle = factor.args[0]\r
+            sine = sympy.sympify(powers.get(sympy.sin(angle), 0))\r
+            cosine = -exponent\r
+            if sine.is_nonnegative and sine <= cosine:\r
+                rest = term / (sympy.sin(angle) ** sine * sympy.cos(angle) ** exponent)\r
+                return rest * sympy.tan(angle) ** sine * sympy.sec(angle) ** (cosine - sine)\r
+    return term\r
+\r
+\r
+def with_tan_and_sec(expression):\r
+    return sympy.Add(*(tan_sec_term(term) for term in sympy.Add.make_args(sympy.expand(expression))))\r
+\r
+\r
+def finish_remaining_integrals(expression):\r
+    """Do any integrals the textbook rules left undone; each is small by now."""\r
+    return expression.replace(\r
+        lambda part: isinstance(part, sympy.Integral),\r
+        lambda part: sympy.integrate(part.function, *part.limits),\r
+    )\r
+\r
+\r
+def integrate_with_one_angle(function):\r
+    """Return (antiderivative, steps), or None if this strategy doesn't apply.\r
+\r
+    Applies when the trig functions' angles are linear in x with the same\r
+    slope, like 2x + 3 and 2x - 3, and some trig function is in a denominator.\r
+    """\r
+    angles = trig_angles(function)\r
+    linear = [angle for angle in angles if angle.is_polynomial(X) and sympy.degree(angle, X) == 1]\r
+    if not angles or len(linear) != len(angles):\r
+        return None\r
+    slopes = {sympy.Poly(angle, X).coeffs()[0] for angle in linear}\r
+    in_denominator = {\r
+        power.base.args[0]\r
+        for power in function.atoms(sympy.Pow)\r
+        if power.exp.is_negative and isinstance(power.base, (sympy.sin, sympy.cos))\r
+    }\r
+    if len(slopes) != 1 or not in_denominator:\r
+        return None\r
+    slope = slopes.pop()\r
+    angle = sorted(in_denominator, key=str)[0]\r
+    x_in_terms_of_u = sympy.solve(sympy.Eq(angle, U), X)[0]\r
+    expanded = sympy.expand(sympy.expand_trig(function.subs(X, x_in_terms_of_u) / slope))\r
+    rewritten = with_tan_and_sec(expanded)\r
+    in_u = finish_remaining_integrals(manualintegrate(rewritten, U))\r
+    if in_u.has(sympy.Integral):\r
+        return None\r
+    antiderivative = in_u.subs(U, angle)\r
+    steps = [\r
+        make_step(\r
+            "Substitution",\r
+            rf"Let $u = {to_latex(angle)}$, the angle in the denominator, so "\r
+            rf"$du = {differential_latex(slope, X)}$. Write every other angle in terms of $u$ "\r
+            r"and expand it with the angle-addition formulas, such as "\r
+            r"$\\sin(a + b) = \\sin a \\cos b + \\cos a \\sin b$.",\r
+            [to_latex(sympy.Integral(function, X)), to_latex(sympy.Integral(expanded, U))],\r
+        ),\r
+        make_step(\r
+            "Rewrite with tan and sec",\r
+            r"Divide through by the cosines: $\\frac{\\sin u}{\\cos u} = \\tan u$ and "\r
+            r"$\\frac{1}{\\cos u} = \\sec u$. Each term becomes a standard integral.",\r
+            [to_latex(sympy.Integral(expanded, U)), to_latex(sympy.Integral(rewritten, U))],\r
+        ),\r
+        make_step(\r
+            "Integrate term by term",\r
+            r"Use the standard integrals of $\\sec u$, $\\sec u \\tan u$, $\\sec^{2} u$, and "\r
+            r"$\\tan^{2} u \\sec u$ (by parts), then substitute "\r
+            rf"$u = {to_latex(angle)}$ back.",\r
+            [to_latex(sympy.Integral(rewritten, U)), to_latex(in_u), to_latex(antiderivative)],\r
+        ),\r
+    ]\r
+    return antiderivative, steps\r
+`,"./python/mathlab/latex_input.py":`"""Translate LaTeX from the math input box (MathLive) into text the parser reads.\r
+\r
+The box shows real math, so the translation follows how a textbook reads what\r
+is on screen: sin x cos x is sin(x)·cos(x), sin 2x is sin(2x), sin²x is\r
+(sin x)², sin⁻¹x is arcsin x, and log₂ x is log base 2 of x. Only known\r
+commands are translated; anything else is reported, never passed through.\r
+"""\r
+\r
+import re\r
+\r
+from mathlab.expressions import InputError\r
+\r
+TOKEN = re.compile(r"\\\\[A-Za-z]+|\\\\.|\\d+(?:\\.\\d+)?|\\S")\r
+\r
+FUNCTIONS = {\r
+    **{\r
+        name: name\r
+        for name in (\r
+            "sin cos tan sec csc cot sinh cosh tanh coth arcsin arccos arctan ln log exp"\r
+        ).split()\r
+    },\r
+    "arcsec": "arcsec",\r
+    "arccsc": "arccsc",\r
+    "arccot": "arccot",\r
+}\r
+\r
+# Functions whose -1 power means the inverse function: sin⁻¹ x is arcsin x.\r
+INVERTIBLE = set("sin cos tan sec csc cot sinh cosh tanh".split())\r
+\r
+# Functions spelled with \\operatorname{...}.\r
+OPERATOR_NAMES = {\r
+    "sech",\r
+    "csch",\r
+    "coth",\r
+    "arcsec",\r
+    "arccsc",\r
+    "arccot",\r
+    "arcsinh",\r
+    "arccosh",\r
+    "arctanh",\r
+    "sgn",\r
+    "sign",\r
+    "erf",\r
+    "floor",\r
+    "ceil",\r
+    "abs",\r
+}\r
+\r
+GREEK = {\r
+    "alpha",\r
+    "theta",\r
+    "phi",\r
+    "varphi",\r
+    "omega",\r
+    "lambda",\r
+    "mu",\r
+    "sigma",\r
+    "tau",\r
+    "rho",\r
+    "delta",\r
+    "epsilon",\r
+    "varepsilon",\r
+    "psi",\r
+    "xi",\r
+    "eta",\r
+    "kappa",\r
+    "nu",\r
+}\r
+GREEK_SPELLINGS = {"lambda": "lamda", "varphi": "phi", "varepsilon": "epsilon"}\r
+\r
+SYMBOLS = {\r
+    r"\\pi": "pi",\r
+    r"\\infty": "oo",\r
+    r"\\cdot": "*",\r
+    r"\\times": "*",\r
+    r"\\ast": "*",\r
+    r"\\div": "/",\r
+    r"\\exponentialE": "e",\r
+    r"\\Gamma": "gamma",\r
+    r"\\lvert": "|",\r
+    r"\\rvert": "|",\r
+    r"\\vert": "|",\r
+    r"\\mid": "|",\r
+}\r
+\r
+# Spacing and size commands, which don't change the math (they can arrive in\r
+# pasted LaTeX).\r
+SPACING = {r"\\,", r"\\;", r"\\:", r"\\!", r"\\ ", r"\\quad", r"\\qquad", r"\\displaystyle", r"\\textstyle"}\r
+\r
+# Brackets. \\mleft and \\mright are MathLive's spellings of \\left and \\right.\r
+LEFT_COMMANDS = {r"\\left", r"\\mleft"}\r
+RIGHT_COMMANDS = {r"\\right", r"\\mright"}\r
+OPENING_TOKENS = {"(", "[", *LEFT_COMMANDS}\r
+CLOSING_TOKENS = {")", "]", *RIGHT_COMMANDS}\r
+ABSOLUTE_VALUE_BARS = {"|", r"\\vert", r"\\lvert"}\r
+\r
+# A function's argument ends at these, so sin x cos x is sin(x)·cos(x).\r
+ARGUMENT_ENDS = {"+", "-", "=", ",", "/", "}", r"\\cdot", r"\\times", r"\\div", *CLOSING_TOKENS}\r
+\r
+\r
+class LatexReader:\r
+    def __init__(self, latex):\r
+        self.tokens = TOKEN.findall(latex)\r
+        self.position = 0\r
+\r
+    def peek(self):\r
+        return self.tokens[self.position] if self.position < len(self.tokens) else None\r
+\r
+    def take(self):\r
+        token = self.peek()\r
+        if token is None:\r
+            raise InputError("The expression seems to be unfinished.")\r
+        self.position += 1\r
+        return token\r
+\r
+    def skip_spacing(self):\r
+        while self.peek() in SPACING:\r
+            self.position += 1\r
+\r
+    def read(self, stop=lambda token: False):\r
+        """Read until stop(token) is true or the input ends; return plain text."""\r
+        parts = []\r
+        while True:\r
+            self.skip_spacing()\r
+            token = self.peek()\r
+            if token is None or stop(token):\r
+                return " ".join(parts)\r
+            parts.append(self.atom())\r
+\r
+    def group(self):\r
+        """One argument: {...} or a single item, like the 2 in x^2."""\r
+        self.skip_spacing()\r
+        if self.peek() == "{":\r
+            self.take()\r
+            text = self.read(lambda token: token == "}")\r
+            self.take()\r
+            return text\r
+        return self.atom()\r
+\r
+    def delimited(self):\r
+        """A bracketed group, as text with its brackets.\r
+\r
+        Brackets pair up by counting, not by kind. The math box can store\r
+        7(sin(2x+3))^2 as 7( \\\\sin\\\\left(2x+3) \\\\right)^2 -- the ) typed\r
+        inside sin's brackets closes them, and sin's \\\\right) closes the\r
+        first (. Pairing by kind would misread that; counting matches what\r
+        is on screen.\r
+        """\r
+        token = self.take()\r
+        is_absolute_value = False\r
+        if token in LEFT_COMMANDS:\r
+            bracket = self.take()\r
+            is_absolute_value = bracket in ABSOLUTE_VALUE_BARS\r
+        parts = []\r
+        while True:\r
+            self.skip_spacing()\r
+            next_token = self.peek()\r
+            if next_token is None:\r
+                raise InputError("A bracket is never closed. Add the missing ).")\r
+            if next_token in CLOSING_TOKENS:\r
+                self.take()\r
+                if next_token in RIGHT_COMMANDS:\r
+                    self.take()  # The bracket's shape, such as ) or |.\r
+                inner = " ".join(parts)\r
+                return f"abs({inner})" if is_absolute_value else f"({inner})"\r
+            parts.append(self.atom())\r
+\r
+    def function(self, name):\r
+        """A function and its argument, following textbook conventions."""\r
+        self.skip_spacing()\r
+        power = None\r
+        base = None\r
+        if self.peek() == "_" and name == "log":\r
+            self.take()\r
+            base = self.group()\r
+        if self.peek() == "^":\r
+            self.take()\r
+            power = self.group()\r
+        self.skip_spacing()\r
+        if self.peek() in OPENING_TOKENS:\r
+            argument = self.delimited()\r
+        else:\r
+            argument = f"({self.read(lambda token: token in ARGUMENT_ENDS or self.is_function(token))})"\r
+            if argument == "()":\r
+                raise InputError(f"{name} needs something to act on, like {name}(x).")\r
+        if name in INVERTIBLE and power is not None and power.replace(" ", "") in ("-1", "(-1)"):\r
+            # sin⁻¹ x means arcsin x, not 1/sin x.\r
+            name, power = f"arc{name}", None\r
+        call = f"log({argument}, {base})" if base is not None else f"{name}({argument})"\r
+        return f"({call})^({power})" if power is not None else call\r
+\r
+    def is_function(self, token):\r
+        if token == r"\\operatorname":\r
+            return True\r
+        return token.startswith("\\\\") and token[1:] in FUNCTIONS\r
+\r
+    def atom(self):\r
+        token = self.take()\r
+        if token in OPENING_TOKENS:\r
+            self.position -= 1\r
+            return self.delimited()\r
+        if token in CLOSING_TOKENS or token == "}":\r
+            raise InputError("There's an extra closing bracket.")\r
+        if token == r"\\placeholder":\r
+            raise InputError("Fill in the empty boxes first.")\r
+        if token == "{":\r
+            text = self.read(lambda next_token: next_token == "}")\r
+            self.take()\r
+            return f"({text})"\r
+        if token == "^":\r
+            return f"^({self.group()})"\r
+        if token == "_":\r
+            raise InputError("Subscripts aren't supported here, except in log_b.")\r
+        if token in (r"\\frac", r"\\dfrac", r"\\tfrac"):\r
+            numerator = self.group()\r
+            denominator = self.group()\r
+            return f"(({numerator})/({denominator}))"\r
+        if token == r"\\sqrt":\r
+            if self.peek() == "[":\r
+                self.take()\r
+                index = self.read(lambda next_token: next_token == "]")\r
+                self.take()\r
+                return f"root({self.group()}, {index})"\r
+            return f"sqrt({self.group()})"\r
+        if token == r"\\operatorname":\r
+            name = self.group().replace(" ", "")\r
+            if name not in OPERATOR_NAMES:\r
+                raise InputError(f"I don't know the function {name} yet.")\r
+            return self.function(name)\r
+        if token in (r"\\mathrm", r"\\text", r"\\mathit"):\r
+            text = self.group().replace(" ", "")\r
+            if text in ("e", "d", "x", "y") or text in FUNCTIONS:\r
+                return self.function(text) if text in FUNCTIONS else text\r
+            raise InputError(f'I can\\'t read the text "{text}" here.')\r
+        if token.startswith("\\\\") and token[1:] in FUNCTIONS:\r
+            return self.function(FUNCTIONS[token[1:]])\r
+        if token.startswith("\\\\") and token[1:] in GREEK:\r
+            return GREEK_SPELLINGS.get(token[1:], token[1:])\r
+        if token in SYMBOLS:\r
+            return SYMBOLS[token]\r
+        if token in SPACING:\r
+            return ""\r
+        if token.startswith("\\\\"):\r
+            raise InputError(f"I can't read {token} yet.")\r
+        return token\r
+\r
+\r
+def latex_to_text(latex):\r
+    """Plain text for the parser, from LaTeX typed in the math input box."""\r
+    reader = LatexReader(latex)\r
+    text = reader.read()\r
+    if reader.peek() is not None:\r
+        raise InputError("Check the brackets: one of them doesn't pair up.")\r
+    return text\r
 `,"./python/mathlab/line_integrals.py":`"""Line integrals along a curve r(t), a ≤ t ≤ b, in the plane or in space.\r
 \r
 A line integral of a function adds up f times length along the curve:\r
@@ -5921,228 +6073,228 @@ def line_trace(request):\r
         "samples": samples,\r
         "conservative": potential is not None,\r
     }\r
-`,"./python/mathlab/multivariable.py":`"""Functions of two variables: partial derivatives, the gradient, and surface samples."""
-
-import math
-
-import mpmath
-import sympy
-
-from mathlab.checks import check_partial_derivative, check_with_constants, numeric_function, plot_value
-from mathlab.derivative_steps import Differentiation, derivative_with_steps
-from mathlab.expressions import X, Y, InputError, to_latex
-
-VARIABLES = (X, Y)
-MAX_POINT_COORDINATE = 1_000_000
-
-# The surface is drawn on a square centered at the chosen point. Half-widths
-# are tried largest first: a steep function like e^(xy) gets a smaller square,
-# so huge values far away don't flatten the surface near the point.
-SURFACE_HALF_WIDTHS = (3.0, 1.5, 0.75)
-SURFACE_POINT_COUNT = 41
-# A square is used when its values spread at most this many times as much as
-# the values in its middle third.
-MAX_SPREAD_RATIO = 20
-
-
-def is_number(value):
-    # JSON true/false arrive as bools, which Python also counts as ints.
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-
-def parse_point(raw):
-    """Read the point (a, b) as exact numbers, so 0.5 becomes 1/2."""
-    if not (isinstance(raw, list) and len(raw) == 2 and all(is_number(value) for value in raw)):
-        raise InputError("Enter the point as two numbers, x and y.")
-    if any(abs(value) > MAX_POINT_COORDINATE for value in raw):
-        raise InputError(f"Keep the point's coordinates between -{MAX_POINT_COORDINATE:,} and {MAX_POINT_COORDINATE:,}.")
-    return tuple(sympy.Rational(str(value)) for value in raw)
-
-
-def exact_real(expression):
-    """Return (exact value, float) for a number like 4 + 2 cos(2), or None if it
-    is undefined, infinite, or not real."""
-    value = sympy.simplify(expression)
-    if value.has(sympy.zoo, sympy.nan, sympy.oo, -sympy.oo):
-        return None
-    try:
-        number = complex(value.evalf())
-    except TypeError:  # Something symbolic remained, so there is no number.
-        return None
-    if not math.isfinite(number.real) or abs(number.imag) > 1e-12 * max(1, abs(number.real)):
-        return None
-    return value, number.real
-
-
-def decimal(number):
-    return f"{number:.4g}"
-
-
-def point_latex(point):
-    return rf"\\left({to_latex(point[0])}, {to_latex(point[1])}\\right)"
-
-
-def partial_derivative(function, variable):
-    d = Differentiation(variable, partial=True)
-    derivative, steps, steps_note = derivative_with_steps(function, d, VARIABLES)
-    return derivative, {
-        "variable": d.name,
-        "equationLatex": rf"f_{{{d.name}}} = {d.of(function)} = {to_latex(derivative)}",
-        "resultText": str(derivative),
-        "check": check_with_constants(
-            lambda f, result: check_partial_derivative(f, result, variable),
-            function,
-            derivative,
-            VARIABLES,
-        ),
-        "steps": steps,
-        "stepsNote": steps_note,
-    }
-
-
-def gradient_with_constants(partials, substitutions, at):
-    """The gradient when f has constants like a: exact, with no decimals."""
-    exact = [sympy.simplify(partial.subs(substitutions)) for partial in partials]
-    vector = rf"\\left\\langle {to_latex(exact[0])},\\ {to_latex(exact[1])} \\right\\rangle"
-    length = sympy.simplify(sympy.sqrt(exact[0] ** 2 + exact[1] ** 2))
-    return {
-        "ok": True,
-        "latex": rf"\\nabla f{at} = {vector}",
-        "lengthLatex": rf"\\left\\lVert \\nabla f{at} \\right\\rVert = {to_latex(length)}",
-        "vector": None,
-    }
-
-
-def gradient_at(function, partials, point):
-    substitutions = dict(zip(VARIABLES, point))
-    at = point_latex(point)
-    if function.free_symbols - set(VARIABLES):
-        return gradient_with_constants(partials, substitutions, at)
-    components = [exact_real(partial.subs(substitutions)) for partial in partials]
-    if exact_real(function.subs(substitutions)) is None or None in components:
-        return {
-            "ok": False,
-            "detail": f"f or one of its partial derivatives isn't defined at \${at}$, "
-            "so the gradient doesn't exist there. Try another point.",
-        }
-    exact = [value for value, _ in components]
-    numbers = [number for _, number in components]
-    vector = rf"\\left\\langle {to_latex(exact[0])},\\ {to_latex(exact[1])} \\right\\rangle"
-    gradient = rf"\\nabla f{at} = {vector}"
-    if not all(value.is_Rational for value in exact):
-        gradient += rf" \\approx \\left\\langle {decimal(numbers[0])},\\ {decimal(numbers[1])} \\right\\rangle"
-    length = sympy.sqrt(exact[0] ** 2 + exact[1] ** 2)
-    length_latex = rf"\\left\\lVert \\nabla f{at} \\right\\rVert = {to_latex(length)}"
-    if not length.is_Rational:
-        length_latex += rf" \\approx {decimal(math.hypot(*numbers))}"
-    return {"ok": True, "latex": gradient, "lengthLatex": length_latex, "vector": numbers}
-
-
-def spread(values):
-    """How far apart the values are, ignoring the top and bottom 2%."""
-    finite = sorted(value for value in values if value is not None)
-    if len(finite) < 2:
-        return 0.0
-    last = len(finite) - 1
-    return finite[int(0.98 * last)] - finite[int(0.02 * last)]
-
-
-def sample_square(as_numeric, center, half_width):
-    xs, ys = (
-        [
-            round(float(middle) - half_width + 2 * half_width * index / (SURFACE_POINT_COUNT - 1), 6)
-            for index in range(SURFACE_POINT_COUNT)
-        ]
-        for middle in center
-    )
-    # Plotly's surface takes rows of z values, one row for each y.
-    z = [[plot_value(lambda: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x in xs] for y in ys]
-    return xs, ys, z
-
-
-def sample_surface(function, center):
-    as_numeric = numeric_function(function, VARIABLES)
-    middle = slice(SURFACE_POINT_COUNT // 3, 2 * SURFACE_POINT_COUNT // 3 + 1)
-    for half_width in SURFACE_HALF_WIDTHS:
-        xs, ys, z = sample_square(as_numeric, center, half_width)
-        all_values = [value for row in z for value in row]
-        middle_values = [value for row in z[middle] for value in row[middle]]
-        if spread(all_values) <= MAX_SPREAD_RATIO * max(spread(middle_values), 1e-9):
-            break
-    value_at_point = exact_real(function.subs(dict(zip(VARIABLES, center))))
-    return {
-        "x": xs,
-        "y": ys,
-        "z": z,
-        "point": [float(center[0]), float(center[1]), value_at_point[1] if value_at_point else None],
-    }
-
-
-# The lesson's slice picture: a fixed square around the point, and tangent
-# lines reaching this far on each side.
-SLICE_HALF_WIDTH = 2.0
-TANGENT_REACH = 1.0
-
-
-def curve_points(as_numeric, xs, ys):
-    return {
-        "x": xs,
-        "y": ys,
-        "z": [plot_value(lambda: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x, y in zip(xs, ys)],
-    }
-
-
-def slices(function, point):
-    """The surface near (a, b), its slices along y = b and x = a, and their
-    tangent lines, whose slopes are f_x(a, b) and f_y(a, b)."""
-    if function.free_symbols - set(VARIABLES):
-        raise InputError("The picture needs numbers, so use only x and y here.")
-    a, b = point
-    as_numeric = numeric_function(function, VARIABLES)
-    xs, ys, z = sample_square(as_numeric, point, SLICE_HALF_WIDTH)
-    substitutions = {X: a, Y: b}
-    height = exact_real(function.subs(substitutions))
-    slopes = [exact_real(sympy.diff(function, variable).subs(substitutions)) for variable in VARIABLES]
-    if height is None or None in slopes:
-        raise InputError("f or one of its partial derivatives isn't defined at that point. Move the point.")
-    z0 = height[1]
-    slope_x, slope_y = (slope[1] for slope in slopes)
-    a_value, b_value = float(a), float(b)
-    reach = TANGENT_REACH
-    return {
-        "ok": True,
-        "operation": "slices",
-        "surface": {"x": xs, "y": ys, "z": z, "point": [a_value, b_value, z0]},
-        "xSlice": curve_points(as_numeric, xs, [b_value] * len(xs)),
-        "ySlice": curve_points(as_numeric, [a_value] * len(ys), ys),
-        "xTangent": {
-            "x": [a_value - reach, a_value + reach],
-            "y": [b_value, b_value],
-            "z": [z0 - reach * slope_x, z0 + reach * slope_x],
-        },
-        "yTangent": {
-            "x": [a_value, a_value],
-            "y": [b_value - reach, b_value + reach],
-            "z": [z0 - reach * slope_y, z0 + reach * slope_y],
-        },
-        "values": {"f": z0, "fx": slope_x, "fy": slope_y},
-    }
-
-
-def partial_derivatives(function, point):
-    results = [partial_derivative(function, variable) for variable in VARIABLES]
-    partials = [derivative for derivative, _ in results]
-    constants = sorted(function.free_symbols - set(VARIABLES), key=str)
-    return {
-        "ok": True,
-        "operation": "partial",
-        "functionLatex": rf"f(x, y) = {to_latex(function)}",
-        "constants": [to_latex(constant) for constant in constants],
-        "partials": [details for _, details in results],
-        "gradient": gradient_at(function, partials, point),
-        # With constants like a there is no single surface to draw.
-        "surface": None if constants else sample_surface(function, point),
-    }
+`,"./python/mathlab/multivariable.py":`"""Functions of two variables: partial derivatives, the gradient, and surface samples."""\r
+\r
+import math\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import check_partial_derivative, check_with_constants, numeric_function, plot_value\r
+from mathlab.derivative_steps import Differentiation, derivative_with_steps\r
+from mathlab.expressions import X, Y, InputError, to_latex\r
+\r
+VARIABLES = (X, Y)\r
+MAX_POINT_COORDINATE = 1_000_000\r
+\r
+# The surface is drawn on a square centered at the chosen point. Half-widths\r
+# are tried largest first: a steep function like e^(xy) gets a smaller square,\r
+# so huge values far away don't flatten the surface near the point.\r
+SURFACE_HALF_WIDTHS = (3.0, 1.5, 0.75)\r
+SURFACE_POINT_COUNT = 41\r
+# A square is used when its values spread at most this many times as much as\r
+# the values in its middle third.\r
+MAX_SPREAD_RATIO = 20\r
+\r
+\r
+def is_number(value):\r
+    # JSON true/false arrive as bools, which Python also counts as ints.\r
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)\r
+\r
+\r
+def parse_point(raw):\r
+    """Read the point (a, b) as exact numbers, so 0.5 becomes 1/2."""\r
+    if not (isinstance(raw, list) and len(raw) == 2 and all(is_number(value) for value in raw)):\r
+        raise InputError("Enter the point as two numbers, x and y.")\r
+    if any(abs(value) > MAX_POINT_COORDINATE for value in raw):\r
+        raise InputError(f"Keep the point's coordinates between -{MAX_POINT_COORDINATE:,} and {MAX_POINT_COORDINATE:,}.")\r
+    return tuple(sympy.Rational(str(value)) for value in raw)\r
+\r
+\r
+def exact_real(expression):\r
+    """Return (exact value, float) for a number like 4 + 2 cos(2), or None if it\r
+    is undefined, infinite, or not real."""\r
+    value = sympy.simplify(expression)\r
+    if value.has(sympy.zoo, sympy.nan, sympy.oo, -sympy.oo):\r
+        return None\r
+    try:\r
+        number = complex(value.evalf())\r
+    except TypeError:  # Something symbolic remained, so there is no number.\r
+        return None\r
+    if not math.isfinite(number.real) or abs(number.imag) > 1e-12 * max(1, abs(number.real)):\r
+        return None\r
+    return value, number.real\r
+\r
+\r
+def decimal(number):\r
+    return f"{number:.4g}"\r
+\r
+\r
+def point_latex(point):\r
+    return rf"\\left({to_latex(point[0])}, {to_latex(point[1])}\\right)"\r
+\r
+\r
+def partial_derivative(function, variable):\r
+    d = Differentiation(variable, partial=True)\r
+    derivative, steps, steps_note = derivative_with_steps(function, d, VARIABLES)\r
+    return derivative, {\r
+        "variable": d.name,\r
+        "equationLatex": rf"f_{{{d.name}}} = {d.of(function)} = {to_latex(derivative)}",\r
+        "resultText": str(derivative),\r
+        "check": check_with_constants(\r
+            lambda f, result: check_partial_derivative(f, result, variable),\r
+            function,\r
+            derivative,\r
+            VARIABLES,\r
+        ),\r
+        "steps": steps,\r
+        "stepsNote": steps_note,\r
+    }\r
+\r
+\r
+def gradient_with_constants(partials, substitutions, at):\r
+    """The gradient when f has constants like a: exact, with no decimals."""\r
+    exact = [sympy.simplify(partial.subs(substitutions)) for partial in partials]\r
+    vector = rf"\\left\\langle {to_latex(exact[0])},\\ {to_latex(exact[1])} \\right\\rangle"\r
+    length = sympy.simplify(sympy.sqrt(exact[0] ** 2 + exact[1] ** 2))\r
+    return {\r
+        "ok": True,\r
+        "latex": rf"\\nabla f{at} = {vector}",\r
+        "lengthLatex": rf"\\left\\lVert \\nabla f{at} \\right\\rVert = {to_latex(length)}",\r
+        "vector": None,\r
+    }\r
+\r
+\r
+def gradient_at(function, partials, point):\r
+    substitutions = dict(zip(VARIABLES, point))\r
+    at = point_latex(point)\r
+    if function.free_symbols - set(VARIABLES):\r
+        return gradient_with_constants(partials, substitutions, at)\r
+    components = [exact_real(partial.subs(substitutions)) for partial in partials]\r
+    if exact_real(function.subs(substitutions)) is None or None in components:\r
+        return {\r
+            "ok": False,\r
+            "detail": f"f or one of its partial derivatives isn't defined at \${at}$, "\r
+            "so the gradient doesn't exist there. Try another point.",\r
+        }\r
+    exact = [value for value, _ in components]\r
+    numbers = [number for _, number in components]\r
+    vector = rf"\\left\\langle {to_latex(exact[0])},\\ {to_latex(exact[1])} \\right\\rangle"\r
+    gradient = rf"\\nabla f{at} = {vector}"\r
+    if not all(value.is_Rational for value in exact):\r
+        gradient += rf" \\approx \\left\\langle {decimal(numbers[0])},\\ {decimal(numbers[1])} \\right\\rangle"\r
+    length = sympy.sqrt(exact[0] ** 2 + exact[1] ** 2)\r
+    length_latex = rf"\\left\\lVert \\nabla f{at} \\right\\rVert = {to_latex(length)}"\r
+    if not length.is_Rational:\r
+        length_latex += rf" \\approx {decimal(math.hypot(*numbers))}"\r
+    return {"ok": True, "latex": gradient, "lengthLatex": length_latex, "vector": numbers}\r
+\r
+\r
+def spread(values):\r
+    """How far apart the values are, ignoring the top and bottom 2%."""\r
+    finite = sorted(value for value in values if value is not None)\r
+    if len(finite) < 2:\r
+        return 0.0\r
+    last = len(finite) - 1\r
+    return finite[int(0.98 * last)] - finite[int(0.02 * last)]\r
+\r
+\r
+def sample_square(as_numeric, center, half_width):\r
+    xs, ys = (\r
+        [\r
+            round(float(middle) - half_width + 2 * half_width * index / (SURFACE_POINT_COUNT - 1), 6)\r
+            for index in range(SURFACE_POINT_COUNT)\r
+        ]\r
+        for middle in center\r
+    )\r
+    # Plotly's surface takes rows of z values, one row for each y.\r
+    z = [[plot_value(lambda: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x in xs] for y in ys]\r
+    return xs, ys, z\r
+\r
+\r
+def sample_surface(function, center):\r
+    as_numeric = numeric_function(function, VARIABLES)\r
+    middle = slice(SURFACE_POINT_COUNT // 3, 2 * SURFACE_POINT_COUNT // 3 + 1)\r
+    for half_width in SURFACE_HALF_WIDTHS:\r
+        xs, ys, z = sample_square(as_numeric, center, half_width)\r
+        all_values = [value for row in z for value in row]\r
+        middle_values = [value for row in z[middle] for value in row[middle]]\r
+        if spread(all_values) <= MAX_SPREAD_RATIO * max(spread(middle_values), 1e-9):\r
+            break\r
+    value_at_point = exact_real(function.subs(dict(zip(VARIABLES, center))))\r
+    return {\r
+        "x": xs,\r
+        "y": ys,\r
+        "z": z,\r
+        "point": [float(center[0]), float(center[1]), value_at_point[1] if value_at_point else None],\r
+    }\r
+\r
+\r
+# The lesson's slice picture: a fixed square around the point, and tangent\r
+# lines reaching this far on each side.\r
+SLICE_HALF_WIDTH = 2.0\r
+TANGENT_REACH = 1.0\r
+\r
+\r
+def curve_points(as_numeric, xs, ys):\r
+    return {\r
+        "x": xs,\r
+        "y": ys,\r
+        "z": [plot_value(lambda: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x, y in zip(xs, ys)],\r
+    }\r
+\r
+\r
+def slices(function, point):\r
+    """The surface near (a, b), its slices along y = b and x = a, and their\r
+    tangent lines, whose slopes are f_x(a, b) and f_y(a, b)."""\r
+    if function.free_symbols - set(VARIABLES):\r
+        raise InputError("The picture needs numbers, so use only x and y here.")\r
+    a, b = point\r
+    as_numeric = numeric_function(function, VARIABLES)\r
+    xs, ys, z = sample_square(as_numeric, point, SLICE_HALF_WIDTH)\r
+    substitutions = {X: a, Y: b}\r
+    height = exact_real(function.subs(substitutions))\r
+    slopes = [exact_real(sympy.diff(function, variable).subs(substitutions)) for variable in VARIABLES]\r
+    if height is None or None in slopes:\r
+        raise InputError("f or one of its partial derivatives isn't defined at that point. Move the point.")\r
+    z0 = height[1]\r
+    slope_x, slope_y = (slope[1] for slope in slopes)\r
+    a_value, b_value = float(a), float(b)\r
+    reach = TANGENT_REACH\r
+    return {\r
+        "ok": True,\r
+        "operation": "slices",\r
+        "surface": {"x": xs, "y": ys, "z": z, "point": [a_value, b_value, z0]},\r
+        "xSlice": curve_points(as_numeric, xs, [b_value] * len(xs)),\r
+        "ySlice": curve_points(as_numeric, [a_value] * len(ys), ys),\r
+        "xTangent": {\r
+            "x": [a_value - reach, a_value + reach],\r
+            "y": [b_value, b_value],\r
+            "z": [z0 - reach * slope_x, z0 + reach * slope_x],\r
+        },\r
+        "yTangent": {\r
+            "x": [a_value, a_value],\r
+            "y": [b_value - reach, b_value + reach],\r
+            "z": [z0 - reach * slope_y, z0 + reach * slope_y],\r
+        },\r
+        "values": {"f": z0, "fx": slope_x, "fy": slope_y},\r
+    }\r
+\r
+\r
+def partial_derivatives(function, point):\r
+    results = [partial_derivative(function, variable) for variable in VARIABLES]\r
+    partials = [derivative for derivative, _ in results]\r
+    constants = sorted(function.free_symbols - set(VARIABLES), key=str)\r
+    return {\r
+        "ok": True,\r
+        "operation": "partial",\r
+        "functionLatex": rf"f(x, y) = {to_latex(function)}",\r
+        "constants": [to_latex(constant) for constant in constants],\r
+        "partials": [details for _, details in results],\r
+        "gradient": gradient_at(function, partials, point),\r
+        # With constants like a there is no single surface to draw.\r
+        "surface": None if constants else sample_surface(function, point),\r
+    }\r
 `,"./python/mathlab/numerical.py":`"""Numerical answers for integrals with no formula: when SymPy finds no\r
 antiderivative made of standard functions (like 1/arctan x, which has none),\r
 the value is still a number, computed here and confirmed by a second method."""\r
@@ -6321,1257 +6473,1257 @@ def iterated_value(function, variables, bounds):\r
     if abs(fine - coarse) > ITERATED_AGREEMENT * max(1, abs(fine)):\r
         raise InputError(COULD_NOT_AGREE)\r
     return mpmath.mpf(fine)\r
-`,"./python/mathlab/optimize.py":`"""Maximum and minimum values of functions of several variables.
-
-Critical points: where ∇f = 0. The second-derivative test classifies a critical
-point of f(x, y) with D = f_xx f_yy - f_xy²: a local minimum if D > 0 and
-f_xx > 0, a local maximum if D > 0 and f_xx < 0, a saddle point if D < 0, and
-no conclusion if D = 0.
-
-Lagrange multipliers: the extreme values of f on a constraint g = k are among
-the points where ∇f = λ∇g (and the points where ∇g = 0). On a closed, bounded
-curve or surface, like an ellipse or a sphere, f has a largest and a smallest
-value, so they are the largest and smallest values at those points.
-"""
-
-import math
-
-import mpmath
-import sympy
-
-from mathlab.checks import numeric_function
-from mathlab.derivative_steps import Differentiation, derivative_with_steps
-from mathlab.directional import gradient_steps, latex_value, number
-from mathlab.expressions import X, Y, Z, T, InputError, to_latex
-from mathlab.multivariable import sample_square
-from mathlab.progress import report
-from mathlab.steps import make_step, separate
-from mathlab.tangent import only_variables
-
-LAMBDA = sympy.Symbol("lambda", real=True)
-CHECK_DIGITS = 30
-CHECK_TOLERANCE = mpmath.mpf("1e-12")
-# The second-derivative test is checked by comparing f at the point with f at
-# this many points on a small circle around it.
-NEIGHBOR_COUNT = 72
-NEIGHBOR_RADIUS = mpmath.mpf("1e-4")
-# Newton's method looks for other critical points from a grid of this many
-# starting points on a side, over a square at least this big.
-NEWTON_GRID = 13
-NEWTON_HALF_WIDTH = 4.0
-NEWTON_STEPS = 100
-# How many points of an ellipse (in the plane) or an ellipsoid (in space) are
-# sampled to check the largest and smallest values.
-CURVE_SAMPLES = 3600
-SURFACE_SAMPLES = 20000
-# The Solver's picture: a square around the critical points or candidates.
-PICTURE_HALF_WIDTH = 2.0
-CONTOUR_GRID = 81
-
-
-def real_solutions(equations, unknowns, what):
-    """The real solutions of the equations, as tuples in the order of unknowns,
-    sorted. Raises InputError when SymPy can't solve them or there are
-    infinitely many."""
-    try:
-        solutions = sympy.solve(equations, unknowns, dict=True)
-    except (NotImplementedError, ValueError, TypeError) as error:
-        raise InputError(f"SymPy couldn't solve the equations for the {what} exactly.") from error
-    found = set()
-    for solution in solutions:
-        if any(unknown not in solution for unknown in unknowns):
-            raise InputError(
-                f"The equations for the {what} have infinitely many solutions (a whole curve of "
-                "them), so they can't be listed one by one."
-            )
-        values = tuple(sympy.simplify(solution[unknown]) for unknown in unknowns)
-        if any(value.free_symbols for value in values):
-            raise InputError(
-                f"The equations for the {what} have infinitely many solutions, so they can't be "
-                "listed one by one."
-            )
-        if all(is_real(value) for value in values):
-            found.add(values)
-    return sorted(found, key=lambda values: [float(sympy.N(value)) for value in values])
-
-
-def is_real(value):
-    if value.is_real is not None:
-        return value.is_real
-    approximate = complex(sympy.N(value, 20))
-    return abs(approximate.imag) <= 1e-15 * max(1, abs(approximate.real))
-
-
-def point_latex(point):
-    """A point in exact form, like (1/2, -1): answers here are exact, so 1/2
-    isn't shown as the decimal 0.5."""
-    return rf"\\left({', '.join(to_latex(value) for value in point)}\\right)"
-
-
-def same_points(first, second):
-    return sorted(first, key=str) == sorted(second, key=str)
-
-
-# Critical points and the second-derivative test
-
-
-def substitution_steps(equations, names, solutions):
-    """How the system ∇f = 0 is solved by hand, when it can be: solve one
-    equation for one variable, put that into the other equation, and solve it.
-    Returns substeps, or [] when this route doesn't give exactly SymPy's
-    solutions (it can lose some, for example by dividing by 0)."""
-    variables = (X, Y)
-    tries = []
-    for index, equation in enumerate(equations):
-        for variable in variables:
-            try:
-                solved = sympy.solve(equation, variable)
-            except (NotImplementedError, ValueError, TypeError):
-                continue
-            if len(solved) == 1 and variable not in solved[0].free_symbols:
-                # A value with no other variable, like x = 1, reads best first.
-                tries.append((len(solved[0].free_symbols), index, variable, solved[0]))
-    for _, index, variable, value in sorted(tries, key=lambda item: item[:2]):
-        other_variable = Y if variable == X else X
-        other_equation = sympy.factor(sympy.expand(equations[1 - index].subs(variable, value)))
-        if other_equation == 0:
-            continue
-        try:
-            others = [root for root in sympy.solve(other_equation, other_variable) if is_real(root)]
-        except (NotImplementedError, ValueError, TypeError):
-            continue
-        points = []
-        for other in others:
-            first = sympy.simplify(value.subs(other_variable, other))
-            points.append((first, other) if variable == X else (other, first))
-        if not same_points(points, solutions):
-            continue
-        name, other_name = to_latex(variable), to_latex(other_variable)
-        substituted = (
-            rf"{to_latex(other_equation)} = 0" if other_equation.free_symbols else None
-        )
-        steps = [
-            make_step(
-                f"Solve for {name}",
-                rf"Solve \${names[index]} = 0$ for \${name}$.",
-                [rf"{to_latex(equations[index])} = 0 \\quad\\Longrightarrow\\quad {name} = {to_latex(value)}"],
-            )
-        ]
-        if substituted is not None:
-            roots = r" \\text{ or } ".join(
-                rf"{other_name} = {to_latex(root)}"
-                for root in sorted(set(others), key=lambda root: float(sympy.N(root)))
-            )
-            steps.append(
-                make_step(
-                    "Substitute",
-                    rf"Put \${name} = {to_latex(value)}$ into \${names[1 - index]} = 0$, factor, and keep "
-                    r"the real solutions.",
-                    [rf"{substituted} \\quad\\Longrightarrow\\quad {roots}"],
-                )
-            )
-        return steps
-    return []
-
-
-def second_derivative(first, variable, first_name, name):
-    d = Differentiation(variable, partial=True)
-    derivative, steps, _ = derivative_with_steps(first, d, (X, Y))
-    derivative = sympy.simplify(derivative)
-    step = make_step(
-        f"Partial derivative in {d.name}",
-        rf"Differentiate \${first_name}$ with respect to \${d.name}$.",
-        [d.of(first), to_latex(derivative)],
-        steps,
-    )
-    return derivative, step, name
-
-
-CLASSIFICATIONS = {
-    "minimum": ("Local minimum", r"$D > 0$ and $f_{xx} > 0$: the surface curves up in every direction, so $f$ has a local minimum here."),
-    "maximum": ("Local maximum", r"$D > 0$ and $f_{xx} < 0$: the surface curves down in every direction, so $f$ has a local maximum here."),
-    "saddle": ("Saddle point", r"$D < 0$: the surface curves up in some directions and down in others, so this is a saddle point, neither a maximum nor a minimum."),
-    "unknown": ("No conclusion", r"$D = 0$, so the second-derivative test gives no conclusion here; $f$ could have a maximum, a minimum, or a saddle point."),
-}
-
-
-def classify(d_value, fxx_value):
-    if d_value > 0:
-        return "minimum" if fxx_value > 0 else "maximum"
-    if d_value < 0:
-        return "saddle"
-    return "unknown"
-
-
-def solve_critical(function):
-    """The critical points of f(x, y), classified. Returns the steps and, for
-    each point, its classification and f's value there."""
-    report("Finding the critical points…")
-    gradient_step, gradient = gradient_steps(function, (X, Y))
-    fx, fy = (sympy.simplify(partial) for partial in gradient)
-    points = real_solutions([fx, fy], [X, Y], "critical points")
-    substeps = substitution_steps([fx, fy], ("f_x", "f_y"), points)
-    listed = r", \\ ".join(point_latex(point) for point in points) if points else r"\\text{none}"
-    steps = [
-        gradient_step,
-        make_step(
-            "Critical points",
-            r"At a local maximum or minimum the tangent plane is horizontal, so both partial "
-            r"derivatives are $0$. Solve $f_x = 0$ and $f_y = 0$ together.",
-            [
-                separate(
-                    rf"{to_latex(fx)} = 0",
-                    rf"{to_latex(fy)} = 0",
-                    rf"\\text{{critical points: }} {listed}",
-                )
-            ],
-            substeps,
-        ),
-    ]
-    if not points:
-        return {"steps": steps, "points": [], "fx": fx, "fy": fy}
-
-    report("Applying the second-derivative test…")
-    fxx, fxx_step, _ = second_derivative(fx, X, "f_x", "f_{xx}")
-    fyy, fyy_step, _ = second_derivative(fy, Y, "f_y", "f_{yy}")
-    fxy, fxy_step, _ = second_derivative(fx, Y, "f_x", "f_{xy}")
-    discriminant = sympy.simplify(fxx * fyy - fxy**2)
-    steps.append(
-        make_step(
-            "Second partial derivatives",
-            r"The second-derivative test uses $f_{xx}$, $f_{yy}$, and $f_{xy}$, combined into "
-            r"$D = f_{xx} f_{yy} - f_{xy}^2$.",
-            [
-                separate(
-                    rf"f_{{xx}} = {to_latex(fxx)}, \\quad f_{{yy}} = {to_latex(fyy)}, \\quad f_{{xy}} = {to_latex(fxy)}",
-                    rf"D(x, y) = \\left({to_latex(fxx)}\\right)\\left({to_latex(fyy)}\\right) - "
-                    rf"\\left({to_latex(fxy)}\\right)^2 = {to_latex(discriminant)}",
-                )
-            ],
-            [fxx_step, fyy_step, fxy_step],
-        )
-    )
-    classified = []
-    for point in points:
-        substitutions = {X: point[0], Y: point[1]}
-        d_value = sympy.simplify(discriminant.subs(substitutions))
-        fxx_value = sympy.simplify(fxx.subs(substitutions))
-        value = sympy.simplify(function.subs(substitutions))
-        kind = classify(d_value, fxx_value)
-        at = point_latex(point)
-        steps.append(
-            make_step(
-                f"Second-derivative test at {at}",
-                CLASSIFICATIONS[kind][1],
-                [
-                    separate(
-                        rf"D{at} = {latex_value(d_value)}, \\quad f_{{xx}}{at} = {latex_value(fxx_value)}",
-                        rf"f{at} = {latex_value(value)}",
-                    )
-                ],
-            )
-        )
-        classified.append({"point": point, "kind": kind, "value": value, "d": d_value})
-    return {"steps": steps, "points": classified, "fx": fx, "fy": fy}
-
-
-def numerical_gradient(function, variables, point):
-    """∇f at the point by numerical differentiation of the typed function."""
-    as_numeric = numeric_function(function, variables)
-    with mpmath.workdps(CHECK_DIGITS):
-        start = [mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in point]
-        components = []
-        for index in range(len(variables)):
-
-            def along(s, index=index):
-                moved = list(start)
-                moved[index] += s
-                return as_numeric(*moved)
-
-            try:
-                component = mpmath.diff(along, 0)
-            except Exception:  # Numerical differentiation fails in many ways; all mean "no value".
-                return None
-            if isinstance(component, mpmath.mpc):
-                return None
-            components.append(component)
-        return components
-
-
-def float_function(expression, variables):
-    return sympy.lambdify(variables, expression, modules="math")
-
-
-def newton_roots(fx, fy, half_width):
-    """Critical points found by Newton's method from a grid of starting points:
-    an independent search, so a critical point SymPy missed is noticed."""
-    gradient = [float_function(partial, (X, Y)) for partial in (fx, fy)]
-    hessian = [[float_function(sympy.diff(partial, variable), (X, Y)) for variable in (X, Y)] for partial in (fx, fy)]
-    roots = []
-    for i in range(NEWTON_GRID):
-        for j in range(NEWTON_GRID):
-            x = -half_width + 2 * half_width * i / (NEWTON_GRID - 1) + 1e-3
-            y = -half_width + 2 * half_width * j / (NEWTON_GRID - 1) + 2e-3
-            try:
-                for _ in range(NEWTON_STEPS):
-                    g = [component(x, y) for component in gradient]
-                    (a, b), (c, d) = ([entry(x, y) for entry in row] for row in hessian)
-                    determinant = a * d - b * c
-                    if determinant == 0:
-                        break
-                    dx = (d * g[0] - b * g[1]) / determinant
-                    dy = (a * g[1] - c * g[0]) / determinant
-                    x, y = x - dx, y - dy
-                    if abs(dx) + abs(dy) < 1e-13 * (1 + abs(x) + abs(y)):
-                        break
-                g = [component(x, y) for component in gradient]
-            except (ValueError, ZeroDivisionError, OverflowError, TypeError):
-                continue
-            if not (isinstance(x, float) and isinstance(y, float)):
-                continue
-            if abs(x) <= half_width and abs(y) <= half_width and math.hypot(*g) < 1e-9:
-                roots.append((x, y))
-    return roots
-
-
-def critical_points_check(function, solved):
-    points = [item["point"] for item in solved["points"]]
-    for point in points:
-        numeric = numerical_gradient(function, (X, Y), point)
-        if numeric is None:
-            return {"status": "unchecked", "detail": "The critical points couldn't be checked numerically."}
-        if max(abs(component) for component in numeric) > mpmath.mpf("1e-10"):
-            return {
-                "status": "failed",
-                "detail": f"Numerical differentiation gives $\\\\nabla f \\\\neq \\\\mathbf{{0}}$ at \${point_latex(point)}$. "
-                "Treat this answer with caution.",
-            }
-    floats = [tuple(float(sympy.N(value)) for value in point) for point in points]
-    half_width = max([NEWTON_HALF_WIDTH] + [1.5 * max(abs(value) for value in point) for point in floats])
-    report("Searching for other critical points…")
-    for root in newton_roots(solved["fx"], solved["fy"], half_width):
-        if all(math.hypot(root[0] - x, root[1] - y) > 1e-4 * (1 + math.hypot(x, y)) for x, y in floats):
-            return {
-                "status": "failed",
-                "detail": f"Newton's method finds another critical point, near "
-                f"$({root[0]:.4f}, {root[1]:.4f})$, which isn't in the list. Treat this answer with caution.",
-            }
-    side = f"{half_width:g}"
-    found = "gives $\\\\nabla f = \\\\mathbf{0}$ at each point, and " if points else ""
-    return {
-        "status": "verified",
-        "detail": f"Numerical differentiation {found}Newton's method, started from "
-        f"{NEWTON_GRID * NEWTON_GRID} points across the square $[-{side}, {side}] \\\\times [-{side}, {side}]$, "
-        + ("finds no other critical points there." if points else "finds no critical points there."),
-    }
-
-
-def neighbors_check(function, solved):
-    """Compares f at each critical point with f on a small circle around it: all
-    higher at a local minimum, all lower at a local maximum, both at a saddle."""
-    as_numeric = numeric_function(function, (X, Y))
-    tested = [item for item in solved["points"] if item["kind"] != "unknown"]
-    if not tested:
-        return None
-    with mpmath.workdps(40):
-        for item in tested:
-            a, b = (mpmath.mpf(str(sympy.N(value, 40))) for value in item["point"])
-            try:
-                center = as_numeric(a, b)
-                differences = [
-                    as_numeric(
-                        a + NEIGHBOR_RADIUS * mpmath.cos(2 * mpmath.pi * index / NEIGHBOR_COUNT),
-                        b + NEIGHBOR_RADIUS * mpmath.sin(2 * mpmath.pi * index / NEIGHBOR_COUNT),
-                    )
-                    - center
-                    for index in range(NEIGHBOR_COUNT)
-                ]
-            except Exception:  # Evaluation fails in many ways; all mean "unchecked".
-                return {"status": "unchecked", "detail": "f couldn't be evaluated near the critical points."}
-            if any(isinstance(difference, mpmath.mpc) for difference in differences):
-                return {"status": "unchecked", "detail": "f couldn't be evaluated near the critical points."}
-            higher = sum(1 for difference in differences if difference > 0)
-            lower = sum(1 for difference in differences if difference < 0)
-            agrees = {
-                "minimum": higher == NEIGHBOR_COUNT,
-                "maximum": lower == NEIGHBOR_COUNT,
-                "saddle": higher > 0 and lower > 0,
-            }[item["kind"]]
-            if not agrees:
-                return {
-                    "status": "failed",
-                    "detail": f"Near \${point_latex(item['point'])}$, f doesn't behave like a "
-                    f"{CLASSIFICATIONS[item['kind']][0].lower()}. Treat this answer with caution.",
-                }
-    return {
-        "status": "verified",
-        "detail": f"At {NEIGHBOR_COUNT} points on a circle of radius $10^{{-4}}$ around each critical point, "
-        "f is higher than at the point around each local minimum, lower around each local maximum, "
-        "and both higher and lower around each saddle point.",
-    }
-
-
-def picture_window(points, minimum=PICTURE_HALF_WIDTH):
-    """A square around the points: its center and half width."""
-    floats = [[float(sympy.N(value)) for value in point] for point in points] or [[0.0, 0.0]]
-    xs, ys = [point[0] for point in floats], [point[1] for point in floats]
-    center = ((max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2)
-    reach = max(max(xs) - min(xs), max(ys) - min(ys)) / 2
-    return center, max(minimum, round(1.6 * reach + 0.5, 1))
-
-
-def critical_points(function):
-    if function.has(Z):
-        raise InputError("Critical points here are for f(x, y). For f(x, y, z), use a constraint g = k.")
-    only_variables(function, (X, Y), "f")
-    solved = solve_critical(function)
-    points = solved["points"]
-    results = [
-        {
-            "label": "Critical points",
-            "latex": r", \\ ".join(point_latex(item["point"]) for item in points) if points else r"\\text{none}",
-        }
-    ]
-    for item in points:
-        at = point_latex(item["point"])
-        name = CLASSIFICATIONS[item["kind"]][0]
-        latex = rf"f{at} = {latex_value(item['value'])}" if item["kind"] != "unknown" else rf"D{at} = 0"
-        results.append({"label": f"{name} at \${at}$", "latex": latex})
-    report("Checking the answer numerically…")
-    checks = [{"label": "Critical points", "check": critical_points_check(function, solved)}]
-    neighbors = neighbors_check(function, solved)
-    if neighbors is not None:
-        checks.append({"label": "Second-derivative test", "check": neighbors})
-    center, half_width = picture_window([item["point"] for item in points])
-    as_numeric = numeric_function(function, (X, Y))
-    xs, ys, z = sample_square(as_numeric, center, half_width)
-    return {
-        "ok": True,
-        "operation": "optimize",
-        "kind": "critical",
-        "functionLatex": rf"f(x, y) = {to_latex(function)}",
-        "results": results,
-        "checks": checks,
-        "steps": solved["steps"],
-        "graph": {
-            "kind": "critical",
-            "surface": {"x": xs, "y": ys, "z": z, "point": [center[0], center[1], None]},
-            "points": [
-                {
-                    "point": [float(sympy.N(value)) for value in (*item["point"], item["value"])],
-                    "kind": item["kind"],
-                }
-                for item in points
-            ],
-        },
-    }
-
-
-# Lagrange multipliers
-
-
-def quadratic_shape(constraint, variables):
-    """For g of degree 2 whose quadratic part is definite (an ellipse or
-    ellipsoid, when g = k has points): (A, b, c) with g = vᵀAv + b·v + c.
-    None for any other g."""
-    try:
-        polynomial = sympy.Poly(constraint, *variables)
-    except sympy.PolynomialError:
-        return None
-    if polynomial.total_degree() != 2 or not all(c.is_Rational for c in polynomial.coeffs()):
-        return None
-    size = len(variables)
-    matrix = sympy.Matrix(size, size, lambda i, j: sympy.diff(constraint, variables[i], variables[j]) / 2)
-    if not (matrix.is_positive_definite or (-matrix).is_positive_definite):
-        return None
-    linear = sympy.Matrix([sympy.diff(constraint, v).subs({w: 0 for w in variables}) for v in variables])
-    constant = constraint.subs({v: 0 for v in variables})
-    return matrix, linear, constant
-
-
-def shape_name(matrix):
-    size = matrix.shape[0]
-    round_shape = matrix == matrix[0, 0] * sympy.eye(size)
-    if size == 2:
-        return "circle" if round_shape else "ellipse"
-    return "sphere" if round_shape else "ellipsoid"
-
-
-def lagrange_route(equations, variables, constraint, level, points):
-    """How the Lagrange system is solved by hand, when one of two usual routes
-    gives exactly SymPy's points: solve each equation ∇f = λ∇g for its own
-    variable and substitute into the constraint, or (in the plane) eliminate λ
-    with f_x g_y - f_y g_x = 0. Returns substeps, or []."""
-    names = [to_latex(variable) for variable in variables]
-    lambda_name = to_latex(LAMBDA)
-    # Route 1: each variable in terms of λ.
-    expressions = {}
-    for equation, variable in zip(equations, variables):
-        try:
-            solved = sympy.solve(equation, variable)
-        except (NotImplementedError, ValueError, TypeError):
-            solved = []
-        if len(solved) != 1 or solved[0].free_symbols - {LAMBDA} or LAMBDA not in solved[0].free_symbols:
-            expressions = None
-            break
-        expressions[variable] = solved[0]
-    if expressions:
-        in_lambda = sympy.factor(sympy.together(constraint.subs(expressions)))
-        try:
-            lambdas = [value for value in sympy.solve(sympy.Eq(in_lambda, level), LAMBDA) if is_real(value)]
-        except (NotImplementedError, ValueError, TypeError):
-            lambdas = []
-        found = [tuple(sympy.simplify(expressions[v].subs(LAMBDA, value)) for v in variables) for value in lambdas]
-        if lambdas and same_points(found, points):
-            lambdas = sorted(set(lambdas), key=lambda value: float(sympy.N(value)))
-            equation = rf"{to_latex(in_lambda)} = {to_latex(level)}"
-            solved_text = r" \\text{ or } ".join(rf"{lambda_name} = {to_latex(value)}" for value in lambdas)
-            return [
-                make_step(
-                    "Solve for each variable",
-                    rf"Solve each equation for its own variable, in terms of \${lambda_name}$.",
-                    [r", \\quad ".join(rf"{name} = {to_latex(expressions[v])}" for name, v in zip(names, variables))],
-                ),
-                make_step(
-                    "Substitute into the constraint",
-                    rf"Put these into the constraint, which leaves one equation in \${lambda_name}$.",
-                    # Already solved, like λ = 2, when the equation is that simple.
-                    [equation if equation == solved_text else rf"{equation} \\quad\\Longrightarrow\\quad {solved_text}"],
-                ),
-            ]
-    # Route 2, in the plane: ∇f and ∇g are parallel when f_x g_y - f_y g_x = 0.
-    if len(variables) == 2:
-        (fx, gx), (fy, gy) = equations_parts(equations, variables)
-        parallel = sympy.factor(sympy.expand(fx * gy - fy * gx))
-        if parallel == 0:
-            return []
-        _, factors = sympy.factor_list(parallel)
-        cases, found = [], []
-        for factor, _ in factors:
-            if not factor.free_symbols:
-                continue
-            try:
-                solutions = real_solutions([factor, constraint - level], list(variables), "Lagrange equations")
-            except InputError:
-                return []
-            found += solutions
-            listed = r", \\ ".join(point_latex(point) for point in solutions) if solutions else r"\\text{no real points}"
-            cases.append(
-                rf"{to_latex(factor)} = 0 \\text{{ and }} {to_latex(constraint)} = {to_latex(level)} "
-                rf"\\quad\\Longrightarrow\\quad {listed}"
-            )
-        if same_points(list(set(found)), points):
-            return [
-                make_step(
-                    "Eliminate λ",
-                    r"$\\nabla f = \\lambda \\nabla g$ says the gradients are parallel, which in the plane "
-                    r"means $f_x g_y - f_y g_x = 0$. Factor it.",
-                    [rf"f_x g_y - f_y g_x = {to_latex(parallel)} = 0"],
-                ),
-                make_step(
-                    "Solve with the constraint",
-                    r"Each factor that can be $0$ gives a case; solve it together with the constraint.",
-                    [separate(*cases)],
-                ),
-            ]
-    return []
-
-
-def equations_parts(equations, variables):
-    """(f_v, g_v) for each variable, read back from f_v - λ g_v."""
-    parts = []
-    for equation in equations:
-        expanded = sympy.expand(equation)
-        g_part = -expanded.coeff(LAMBDA)
-        parts.append((sympy.expand(expanded + LAMBDA * g_part), g_part))
-    return parts
-
-
-def solve_lagrange(function, constraint, level, variables):
-    """The extreme values of f on g = k. Returns the steps, the candidates with
-    f's values, and, when g = k is an ellipse or ellipsoid, the maximum and
-    minimum."""
-    names = [to_latex(variable) for variable in variables]
-    report("Finding the gradients…")
-    f_step, f_gradient = gradient_steps(function, variables)
-    g_step, g_gradient = gradient_steps(constraint, variables, "g")
-    equations = [sympy.expand(fv - LAMBDA * gv) for fv, gv in zip(f_gradient, g_gradient)]
-    lambda_name = to_latex(LAMBDA)
-    system = [
-        rf"{to_latex(fv)} = {lambda_name}\\left({to_latex(gv)}\\right)" if gv.is_Add else rf"{to_latex(fv)} = {to_latex(LAMBDA * gv)}"
-        for fv, gv in zip(f_gradient, g_gradient)
-    ]
-    system.append(rf"{to_latex(constraint)} = {to_latex(level)}")
-    report("Solving the Lagrange equations…")
-    solutions = real_solutions(equations + [constraint - level], [*variables, LAMBDA], "Lagrange equations")
-    by_point = {}
-    for *point, multiplier in solutions:
-        by_point.setdefault(tuple(point), multiplier)
-    points = sorted(by_point, key=lambda point: [float(sympy.N(value)) for value in point])
-    # Lagrange's condition needs ∇g ≠ 0; points of g = k where ∇g = 0 are
-    # candidates too.
-    singular = [
-        tuple(point)
-        for point in real_solutions(list(g_gradient) + [constraint - level], list(variables), "points where ∇g = 0")
-        if tuple(point) not in by_point
-    ]
-    route = lagrange_route(equations, variables, constraint, level, points)
-    listed = (
-        r" \\\\ ".join(
-            rf"{point_latex(point)}, \\quad {lambda_name} = {latex_value(by_point[point])}" for point in points
-        )
-        if points
-        else r"\\text{no real solutions}"
-    )
-    steps = [
-        f_step,
-        g_step,
-        make_step(
-            "Lagrange equations",
-            rf"At a largest or smallest value of $f$ on the constraint, $\\nabla f$ is parallel to "
-            rf"$\\nabla g$: $\\nabla f = {lambda_name} \\nabla g$ for some number \${lambda_name}$, the "
-            r"Lagrange multiplier. Together with the constraint, that is one equation per unknown.",
-            [separate(*system)],
-        ),
-        make_step(
-            "Solve the system",
-            r"Solve the equations together; only $(x, y)$"
-            + (r" or $(x, y, z)$" if len(variables) == 3 else "")
-            + r" matters for the answer.",
-            [r"\\begin{gathered}" + listed + r"\\end{gathered}"],
-            route,
-        ),
-    ]
-    if singular:
-        steps.append(
-            make_step(
-                "Points where ∇g = 0",
-                r"The method needs $\\nabla g \\neq \\mathbf{0}$, so points of the constraint where "
-                r"$\\nabla g = \\mathbf{0}$ are candidates too.",
-                [r", \\ ".join(point_latex(point) for point in singular)],
-            )
-        )
-    candidates = points + singular
-    values = {point: sympy.simplify(function.subs(dict(zip(variables, point)))) for point in candidates}
-    if candidates:
-        steps.append(
-            make_step(
-                "Values at the candidates",
-                r"Evaluate $f$ at each point found.",
-                [separate(*(rf"f{point_latex(point)} = {latex_value(values[point])}" for point in candidates))],
-            )
-        )
-    shape = quadratic_shape(sympy.expand(constraint), variables)
-    solved = {
-        "steps": steps,
-        "candidates": candidates,
-        "values": values,
-        "multipliers": by_point,
-        "shape": shape,
-        "maximum": None,
-        "minimum": None,
-    }
-    if not candidates:
-        return solved
-    numbers = {point: float(sympy.N(values[point])) for point in candidates}
-    largest = max(numbers.values())
-    smallest = min(numbers.values())
-    tolerance = 1e-12 * max(1, abs(largest), abs(smallest))
-    top = [point for point in candidates if numbers[point] >= largest - tolerance]
-    bottom = [point for point in candidates if numbers[point] <= smallest + tolerance]
-    if shape is not None:
-        kind = shape_name(shape[0])
-        solved.update(maximum=(values[top[0]], top), minimum=(values[bottom[0]], bottom), kind=kind)
-        steps.append(
-            make_step(
-                "Largest and smallest values",
-                rf"The constraint is {'an' if kind[0] in 'ae' else 'a'} {kind}: closed and bounded, so "
-                r"$f$ has a largest and a smallest value on it, and both are among the candidates.",
-                [
-                    separate(
-                        rf"\\text{{maximum: }} {extreme_latex(top, values[top[0]])}",
-                        rf"\\text{{minimum: }} {extreme_latex(bottom, values[bottom[0]])}",
-                    )
-                ],
-            )
-        )
-    elif len(candidates) == 1:
-        steps.append(
-            make_step(
-                "The only candidate",
-                r"The constraint isn't known to be closed and bounded (like a circle or a sphere), so "
-                r"$f$ may have no largest or no smallest value on it. If it has one, it is at this "
-                r"point; a picture or another argument shows which.",
-                [extreme_latex(top, values[top[0]])],
-            )
-        )
-    else:
-        steps.append(
-            make_step(
-                "Largest and smallest candidates",
-                r"The constraint isn't known to be closed and bounded (like a circle or a sphere), so "
-                r"$f$ may have no largest or no smallest value on it. If it has one, it is among the "
-                r"candidates; a picture or another argument shows which.",
-                [
-                    separate(
-                        rf"\\text{{largest candidate: }} {extreme_latex(top, values[top[0]])}",
-                        rf"\\text{{smallest candidate: }} {extreme_latex(bottom, values[bottom[0]])}",
-                    )
-                ],
-            )
-        )
-    return solved
-
-
-def extreme_latex(points, value):
-    return " = ".join(rf"f{point_latex(point)}" for point in points) + rf" = {latex_value(value)}"
-
-
-def lagrange_points_check(function, constraint, level, variables, candidates):
-    """At each candidate: g = k to 30 digits, and ∇f, ∇g (by numerical
-    differentiation) parallel."""
-    as_numeric = numeric_function(constraint, variables)
-    with mpmath.workdps(CHECK_DIGITS):
-        for point in candidates:
-            at = [mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in point]
-            try:
-                g_value = as_numeric(*at)
-            except Exception:  # Evaluation fails in many ways; all mean "unchecked".
-                g_value = None
-            f_gradient = numerical_gradient(function, variables, point)
-            g_gradient = numerical_gradient(constraint, variables, point)
-            if g_value is None or isinstance(g_value, mpmath.mpc) or f_gradient is None or g_gradient is None:
-                return {"status": "unchecked", "detail": "The candidates couldn't be checked numerically."}
-            target = mpmath.mpf(str(sympy.N(level, CHECK_DIGITS)))
-            on_constraint = abs(g_value - target) <= CHECK_TOLERANCE * max(1, abs(target))
-            if len(variables) == 2:
-                crosses = [f_gradient[0] * g_gradient[1] - f_gradient[1] * g_gradient[0]]
-            else:
-                f1, f2, f3 = f_gradient
-                g1, g2, g3 = g_gradient
-                crosses = [f2 * g3 - f3 * g2, f3 * g1 - f1 * g3, f1 * g2 - f2 * g1]
-            scale = max(1, mpmath.norm(f_gradient) * mpmath.norm(g_gradient))
-            parallel = all(abs(cross) <= mpmath.mpf("1e-10") * scale for cross in crosses)
-            if not (on_constraint and parallel):
-                return {
-                    "status": "failed",
-                    "detail": f"At \${point_latex(point)}$ the numbers don't agree: "
-                    + ("the point isn't on the constraint." if not on_constraint else "∇f isn't parallel to ∇g.")
-                    + " Treat this answer with caution.",
-                }
-    return {
-        "status": "verified",
-        "detail": "At each candidate, g equals the constraint's value to 30 digits, and numerical "
-        "differentiation gives ∇f parallel to ∇g (or ∇g = 0).",
-    }
-
-
-def fibonacci_directions(count):
-    """count directions spread evenly over the sphere."""
-    golden = math.pi * (3 - math.sqrt(5))
-    for index in range(count):
-        z = 1 - 2 * (index + 0.5) / count
-        radius = math.sqrt(1 - z * z)
-        yield (radius * math.cos(golden * index), radius * math.sin(golden * index), z)
-
-
-def extremes_check(function, variables, level, solved):
-    """Samples the ellipse or ellipsoid g = k and compares f there with the
-    maximum and minimum: an independent check that no candidate was missed."""
-    matrix, linear, constant = solved["shape"]
-    center = -matrix.inv() * linear / 2
-    center_value = (center.T * matrix * center)[0] + linear.dot(center) + constant
-    a = [[float(entry) for entry in row] for row in matrix.tolist()]
-    c = [float(value) for value in center]
-    room = float(level - center_value)
-    as_float = float_function(function, variables)
-    if len(variables) == 2:
-        directions = [
-            (math.cos(2 * math.pi * index / CURVE_SAMPLES), math.sin(2 * math.pi * index / CURVE_SAMPLES))
-            for index in range(CURVE_SAMPLES)
-        ]
-    else:
-        directions = list(fibonacci_directions(SURFACE_SAMPLES))
-    samples = []
-    for u in directions:
-        curvature = sum(a[i][j] * u[i] * u[j] for i in range(len(u)) for j in range(len(u)))
-        reach = math.sqrt(room / curvature)
-        try:
-            samples.append(as_float(*(c[i] + reach * u[i] for i in range(len(u)))))
-        except (ValueError, ZeroDivisionError, OverflowError):
-            return {"status": "unchecked", "detail": "f couldn't be evaluated on the constraint."}
-    maximum = float(sympy.N(solved["maximum"][0]))
-    minimum = float(sympy.N(solved["minimum"][0]))
-    spread = max(1.0, maximum - minimum)
-    above = max(samples) - maximum
-    below = minimum - min(samples)
-    where = "curve" if len(variables) == 2 else "surface"
-    if above > 1e-9 * spread or below > 1e-9 * spread:
-        return {
-            "status": "failed",
-            "detail": f"A point of the constraint {where} gives f = {max(samples) if above > 0 else min(samples):.6g}, "
-            "beyond the maximum or minimum found. Treat this answer with caution.",
-        }
-    gap = max(0.0, -above, -below)
-    if gap > 1e-3 * spread:
-        return {
-            "status": "failed",
-            "detail": "Points sampled over the constraint don't come close to the maximum or minimum found. "
-            "Treat this answer with caution.",
-        }
-    return {
-        "status": "verified",
-        "detail": f"f was evaluated at {len(samples):,} points spread over the {solved['kind']}: none is above "
-        "the maximum or below the minimum, and the closest "
-        + (f"come within {gap:.2g} of them." if gap > 1e-9 * spread else "match them."),
-    }
-
-
-def lagrange(function, constraint, level_text):
-    if constraint is None:
-        raise InputError("Enter the constraint function g.")
-    variables = (X, Y, Z) if function.has(Z) or constraint.has(Z) else (X, Y)
-    only_variables(function, variables, "f")
-    only_variables(constraint, variables, "g")
-    if not constraint.free_symbols:
-        raise InputError("The constraint g must use the variables; a constant g gives no curve or surface.")
-    level = number(level_text, "constraint's value k")
-    solved = solve_lagrange(function, constraint, level, variables)
-    names = ", ".join(to_latex(variable) for variable in variables)
-    shape = solved["shape"]
-    if shape is not None:
-        matrix, linear, constant = shape
-        center = -matrix.inv() * linear / 2
-        center_value = sympy.simplify((center.T * matrix * center)[0] + linear.dot(center) + constant)
-        if sympy.simplify((level - center_value) / matrix[0, 0]) < 0:
-            raise InputError(f"$g({names}) = {to_latex(level)}$ has no real points, so there is nothing to optimize.")
-    candidates, values = solved["candidates"], solved["values"]
-    results = [
-        {
-            "label": "Candidates",
-            "latex": r", \\ ".join(rf"f{point_latex(point)} = {latex_value(values[point])}" for point in candidates)
-            if candidates
-            else r"\\text{none}",
-        }
-    ]
-    if solved["maximum"] is not None:
-        results += [
-            {"label": "Maximum value", "latex": extreme_latex(solved["maximum"][1], solved["maximum"][0])},
-            {"label": "Minimum value", "latex": extreme_latex(solved["minimum"][1], solved["minimum"][0])},
-        ]
-    report("Checking the answer numerically…")
-    checks = []
-    if candidates:
-        checks.append(
-            {
-                "label": "Candidates",
-                "check": lagrange_points_check(function, constraint, level, variables, candidates),
-            }
-        )
-    if solved["maximum"] is not None:
-        checks.append({"label": "Maximum and minimum", "check": extremes_check(function, variables, level, solved)})
-    return {
-        "ok": True,
-        "operation": "optimize",
-        "kind": "lagrange",
-        "functionLatex": rf"f({names}) = {to_latex(function)}, \\text{{ subject to }} {to_latex(constraint)} = {to_latex(level)}",
-        "results": results,
-        "checks": checks,
-        "steps": solved["steps"],
-        "graph": lagrange_graph(function, constraint, level, candidates, values, solved) if len(variables) == 2 else None,
-    }
-
-
-def contour_grid(function, center, half_width):
-    """f on a square grid, as rows (one per y), for drawing level curves."""
-    as_float = float_function(function, (X, Y))
-    xs = [round(center[0] - half_width + 2 * half_width * i / (CONTOUR_GRID - 1), 6) for i in range(CONTOUR_GRID)]
-    ys = [round(center[1] - half_width + 2 * half_width * j / (CONTOUR_GRID - 1), 6) for j in range(CONTOUR_GRID)]
-    rows = []
-    for y in ys:
-        row = []
-        for x in xs:
-            try:
-                value = as_float(x, y)
-                row.append(round(value, 6) if isinstance(value, float) and math.isfinite(value) else None)
-            except (ValueError, ZeroDivisionError, OverflowError, TypeError):
-                row.append(None)
-        rows.append(row)
-    return xs, ys, rows
-
-
-def lagrange_graph(function, constraint, level, candidates, values, solved):
-    """The Solver's picture for f(x, y) on g = k: f and g on a grid (the page
-    draws level curves from them), and the candidates."""
-    center, half_width = picture_window(candidates, 2.0)
-    xs, ys, f_rows = contour_grid(function, center, half_width)
-    _, _, g_rows = contour_grid(constraint, center, half_width)
-    maximum = solved["maximum"][1] if solved["maximum"] else []
-    minimum = solved["minimum"][1] if solved["minimum"] else []
-    return {
-        "kind": "lagrange",
-        "x": xs,
-        "y": ys,
-        "f": f_rows,
-        "g": g_rows,
-        "level": float(sympy.N(level)),
-        "candidates": [
-            {
-                "point": [float(sympy.N(value)) for value in point],
-                "value": float(sympy.N(values[point])),
-                "kind": "maximum" if point in maximum else "minimum" if point in minimum else "candidate",
-            }
-            for point in candidates
-        ],
-    }
-
-
-def optimize(function, kind, constraint=None, level_text=None):
-    if kind == "critical":
-        return critical_points(function)
-    if kind == "lagrange":
-        return lagrange(function, constraint, level_text)
-    raise InputError("Choose critical points of f(x, y), or extreme values on a constraint g = k.")
-
-
-# The lesson picture
-
-
-def constraint_picture(function, constraint, x_of_t, y_of_t, interval, divisions):
-    """The lesson picture: f(x, y) on a fixed square (the page draws level
-    curves from it), the constraint curve, and at each slider position the
-    point, f, ∇f, and ∇g there."""
-    t = T
-    lower, upper = interval
-    xs, ys, rows = contour_grid(function, (0, 0), 2.5)
-    position = sympy.lambdify(t, (x_of_t, y_of_t), modules="math")
-    f_float = float_function(function, (X, Y))
-    gradients = [
-        [float_function(sympy.diff(expression, variable), (X, Y)) for variable in (X, Y)]
-        for expression in (function, constraint)
-    ]
-    low, high = float(sympy.N(lower)), float(sympy.N(upper))
-    curve_points = [position(low + (high - low) * index / 240) for index in range(241)]
-    positions = []
-    for index in range(divisions + 1):
-        # Exact parameter values, so 45° lands exactly on (1, 1).
-        value = lower + (upper - lower) * sympy.Rational(index, divisions)
-        x = float(sympy.N(x_of_t.subs(t, value)))
-        y = float(sympy.N(y_of_t.subs(t, value)))
-        positions.append(
-            {
-                "point": [round(x, 6), round(y, 6)],
-                "value": round(f_float(x, y), 6),
-                "gradF": [round(partial(x, y), 6) for partial in gradients[0]],
-                "gradG": [round(partial(x, y), 6) for partial in gradients[1]],
-            }
-        )
-    return {
-        "ok": True,
-        "operation": "constraintPicture",
-        "x": xs,
-        "y": ys,
-        "f": rows,
-        "curve": {"x": [round(p[0], 6) for p in curve_points], "y": [round(p[1], 6) for p in curve_points]},
-        "positions": positions,
-    }
-`,"./python/mathlab/parsing.py":`"""Reading the student's input: translate textbook notation, then parse safely.
-
-Students write math many ways: x², √x, |x|, π, 2·x, log_2(x), sin⁻¹... All of
-it is translated to plain text first. Only then is the text checked against a
-short list of safe characters, because SymPy's parse_expr runs its input as
-Python. Letters other than the variables are constants, like a, b, c in
-a x^2 + b x + c.
-"""
-
-import math
-import re
-import string
-
-import sympy
-from sympy.parsing.sympy_parser import (
-    _token_splittable,
-    convert_xor,
-    function_exponentiation,
-    implicit_application,
-    implicit_multiplication,
-    parse_expr,
-    split_symbols_custom,
-    standard_transformations,
-)
-
-from mathlab.expressions import X, InputError
-
-MAX_INPUT_LENGTH = 200
-# Exact numbers with more digits than this are refused; SymPy would take
-# minutes or hours to build them.
-MAX_EXACT_DIGITS = 100_000
-
-# After translation, only these characters may remain. Without quotes,
-# brackets, underscores, or = signs, input cannot reach anything in Python
-# except SymPy's math functions.
-ALLOWED_CHARACTERS = re.compile(r"[A-Za-z0-9\\s+\\-*/^().,!]*")
-
-GREEK_LETTERS = {
-    "α": "alpha",
-    "θ": "theta",
-    "φ": "phi",
-    "ϕ": "phi",
-    "ω": "omega",
-    "λ": "lamda",  # SymPy's spelling, since lambda is a Python keyword.
-    "μ": "mu",
-    "σ": "sigma",
-    "τ": "tau",
-    "ρ": "rho",
-    "δ": "delta",
-    "ε": "epsilon",
-    "ψ": "psi",
-    "ξ": "xi",
-    "η": "eta",
-    "κ": "kappa",
-    "ν": "nu",
-}
-
-# Symbols to plain text. Spaces keep names apart: 2π becomes 2 pi.
-SYMBOL_TRANSLATIONS = {
-    "π": " pi ",
-    "∞": " oo ",
-    "√": " sqrt ",
-    "∛": " cbrt ",
-    "Γ": " gamma ",
-    "·": "*",
-    "⋅": "*",
-    "×": "*",
-    "∗": "*",
-    "÷": "/",
-    "∕": "/",
-    "−": "-",
-    "–": "-",
-    "—": "-",
-    "[": "(",
-    "]": ")",
-    "{": "(",
-    "}": ")",
-    **{letter: f" {name} " for letter, name in GREEK_LETTERS.items()},
-}
-
-SUPERSCRIPTS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺", "0123456789-+")
-SUPERSCRIPT_RUN = re.compile("[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]+")
-
-
-def log_base(base):
-    return lambda argument: sympy.log(argument, base)
-
-
-# Names students use that SymPy spells differently. Everything else, such as
-# sec, sinh, sqrt, cbrt, exp, floor, erf, and gamma, comes from SymPy itself.
-FUNCTION_ALIASES = {
-    "ln": sympy.log,
-    "log10": log_base(10),
-    "log2": log_base(2),
-    "arcsin": sympy.asin,
-    "arccos": sympy.acos,
-    "arctan": sympy.atan,
-    "arcsec": sympy.asec,
-    "arccsc": sympy.acsc,
-    "arccot": sympy.acot,
-    "arcsinh": sympy.asinh,
-    "arccosh": sympy.acosh,
-    "arctanh": sympy.atanh,
-    "abs": sympy.Abs,
-    "sgn": sympy.sign,
-    "ceil": sympy.ceiling,
-}
-
-# Every function name a student might type, for spotting typos like sinx.
-FUNCTION_NAMES = sorted(
-    {
-        *FUNCTION_ALIASES,
-        *"sin cos tan sec csc cot sinh cosh tanh sech csch coth".split(),
-        *"asin acos atan asec acsc acot asinh acosh atanh log exp sqrt cbrt".split(),
-        *"floor ceiling sign erf gamma factorial".split(),
-    },
-    key=len,
-    reverse=True,
-)
-
-# Letters stand for constants (every letter except e, which is Euler's number).
-CONSTANT_NAMES = [letter for letter in string.ascii_letters if letter not in "eE"] + sorted(
-    set(GREEK_LETTERS.values())
-)
-
-NAMES = {
-    "e": sympy.E,
-    "E": sympy.E,
-    "pi": sympy.pi,
-    **FUNCTION_ALIASES,
-    **{name: sympy.Symbol(name, real=True) for name in CONSTANT_NAMES},
-}
-
-
-def splittable(name):
-    """Whether to split a run of letters like xy into x*y. Runs that start with a
-    function name, like sinx, are kept whole so they can be reported as typos."""
-    if any(name.startswith(function) for function in FUNCTION_NAMES):
-        return False
-    return _token_splittable(name)
-
-
-TRANSFORMATIONS = standard_transformations + (
-    split_symbols_custom(splittable),
-    implicit_multiplication,
-    implicit_application,
-    function_exponentiation,
-    convert_xor,
-)
-
-# Textbook notation like sin^2(x), which means (sin(x))^2.
-FUNCTION_POWER = re.compile(r"\\b(sin|cos|tan|sec|csc|cot|sinh|cosh|tanh|ln|log)\\^(\\d+)\\s*\\(")
-# log_2(x) or log_b(x): a logarithm with a base.
-LOG_WITH_BASE = re.compile(r"\\blog_([0-9]+|[A-Za-z])\\s*\\(")
-
-
-def find_closing_parenthesis(text, open_index):
-    depth = 0
-    for index in range(open_index, len(text)):
-        if text[index] == "(":
-            depth += 1
-        elif text[index] == ")":
-            depth -= 1
-            if depth == 0:
-                return index
-    return None
-
-
-def rewrite_function_powers(text):
-    """Rewrite sin^2(x) as (sin(x))^2, which SymPy can parse."""
-    while match := FUNCTION_POWER.search(text):
-        open_index = match.end() - 1
-        close_index = find_closing_parenthesis(text, open_index)
-        if close_index is None:
-            break  # Unbalanced parentheses; the parser reports the error.
-        name, power = match.group(1), match.group(2)
-        argument = text[open_index : close_index + 1]
-        text = f"{text[: match.start()]}({name}{argument})^{power}{text[close_index + 1 :]}"
-    return text
-
-
-def rewrite_log_bases(text):
-    """Rewrite log_2(x) as log(x, 2)."""
-    while match := LOG_WITH_BASE.search(text):
-        open_index = match.end() - 1
-        close_index = find_closing_parenthesis(text, open_index)
-        if close_index is None:
-            break
-        argument = text[open_index + 1 : close_index]
-        text = f"{text[: match.start()]}log({argument}, {match.group(1)}){text[close_index + 1 :]}"
-    return text
-
-
-def rewrite_absolute_bars(text):
-    """Rewrite |x| as abs(x). A bar opens a new absolute value at the start, after
-    an operator or another bar; otherwise it closes the innermost one."""
-    result = []
-    depth = 0
-    for index, character in enumerate(text):
-        if character != "|":
-            result.append(character)
-            continue
-        previous = text[:index].rstrip()[-1:]
-        if depth == 0 or previous in ("", "(", "+", "-", "*", "/", "^", ",", "|"):
-            result.append("abs(")
-            depth += 1
-        else:
-            result.append(")")
-            depth -= 1
-    if depth != 0:
-        raise InputError("The absolute value bars | | don't pair up.")
-    return "".join(result)
-
-
-# √ or ∛ directly before one number or letter applies to just that, as in
-# √x · sin(x). Before a parenthesis it applies to the whole parenthesis.
-ROOT_OF_ONE_SYMBOL = re.compile(r"([√∛])\\s*(\\d+(?:\\.\\d+)?|[A-Za-zπα-ω])")
-
-
-def translate_notation(text):
-    """Turn textbook notation into text the parser reads."""
-    text = ROOT_OF_ONE_SYMBOL.sub(lambda match: f"{match.group(1)}({match.group(2)})", text)
-    for symbol, replacement in SYMBOL_TRANSLATIONS.items():
-        text = text.replace(symbol, replacement)
-    text = SUPERSCRIPT_RUN.sub(lambda run: f"^({run.group().translate(SUPERSCRIPTS)})", text)
-    text = rewrite_absolute_bars(text)
-    text = rewrite_log_bases(text)
-    return rewrite_function_powers(text)
-
-
-def has_enormous_number(expression):
-    """True if computing expression exactly would build a gigantic number, like
-    9^9^9^9, which would freeze SymPy. expression must be unevaluated."""
-    if any(has_enormous_number(argument) for argument in expression.args):
-        return True
-    if not isinstance(expression, sympy.Pow) or expression.free_symbols:
-        return False
-    base, exponent = expression.args
-    try:
-        # Inner powers were checked above, so these are safe to approximate.
-        base_size = abs(float(base.evalf(15)))
-        exponent_size = abs(float(exponent.evalf(15)))
-    except (TypeError, ValueError):  # Not a real number, such as a complex power.
-        return False
-    if base_size in (0.0, 1.0):
-        return False
-    digits = exponent_size * abs(math.log10(base_size))
-    return digits > MAX_EXACT_DIGITS
-
-
-def typo_suggestion(name):
-    """For a run of letters like sinx, suggest sin(x)."""
-    for function in FUNCTION_NAMES:
-        if name.startswith(function) and len(name) > len(function):
-            return f" Did you mean {function}({name[len(function):]})?"
-    return " Use one letter per constant, or put * between letters."
-
-
-def parse_function(text, variables=(X,)):
-    """Parse the student's function. Letters other than the variables are constants."""
-    description, example = {
-        2: ("x and y", "x^2 y + sin(x y)"),
-        3: ("x, y, and z", "x y z^2"),
-    }.get(len(variables), ("x", "x^2 sin(x)"))
-    text = text.strip()
-    if not text:
-        raise InputError(f"Type a function of {description}, such as {example}.")
-    if len(text) > MAX_INPUT_LENGTH:
-        raise InputError(f"That expression is too long (the limit is {MAX_INPUT_LENGTH} characters).")
-    text = translate_notation(text)
-    unknown_characters = sorted({character for character in text if not ALLOWED_CHARACTERS.fullmatch(character)})
-    if unknown_characters:
-        raise InputError(f"These characters can't be used here: {' '.join(unknown_characters)}")
-    local_names = {**NAMES, **{variable.name: variable for variable in variables}}
-    try:
-        # Read it first without computing anything, to catch enormous numbers.
-        unevaluated = parse_expr(text, local_dict=local_names, transformations=TRANSFORMATIONS, evaluate=False)
-        if has_enormous_number(unevaluated):
-            raise InputError("That contains a number too large to compute exactly, such as 9^9^9.")
-        function = parse_expr(text, local_dict=local_names, transformations=TRANSFORMATIONS)
-    except InputError:
-        raise
-    except Exception as error:  # The parser raises many error types for bad syntax.
-        raise InputError("Couldn't read that expression. Check the parentheses and operators.") from error
-    if not isinstance(function, sympy.Expr):
-        raise InputError(f"That isn't a function. Try something like {example}.")
-    for symbol in function.free_symbols:
-        if symbol.name not in local_names:
-            raise InputError(f"I don't know \\"{symbol.name}\\".{typo_suggestion(symbol.name)}")
-    if function.has(sympy.zoo, sympy.nan, sympy.oo, -sympy.oo):
-        raise InputError("That expression is undefined, for example because it divides by zero.")
-    return function
-
-
-def constants_in(function, variables):
-    """The letters in function other than its variables, sorted by name."""
-    return sorted(function.free_symbols - set(variables), key=lambda symbol: symbol.name)
+`,"./python/mathlab/optimize.py":`"""Maximum and minimum values of functions of several variables.\r
+\r
+Critical points: where ∇f = 0. The second-derivative test classifies a critical\r
+point of f(x, y) with D = f_xx f_yy - f_xy²: a local minimum if D > 0 and\r
+f_xx > 0, a local maximum if D > 0 and f_xx < 0, a saddle point if D < 0, and\r
+no conclusion if D = 0.\r
+\r
+Lagrange multipliers: the extreme values of f on a constraint g = k are among\r
+the points where ∇f = λ∇g (and the points where ∇g = 0). On a closed, bounded\r
+curve or surface, like an ellipse or a sphere, f has a largest and a smallest\r
+value, so they are the largest and smallest values at those points.\r
+"""\r
+\r
+import math\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import numeric_function\r
+from mathlab.derivative_steps import Differentiation, derivative_with_steps\r
+from mathlab.directional import gradient_steps, latex_value, number\r
+from mathlab.expressions import X, Y, Z, T, InputError, to_latex\r
+from mathlab.multivariable import sample_square\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step, separate\r
+from mathlab.tangent import only_variables\r
+\r
+LAMBDA = sympy.Symbol("lambda", real=True)\r
+CHECK_DIGITS = 30\r
+CHECK_TOLERANCE = mpmath.mpf("1e-12")\r
+# The second-derivative test is checked by comparing f at the point with f at\r
+# this many points on a small circle around it.\r
+NEIGHBOR_COUNT = 72\r
+NEIGHBOR_RADIUS = mpmath.mpf("1e-4")\r
+# Newton's method looks for other critical points from a grid of this many\r
+# starting points on a side, over a square at least this big.\r
+NEWTON_GRID = 13\r
+NEWTON_HALF_WIDTH = 4.0\r
+NEWTON_STEPS = 100\r
+# How many points of an ellipse (in the plane) or an ellipsoid (in space) are\r
+# sampled to check the largest and smallest values.\r
+CURVE_SAMPLES = 3600\r
+SURFACE_SAMPLES = 20000\r
+# The Solver's picture: a square around the critical points or candidates.\r
+PICTURE_HALF_WIDTH = 2.0\r
+CONTOUR_GRID = 81\r
+\r
+\r
+def real_solutions(equations, unknowns, what):\r
+    """The real solutions of the equations, as tuples in the order of unknowns,\r
+    sorted. Raises InputError when SymPy can't solve them or there are\r
+    infinitely many."""\r
+    try:\r
+        solutions = sympy.solve(equations, unknowns, dict=True)\r
+    except (NotImplementedError, ValueError, TypeError) as error:\r
+        raise InputError(f"SymPy couldn't solve the equations for the {what} exactly.") from error\r
+    found = set()\r
+    for solution in solutions:\r
+        if any(unknown not in solution for unknown in unknowns):\r
+            raise InputError(\r
+                f"The equations for the {what} have infinitely many solutions (a whole curve of "\r
+                "them), so they can't be listed one by one."\r
+            )\r
+        values = tuple(sympy.simplify(solution[unknown]) for unknown in unknowns)\r
+        if any(value.free_symbols for value in values):\r
+            raise InputError(\r
+                f"The equations for the {what} have infinitely many solutions, so they can't be "\r
+                "listed one by one."\r
+            )\r
+        if all(is_real(value) for value in values):\r
+            found.add(values)\r
+    return sorted(found, key=lambda values: [float(sympy.N(value)) for value in values])\r
+\r
+\r
+def is_real(value):\r
+    if value.is_real is not None:\r
+        return value.is_real\r
+    approximate = complex(sympy.N(value, 20))\r
+    return abs(approximate.imag) <= 1e-15 * max(1, abs(approximate.real))\r
+\r
+\r
+def point_latex(point):\r
+    """A point in exact form, like (1/2, -1): answers here are exact, so 1/2\r
+    isn't shown as the decimal 0.5."""\r
+    return rf"\\left({', '.join(to_latex(value) for value in point)}\\right)"\r
+\r
+\r
+def same_points(first, second):\r
+    return sorted(first, key=str) == sorted(second, key=str)\r
+\r
+\r
+# Critical points and the second-derivative test\r
+\r
+\r
+def substitution_steps(equations, names, solutions):\r
+    """How the system ∇f = 0 is solved by hand, when it can be: solve one\r
+    equation for one variable, put that into the other equation, and solve it.\r
+    Returns substeps, or [] when this route doesn't give exactly SymPy's\r
+    solutions (it can lose some, for example by dividing by 0)."""\r
+    variables = (X, Y)\r
+    tries = []\r
+    for index, equation in enumerate(equations):\r
+        for variable in variables:\r
+            try:\r
+                solved = sympy.solve(equation, variable)\r
+            except (NotImplementedError, ValueError, TypeError):\r
+                continue\r
+            if len(solved) == 1 and variable not in solved[0].free_symbols:\r
+                # A value with no other variable, like x = 1, reads best first.\r
+                tries.append((len(solved[0].free_symbols), index, variable, solved[0]))\r
+    for _, index, variable, value in sorted(tries, key=lambda item: item[:2]):\r
+        other_variable = Y if variable == X else X\r
+        other_equation = sympy.factor(sympy.expand(equations[1 - index].subs(variable, value)))\r
+        if other_equation == 0:\r
+            continue\r
+        try:\r
+            others = [root for root in sympy.solve(other_equation, other_variable) if is_real(root)]\r
+        except (NotImplementedError, ValueError, TypeError):\r
+            continue\r
+        points = []\r
+        for other in others:\r
+            first = sympy.simplify(value.subs(other_variable, other))\r
+            points.append((first, other) if variable == X else (other, first))\r
+        if not same_points(points, solutions):\r
+            continue\r
+        name, other_name = to_latex(variable), to_latex(other_variable)\r
+        substituted = (\r
+            rf"{to_latex(other_equation)} = 0" if other_equation.free_symbols else None\r
+        )\r
+        steps = [\r
+            make_step(\r
+                f"Solve for {name}",\r
+                rf"Solve \${names[index]} = 0$ for \${name}$.",\r
+                [rf"{to_latex(equations[index])} = 0 \\quad\\Longrightarrow\\quad {name} = {to_latex(value)}"],\r
+            )\r
+        ]\r
+        if substituted is not None:\r
+            roots = r" \\text{ or } ".join(\r
+                rf"{other_name} = {to_latex(root)}"\r
+                for root in sorted(set(others), key=lambda root: float(sympy.N(root)))\r
+            )\r
+            steps.append(\r
+                make_step(\r
+                    "Substitute",\r
+                    rf"Put \${name} = {to_latex(value)}$ into \${names[1 - index]} = 0$, factor, and keep "\r
+                    r"the real solutions.",\r
+                    [rf"{substituted} \\quad\\Longrightarrow\\quad {roots}"],\r
+                )\r
+            )\r
+        return steps\r
+    return []\r
+\r
+\r
+def second_derivative(first, variable, first_name, name):\r
+    d = Differentiation(variable, partial=True)\r
+    derivative, steps, _ = derivative_with_steps(first, d, (X, Y))\r
+    derivative = sympy.simplify(derivative)\r
+    step = make_step(\r
+        f"Partial derivative in {d.name}",\r
+        rf"Differentiate \${first_name}$ with respect to \${d.name}$.",\r
+        [d.of(first), to_latex(derivative)],\r
+        steps,\r
+    )\r
+    return derivative, step, name\r
+\r
+\r
+CLASSIFICATIONS = {\r
+    "minimum": ("Local minimum", r"$D > 0$ and $f_{xx} > 0$: the surface curves up in every direction, so $f$ has a local minimum here."),\r
+    "maximum": ("Local maximum", r"$D > 0$ and $f_{xx} < 0$: the surface curves down in every direction, so $f$ has a local maximum here."),\r
+    "saddle": ("Saddle point", r"$D < 0$: the surface curves up in some directions and down in others, so this is a saddle point, neither a maximum nor a minimum."),\r
+    "unknown": ("No conclusion", r"$D = 0$, so the second-derivative test gives no conclusion here; $f$ could have a maximum, a minimum, or a saddle point."),\r
+}\r
+\r
+\r
+def classify(d_value, fxx_value):\r
+    if d_value > 0:\r
+        return "minimum" if fxx_value > 0 else "maximum"\r
+    if d_value < 0:\r
+        return "saddle"\r
+    return "unknown"\r
+\r
+\r
+def solve_critical(function):\r
+    """The critical points of f(x, y), classified. Returns the steps and, for\r
+    each point, its classification and f's value there."""\r
+    report("Finding the critical points…")\r
+    gradient_step, gradient = gradient_steps(function, (X, Y))\r
+    fx, fy = (sympy.simplify(partial) for partial in gradient)\r
+    points = real_solutions([fx, fy], [X, Y], "critical points")\r
+    substeps = substitution_steps([fx, fy], ("f_x", "f_y"), points)\r
+    listed = r", \\ ".join(point_latex(point) for point in points) if points else r"\\text{none}"\r
+    steps = [\r
+        gradient_step,\r
+        make_step(\r
+            "Critical points",\r
+            r"At a local maximum or minimum the tangent plane is horizontal, so both partial "\r
+            r"derivatives are $0$. Solve $f_x = 0$ and $f_y = 0$ together.",\r
+            [\r
+                separate(\r
+                    rf"{to_latex(fx)} = 0",\r
+                    rf"{to_latex(fy)} = 0",\r
+                    rf"\\text{{critical points: }} {listed}",\r
+                )\r
+            ],\r
+            substeps,\r
+        ),\r
+    ]\r
+    if not points:\r
+        return {"steps": steps, "points": [], "fx": fx, "fy": fy}\r
+\r
+    report("Applying the second-derivative test…")\r
+    fxx, fxx_step, _ = second_derivative(fx, X, "f_x", "f_{xx}")\r
+    fyy, fyy_step, _ = second_derivative(fy, Y, "f_y", "f_{yy}")\r
+    fxy, fxy_step, _ = second_derivative(fx, Y, "f_x", "f_{xy}")\r
+    discriminant = sympy.simplify(fxx * fyy - fxy**2)\r
+    steps.append(\r
+        make_step(\r
+            "Second partial derivatives",\r
+            r"The second-derivative test uses $f_{xx}$, $f_{yy}$, and $f_{xy}$, combined into "\r
+            r"$D = f_{xx} f_{yy} - f_{xy}^2$.",\r
+            [\r
+                separate(\r
+                    rf"f_{{xx}} = {to_latex(fxx)}, \\quad f_{{yy}} = {to_latex(fyy)}, \\quad f_{{xy}} = {to_latex(fxy)}",\r
+                    rf"D(x, y) = \\left({to_latex(fxx)}\\right)\\left({to_latex(fyy)}\\right) - "\r
+                    rf"\\left({to_latex(fxy)}\\right)^2 = {to_latex(discriminant)}",\r
+                )\r
+            ],\r
+            [fxx_step, fyy_step, fxy_step],\r
+        )\r
+    )\r
+    classified = []\r
+    for point in points:\r
+        substitutions = {X: point[0], Y: point[1]}\r
+        d_value = sympy.simplify(discriminant.subs(substitutions))\r
+        fxx_value = sympy.simplify(fxx.subs(substitutions))\r
+        value = sympy.simplify(function.subs(substitutions))\r
+        kind = classify(d_value, fxx_value)\r
+        at = point_latex(point)\r
+        steps.append(\r
+            make_step(\r
+                f"Second-derivative test at {at}",\r
+                CLASSIFICATIONS[kind][1],\r
+                [\r
+                    separate(\r
+                        rf"D{at} = {latex_value(d_value)}, \\quad f_{{xx}}{at} = {latex_value(fxx_value)}",\r
+                        rf"f{at} = {latex_value(value)}",\r
+                    )\r
+                ],\r
+            )\r
+        )\r
+        classified.append({"point": point, "kind": kind, "value": value, "d": d_value})\r
+    return {"steps": steps, "points": classified, "fx": fx, "fy": fy}\r
+\r
+\r
+def numerical_gradient(function, variables, point):\r
+    """∇f at the point by numerical differentiation of the typed function."""\r
+    as_numeric = numeric_function(function, variables)\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        start = [mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in point]\r
+        components = []\r
+        for index in range(len(variables)):\r
+\r
+            def along(s, index=index):\r
+                moved = list(start)\r
+                moved[index] += s\r
+                return as_numeric(*moved)\r
+\r
+            try:\r
+                component = mpmath.diff(along, 0)\r
+            except Exception:  # Numerical differentiation fails in many ways; all mean "no value".\r
+                return None\r
+            if isinstance(component, mpmath.mpc):\r
+                return None\r
+            components.append(component)\r
+        return components\r
+\r
+\r
+def float_function(expression, variables):\r
+    return sympy.lambdify(variables, expression, modules="math")\r
+\r
+\r
+def newton_roots(fx, fy, half_width):\r
+    """Critical points found by Newton's method from a grid of starting points:\r
+    an independent search, so a critical point SymPy missed is noticed."""\r
+    gradient = [float_function(partial, (X, Y)) for partial in (fx, fy)]\r
+    hessian = [[float_function(sympy.diff(partial, variable), (X, Y)) for variable in (X, Y)] for partial in (fx, fy)]\r
+    roots = []\r
+    for i in range(NEWTON_GRID):\r
+        for j in range(NEWTON_GRID):\r
+            x = -half_width + 2 * half_width * i / (NEWTON_GRID - 1) + 1e-3\r
+            y = -half_width + 2 * half_width * j / (NEWTON_GRID - 1) + 2e-3\r
+            try:\r
+                for _ in range(NEWTON_STEPS):\r
+                    g = [component(x, y) for component in gradient]\r
+                    (a, b), (c, d) = ([entry(x, y) for entry in row] for row in hessian)\r
+                    determinant = a * d - b * c\r
+                    if determinant == 0:\r
+                        break\r
+                    dx = (d * g[0] - b * g[1]) / determinant\r
+                    dy = (a * g[1] - c * g[0]) / determinant\r
+                    x, y = x - dx, y - dy\r
+                    if abs(dx) + abs(dy) < 1e-13 * (1 + abs(x) + abs(y)):\r
+                        break\r
+                g = [component(x, y) for component in gradient]\r
+            except (ValueError, ZeroDivisionError, OverflowError, TypeError):\r
+                continue\r
+            if not (isinstance(x, float) and isinstance(y, float)):\r
+                continue\r
+            if abs(x) <= half_width and abs(y) <= half_width and math.hypot(*g) < 1e-9:\r
+                roots.append((x, y))\r
+    return roots\r
+\r
+\r
+def critical_points_check(function, solved):\r
+    points = [item["point"] for item in solved["points"]]\r
+    for point in points:\r
+        numeric = numerical_gradient(function, (X, Y), point)\r
+        if numeric is None:\r
+            return {"status": "unchecked", "detail": "The critical points couldn't be checked numerically."}\r
+        if max(abs(component) for component in numeric) > mpmath.mpf("1e-10"):\r
+            return {\r
+                "status": "failed",\r
+                "detail": f"Numerical differentiation gives $\\\\nabla f \\\\neq \\\\mathbf{{0}}$ at \${point_latex(point)}$. "\r
+                "Treat this answer with caution.",\r
+            }\r
+    floats = [tuple(float(sympy.N(value)) for value in point) for point in points]\r
+    half_width = max([NEWTON_HALF_WIDTH] + [1.5 * max(abs(value) for value in point) for point in floats])\r
+    report("Searching for other critical points…")\r
+    for root in newton_roots(solved["fx"], solved["fy"], half_width):\r
+        if all(math.hypot(root[0] - x, root[1] - y) > 1e-4 * (1 + math.hypot(x, y)) for x, y in floats):\r
+            return {\r
+                "status": "failed",\r
+                "detail": f"Newton's method finds another critical point, near "\r
+                f"$({root[0]:.4f}, {root[1]:.4f})$, which isn't in the list. Treat this answer with caution.",\r
+            }\r
+    side = f"{half_width:g}"\r
+    found = "gives $\\\\nabla f = \\\\mathbf{0}$ at each point, and " if points else ""\r
+    return {\r
+        "status": "verified",\r
+        "detail": f"Numerical differentiation {found}Newton's method, started from "\r
+        f"{NEWTON_GRID * NEWTON_GRID} points across the square $[-{side}, {side}] \\\\times [-{side}, {side}]$, "\r
+        + ("finds no other critical points there." if points else "finds no critical points there."),\r
+    }\r
+\r
+\r
+def neighbors_check(function, solved):\r
+    """Compares f at each critical point with f on a small circle around it: all\r
+    higher at a local minimum, all lower at a local maximum, both at a saddle."""\r
+    as_numeric = numeric_function(function, (X, Y))\r
+    tested = [item for item in solved["points"] if item["kind"] != "unknown"]\r
+    if not tested:\r
+        return None\r
+    with mpmath.workdps(40):\r
+        for item in tested:\r
+            a, b = (mpmath.mpf(str(sympy.N(value, 40))) for value in item["point"])\r
+            try:\r
+                center = as_numeric(a, b)\r
+                differences = [\r
+                    as_numeric(\r
+                        a + NEIGHBOR_RADIUS * mpmath.cos(2 * mpmath.pi * index / NEIGHBOR_COUNT),\r
+                        b + NEIGHBOR_RADIUS * mpmath.sin(2 * mpmath.pi * index / NEIGHBOR_COUNT),\r
+                    )\r
+                    - center\r
+                    for index in range(NEIGHBOR_COUNT)\r
+                ]\r
+            except Exception:  # Evaluation fails in many ways; all mean "unchecked".\r
+                return {"status": "unchecked", "detail": "f couldn't be evaluated near the critical points."}\r
+            if any(isinstance(difference, mpmath.mpc) for difference in differences):\r
+                return {"status": "unchecked", "detail": "f couldn't be evaluated near the critical points."}\r
+            higher = sum(1 for difference in differences if difference > 0)\r
+            lower = sum(1 for difference in differences if difference < 0)\r
+            agrees = {\r
+                "minimum": higher == NEIGHBOR_COUNT,\r
+                "maximum": lower == NEIGHBOR_COUNT,\r
+                "saddle": higher > 0 and lower > 0,\r
+            }[item["kind"]]\r
+            if not agrees:\r
+                return {\r
+                    "status": "failed",\r
+                    "detail": f"Near \${point_latex(item['point'])}$, f doesn't behave like a "\r
+                    f"{CLASSIFICATIONS[item['kind']][0].lower()}. Treat this answer with caution.",\r
+                }\r
+    return {\r
+        "status": "verified",\r
+        "detail": f"At {NEIGHBOR_COUNT} points on a circle of radius $10^{{-4}}$ around each critical point, "\r
+        "f is higher than at the point around each local minimum, lower around each local maximum, "\r
+        "and both higher and lower around each saddle point.",\r
+    }\r
+\r
+\r
+def picture_window(points, minimum=PICTURE_HALF_WIDTH):\r
+    """A square around the points: its center and half width."""\r
+    floats = [[float(sympy.N(value)) for value in point] for point in points] or [[0.0, 0.0]]\r
+    xs, ys = [point[0] for point in floats], [point[1] for point in floats]\r
+    center = ((max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2)\r
+    reach = max(max(xs) - min(xs), max(ys) - min(ys)) / 2\r
+    return center, max(minimum, round(1.6 * reach + 0.5, 1))\r
+\r
+\r
+def critical_points(function):\r
+    if function.has(Z):\r
+        raise InputError("Critical points here are for f(x, y). For f(x, y, z), use a constraint g = k.")\r
+    only_variables(function, (X, Y), "f")\r
+    solved = solve_critical(function)\r
+    points = solved["points"]\r
+    results = [\r
+        {\r
+            "label": "Critical points",\r
+            "latex": r", \\ ".join(point_latex(item["point"]) for item in points) if points else r"\\text{none}",\r
+        }\r
+    ]\r
+    for item in points:\r
+        at = point_latex(item["point"])\r
+        name = CLASSIFICATIONS[item["kind"]][0]\r
+        latex = rf"f{at} = {latex_value(item['value'])}" if item["kind"] != "unknown" else rf"D{at} = 0"\r
+        results.append({"label": f"{name} at \${at}$", "latex": latex})\r
+    report("Checking the answer numerically…")\r
+    checks = [{"label": "Critical points", "check": critical_points_check(function, solved)}]\r
+    neighbors = neighbors_check(function, solved)\r
+    if neighbors is not None:\r
+        checks.append({"label": "Second-derivative test", "check": neighbors})\r
+    center, half_width = picture_window([item["point"] for item in points])\r
+    as_numeric = numeric_function(function, (X, Y))\r
+    xs, ys, z = sample_square(as_numeric, center, half_width)\r
+    return {\r
+        "ok": True,\r
+        "operation": "optimize",\r
+        "kind": "critical",\r
+        "functionLatex": rf"f(x, y) = {to_latex(function)}",\r
+        "results": results,\r
+        "checks": checks,\r
+        "steps": solved["steps"],\r
+        "graph": {\r
+            "kind": "critical",\r
+            "surface": {"x": xs, "y": ys, "z": z, "point": [center[0], center[1], None]},\r
+            "points": [\r
+                {\r
+                    "point": [float(sympy.N(value)) for value in (*item["point"], item["value"])],\r
+                    "kind": item["kind"],\r
+                }\r
+                for item in points\r
+            ],\r
+        },\r
+    }\r
+\r
+\r
+# Lagrange multipliers\r
+\r
+\r
+def quadratic_shape(constraint, variables):\r
+    """For g of degree 2 whose quadratic part is definite (an ellipse or\r
+    ellipsoid, when g = k has points): (A, b, c) with g = vᵀAv + b·v + c.\r
+    None for any other g."""\r
+    try:\r
+        polynomial = sympy.Poly(constraint, *variables)\r
+    except sympy.PolynomialError:\r
+        return None\r
+    if polynomial.total_degree() != 2 or not all(c.is_Rational for c in polynomial.coeffs()):\r
+        return None\r
+    size = len(variables)\r
+    matrix = sympy.Matrix(size, size, lambda i, j: sympy.diff(constraint, variables[i], variables[j]) / 2)\r
+    if not (matrix.is_positive_definite or (-matrix).is_positive_definite):\r
+        return None\r
+    linear = sympy.Matrix([sympy.diff(constraint, v).subs({w: 0 for w in variables}) for v in variables])\r
+    constant = constraint.subs({v: 0 for v in variables})\r
+    return matrix, linear, constant\r
+\r
+\r
+def shape_name(matrix):\r
+    size = matrix.shape[0]\r
+    round_shape = matrix == matrix[0, 0] * sympy.eye(size)\r
+    if size == 2:\r
+        return "circle" if round_shape else "ellipse"\r
+    return "sphere" if round_shape else "ellipsoid"\r
+\r
+\r
+def lagrange_route(equations, variables, constraint, level, points):\r
+    """How the Lagrange system is solved by hand, when one of two usual routes\r
+    gives exactly SymPy's points: solve each equation ∇f = λ∇g for its own\r
+    variable and substitute into the constraint, or (in the plane) eliminate λ\r
+    with f_x g_y - f_y g_x = 0. Returns substeps, or []."""\r
+    names = [to_latex(variable) for variable in variables]\r
+    lambda_name = to_latex(LAMBDA)\r
+    # Route 1: each variable in terms of λ.\r
+    expressions = {}\r
+    for equation, variable in zip(equations, variables):\r
+        try:\r
+            solved = sympy.solve(equation, variable)\r
+        except (NotImplementedError, ValueError, TypeError):\r
+            solved = []\r
+        if len(solved) != 1 or solved[0].free_symbols - {LAMBDA} or LAMBDA not in solved[0].free_symbols:\r
+            expressions = None\r
+            break\r
+        expressions[variable] = solved[0]\r
+    if expressions:\r
+        in_lambda = sympy.factor(sympy.together(constraint.subs(expressions)))\r
+        try:\r
+            lambdas = [value for value in sympy.solve(sympy.Eq(in_lambda, level), LAMBDA) if is_real(value)]\r
+        except (NotImplementedError, ValueError, TypeError):\r
+            lambdas = []\r
+        found = [tuple(sympy.simplify(expressions[v].subs(LAMBDA, value)) for v in variables) for value in lambdas]\r
+        if lambdas and same_points(found, points):\r
+            lambdas = sorted(set(lambdas), key=lambda value: float(sympy.N(value)))\r
+            equation = rf"{to_latex(in_lambda)} = {to_latex(level)}"\r
+            solved_text = r" \\text{ or } ".join(rf"{lambda_name} = {to_latex(value)}" for value in lambdas)\r
+            return [\r
+                make_step(\r
+                    "Solve for each variable",\r
+                    rf"Solve each equation for its own variable, in terms of \${lambda_name}$.",\r
+                    [r", \\quad ".join(rf"{name} = {to_latex(expressions[v])}" for name, v in zip(names, variables))],\r
+                ),\r
+                make_step(\r
+                    "Substitute into the constraint",\r
+                    rf"Put these into the constraint, which leaves one equation in \${lambda_name}$.",\r
+                    # Already solved, like λ = 2, when the equation is that simple.\r
+                    [equation if equation == solved_text else rf"{equation} \\quad\\Longrightarrow\\quad {solved_text}"],\r
+                ),\r
+            ]\r
+    # Route 2, in the plane: ∇f and ∇g are parallel when f_x g_y - f_y g_x = 0.\r
+    if len(variables) == 2:\r
+        (fx, gx), (fy, gy) = equations_parts(equations, variables)\r
+        parallel = sympy.factor(sympy.expand(fx * gy - fy * gx))\r
+        if parallel == 0:\r
+            return []\r
+        _, factors = sympy.factor_list(parallel)\r
+        cases, found = [], []\r
+        for factor, _ in factors:\r
+            if not factor.free_symbols:\r
+                continue\r
+            try:\r
+                solutions = real_solutions([factor, constraint - level], list(variables), "Lagrange equations")\r
+            except InputError:\r
+                return []\r
+            found += solutions\r
+            listed = r", \\ ".join(point_latex(point) for point in solutions) if solutions else r"\\text{no real points}"\r
+            cases.append(\r
+                rf"{to_latex(factor)} = 0 \\text{{ and }} {to_latex(constraint)} = {to_latex(level)} "\r
+                rf"\\quad\\Longrightarrow\\quad {listed}"\r
+            )\r
+        if same_points(list(set(found)), points):\r
+            return [\r
+                make_step(\r
+                    "Eliminate λ",\r
+                    r"$\\nabla f = \\lambda \\nabla g$ says the gradients are parallel, which in the plane "\r
+                    r"means $f_x g_y - f_y g_x = 0$. Factor it.",\r
+                    [rf"f_x g_y - f_y g_x = {to_latex(parallel)} = 0"],\r
+                ),\r
+                make_step(\r
+                    "Solve with the constraint",\r
+                    r"Each factor that can be $0$ gives a case; solve it together with the constraint.",\r
+                    [separate(*cases)],\r
+                ),\r
+            ]\r
+    return []\r
+\r
+\r
+def equations_parts(equations, variables):\r
+    """(f_v, g_v) for each variable, read back from f_v - λ g_v."""\r
+    parts = []\r
+    for equation in equations:\r
+        expanded = sympy.expand(equation)\r
+        g_part = -expanded.coeff(LAMBDA)\r
+        parts.append((sympy.expand(expanded + LAMBDA * g_part), g_part))\r
+    return parts\r
+\r
+\r
+def solve_lagrange(function, constraint, level, variables):\r
+    """The extreme values of f on g = k. Returns the steps, the candidates with\r
+    f's values, and, when g = k is an ellipse or ellipsoid, the maximum and\r
+    minimum."""\r
+    names = [to_latex(variable) for variable in variables]\r
+    report("Finding the gradients…")\r
+    f_step, f_gradient = gradient_steps(function, variables)\r
+    g_step, g_gradient = gradient_steps(constraint, variables, "g")\r
+    equations = [sympy.expand(fv - LAMBDA * gv) for fv, gv in zip(f_gradient, g_gradient)]\r
+    lambda_name = to_latex(LAMBDA)\r
+    system = [\r
+        rf"{to_latex(fv)} = {lambda_name}\\left({to_latex(gv)}\\right)" if gv.is_Add else rf"{to_latex(fv)} = {to_latex(LAMBDA * gv)}"\r
+        for fv, gv in zip(f_gradient, g_gradient)\r
+    ]\r
+    system.append(rf"{to_latex(constraint)} = {to_latex(level)}")\r
+    report("Solving the Lagrange equations…")\r
+    solutions = real_solutions(equations + [constraint - level], [*variables, LAMBDA], "Lagrange equations")\r
+    by_point = {}\r
+    for *point, multiplier in solutions:\r
+        by_point.setdefault(tuple(point), multiplier)\r
+    points = sorted(by_point, key=lambda point: [float(sympy.N(value)) for value in point])\r
+    # Lagrange's condition needs ∇g ≠ 0; points of g = k where ∇g = 0 are\r
+    # candidates too.\r
+    singular = [\r
+        tuple(point)\r
+        for point in real_solutions(list(g_gradient) + [constraint - level], list(variables), "points where ∇g = 0")\r
+        if tuple(point) not in by_point\r
+    ]\r
+    route = lagrange_route(equations, variables, constraint, level, points)\r
+    listed = (\r
+        r" \\\\ ".join(\r
+            rf"{point_latex(point)}, \\quad {lambda_name} = {latex_value(by_point[point])}" for point in points\r
+        )\r
+        if points\r
+        else r"\\text{no real solutions}"\r
+    )\r
+    steps = [\r
+        f_step,\r
+        g_step,\r
+        make_step(\r
+            "Lagrange equations",\r
+            rf"At a largest or smallest value of $f$ on the constraint, $\\nabla f$ is parallel to "\r
+            rf"$\\nabla g$: $\\nabla f = {lambda_name} \\nabla g$ for some number \${lambda_name}$, the "\r
+            r"Lagrange multiplier. Together with the constraint, that is one equation per unknown.",\r
+            [separate(*system)],\r
+        ),\r
+        make_step(\r
+            "Solve the system",\r
+            r"Solve the equations together; only $(x, y)$"\r
+            + (r" or $(x, y, z)$" if len(variables) == 3 else "")\r
+            + r" matters for the answer.",\r
+            [r"\\begin{gathered}" + listed + r"\\end{gathered}"],\r
+            route,\r
+        ),\r
+    ]\r
+    if singular:\r
+        steps.append(\r
+            make_step(\r
+                "Points where ∇g = 0",\r
+                r"The method needs $\\nabla g \\neq \\mathbf{0}$, so points of the constraint where "\r
+                r"$\\nabla g = \\mathbf{0}$ are candidates too.",\r
+                [r", \\ ".join(point_latex(point) for point in singular)],\r
+            )\r
+        )\r
+    candidates = points + singular\r
+    values = {point: sympy.simplify(function.subs(dict(zip(variables, point)))) for point in candidates}\r
+    if candidates:\r
+        steps.append(\r
+            make_step(\r
+                "Values at the candidates",\r
+                r"Evaluate $f$ at each point found.",\r
+                [separate(*(rf"f{point_latex(point)} = {latex_value(values[point])}" for point in candidates))],\r
+            )\r
+        )\r
+    shape = quadratic_shape(sympy.expand(constraint), variables)\r
+    solved = {\r
+        "steps": steps,\r
+        "candidates": candidates,\r
+        "values": values,\r
+        "multipliers": by_point,\r
+        "shape": shape,\r
+        "maximum": None,\r
+        "minimum": None,\r
+    }\r
+    if not candidates:\r
+        return solved\r
+    numbers = {point: float(sympy.N(values[point])) for point in candidates}\r
+    largest = max(numbers.values())\r
+    smallest = min(numbers.values())\r
+    tolerance = 1e-12 * max(1, abs(largest), abs(smallest))\r
+    top = [point for point in candidates if numbers[point] >= largest - tolerance]\r
+    bottom = [point for point in candidates if numbers[point] <= smallest + tolerance]\r
+    if shape is not None:\r
+        kind = shape_name(shape[0])\r
+        solved.update(maximum=(values[top[0]], top), minimum=(values[bottom[0]], bottom), kind=kind)\r
+        steps.append(\r
+            make_step(\r
+                "Largest and smallest values",\r
+                rf"The constraint is {'an' if kind[0] in 'ae' else 'a'} {kind}: closed and bounded, so "\r
+                r"$f$ has a largest and a smallest value on it, and both are among the candidates.",\r
+                [\r
+                    separate(\r
+                        rf"\\text{{maximum: }} {extreme_latex(top, values[top[0]])}",\r
+                        rf"\\text{{minimum: }} {extreme_latex(bottom, values[bottom[0]])}",\r
+                    )\r
+                ],\r
+            )\r
+        )\r
+    elif len(candidates) == 1:\r
+        steps.append(\r
+            make_step(\r
+                "The only candidate",\r
+                r"The constraint isn't known to be closed and bounded (like a circle or a sphere), so "\r
+                r"$f$ may have no largest or no smallest value on it. If it has one, it is at this "\r
+                r"point; a picture or another argument shows which.",\r
+                [extreme_latex(top, values[top[0]])],\r
+            )\r
+        )\r
+    else:\r
+        steps.append(\r
+            make_step(\r
+                "Largest and smallest candidates",\r
+                r"The constraint isn't known to be closed and bounded (like a circle or a sphere), so "\r
+                r"$f$ may have no largest or no smallest value on it. If it has one, it is among the "\r
+                r"candidates; a picture or another argument shows which.",\r
+                [\r
+                    separate(\r
+                        rf"\\text{{largest candidate: }} {extreme_latex(top, values[top[0]])}",\r
+                        rf"\\text{{smallest candidate: }} {extreme_latex(bottom, values[bottom[0]])}",\r
+                    )\r
+                ],\r
+            )\r
+        )\r
+    return solved\r
+\r
+\r
+def extreme_latex(points, value):\r
+    return " = ".join(rf"f{point_latex(point)}" for point in points) + rf" = {latex_value(value)}"\r
+\r
+\r
+def lagrange_points_check(function, constraint, level, variables, candidates):\r
+    """At each candidate: g = k to 30 digits, and ∇f, ∇g (by numerical\r
+    differentiation) parallel."""\r
+    as_numeric = numeric_function(constraint, variables)\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        for point in candidates:\r
+            at = [mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in point]\r
+            try:\r
+                g_value = as_numeric(*at)\r
+            except Exception:  # Evaluation fails in many ways; all mean "unchecked".\r
+                g_value = None\r
+            f_gradient = numerical_gradient(function, variables, point)\r
+            g_gradient = numerical_gradient(constraint, variables, point)\r
+            if g_value is None or isinstance(g_value, mpmath.mpc) or f_gradient is None or g_gradient is None:\r
+                return {"status": "unchecked", "detail": "The candidates couldn't be checked numerically."}\r
+            target = mpmath.mpf(str(sympy.N(level, CHECK_DIGITS)))\r
+            on_constraint = abs(g_value - target) <= CHECK_TOLERANCE * max(1, abs(target))\r
+            if len(variables) == 2:\r
+                crosses = [f_gradient[0] * g_gradient[1] - f_gradient[1] * g_gradient[0]]\r
+            else:\r
+                f1, f2, f3 = f_gradient\r
+                g1, g2, g3 = g_gradient\r
+                crosses = [f2 * g3 - f3 * g2, f3 * g1 - f1 * g3, f1 * g2 - f2 * g1]\r
+            scale = max(1, mpmath.norm(f_gradient) * mpmath.norm(g_gradient))\r
+            parallel = all(abs(cross) <= mpmath.mpf("1e-10") * scale for cross in crosses)\r
+            if not (on_constraint and parallel):\r
+                return {\r
+                    "status": "failed",\r
+                    "detail": f"At \${point_latex(point)}$ the numbers don't agree: "\r
+                    + ("the point isn't on the constraint." if not on_constraint else "∇f isn't parallel to ∇g.")\r
+                    + " Treat this answer with caution.",\r
+                }\r
+    return {\r
+        "status": "verified",\r
+        "detail": "At each candidate, g equals the constraint's value to 30 digits, and numerical "\r
+        "differentiation gives ∇f parallel to ∇g (or ∇g = 0).",\r
+    }\r
+\r
+\r
+def fibonacci_directions(count):\r
+    """count directions spread evenly over the sphere."""\r
+    golden = math.pi * (3 - math.sqrt(5))\r
+    for index in range(count):\r
+        z = 1 - 2 * (index + 0.5) / count\r
+        radius = math.sqrt(1 - z * z)\r
+        yield (radius * math.cos(golden * index), radius * math.sin(golden * index), z)\r
+\r
+\r
+def extremes_check(function, variables, level, solved):\r
+    """Samples the ellipse or ellipsoid g = k and compares f there with the\r
+    maximum and minimum: an independent check that no candidate was missed."""\r
+    matrix, linear, constant = solved["shape"]\r
+    center = -matrix.inv() * linear / 2\r
+    center_value = (center.T * matrix * center)[0] + linear.dot(center) + constant\r
+    a = [[float(entry) for entry in row] for row in matrix.tolist()]\r
+    c = [float(value) for value in center]\r
+    room = float(level - center_value)\r
+    as_float = float_function(function, variables)\r
+    if len(variables) == 2:\r
+        directions = [\r
+            (math.cos(2 * math.pi * index / CURVE_SAMPLES), math.sin(2 * math.pi * index / CURVE_SAMPLES))\r
+            for index in range(CURVE_SAMPLES)\r
+        ]\r
+    else:\r
+        directions = list(fibonacci_directions(SURFACE_SAMPLES))\r
+    samples = []\r
+    for u in directions:\r
+        curvature = sum(a[i][j] * u[i] * u[j] for i in range(len(u)) for j in range(len(u)))\r
+        reach = math.sqrt(room / curvature)\r
+        try:\r
+            samples.append(as_float(*(c[i] + reach * u[i] for i in range(len(u)))))\r
+        except (ValueError, ZeroDivisionError, OverflowError):\r
+            return {"status": "unchecked", "detail": "f couldn't be evaluated on the constraint."}\r
+    maximum = float(sympy.N(solved["maximum"][0]))\r
+    minimum = float(sympy.N(solved["minimum"][0]))\r
+    spread = max(1.0, maximum - minimum)\r
+    above = max(samples) - maximum\r
+    below = minimum - min(samples)\r
+    where = "curve" if len(variables) == 2 else "surface"\r
+    if above > 1e-9 * spread or below > 1e-9 * spread:\r
+        return {\r
+            "status": "failed",\r
+            "detail": f"A point of the constraint {where} gives f = {max(samples) if above > 0 else min(samples):.6g}, "\r
+            "beyond the maximum or minimum found. Treat this answer with caution.",\r
+        }\r
+    gap = max(0.0, -above, -below)\r
+    if gap > 1e-3 * spread:\r
+        return {\r
+            "status": "failed",\r
+            "detail": "Points sampled over the constraint don't come close to the maximum or minimum found. "\r
+            "Treat this answer with caution.",\r
+        }\r
+    return {\r
+        "status": "verified",\r
+        "detail": f"f was evaluated at {len(samples):,} points spread over the {solved['kind']}: none is above "\r
+        "the maximum or below the minimum, and the closest "\r
+        + (f"come within {gap:.2g} of them." if gap > 1e-9 * spread else "match them."),\r
+    }\r
+\r
+\r
+def lagrange(function, constraint, level_text):\r
+    if constraint is None:\r
+        raise InputError("Enter the constraint function g.")\r
+    variables = (X, Y, Z) if function.has(Z) or constraint.has(Z) else (X, Y)\r
+    only_variables(function, variables, "f")\r
+    only_variables(constraint, variables, "g")\r
+    if not constraint.free_symbols:\r
+        raise InputError("The constraint g must use the variables; a constant g gives no curve or surface.")\r
+    level = number(level_text, "constraint's value k")\r
+    solved = solve_lagrange(function, constraint, level, variables)\r
+    names = ", ".join(to_latex(variable) for variable in variables)\r
+    shape = solved["shape"]\r
+    if shape is not None:\r
+        matrix, linear, constant = shape\r
+        center = -matrix.inv() * linear / 2\r
+        center_value = sympy.simplify((center.T * matrix * center)[0] + linear.dot(center) + constant)\r
+        if sympy.simplify((level - center_value) / matrix[0, 0]) < 0:\r
+            raise InputError(f"$g({names}) = {to_latex(level)}$ has no real points, so there is nothing to optimize.")\r
+    candidates, values = solved["candidates"], solved["values"]\r
+    results = [\r
+        {\r
+            "label": "Candidates",\r
+            "latex": r", \\ ".join(rf"f{point_latex(point)} = {latex_value(values[point])}" for point in candidates)\r
+            if candidates\r
+            else r"\\text{none}",\r
+        }\r
+    ]\r
+    if solved["maximum"] is not None:\r
+        results += [\r
+            {"label": "Maximum value", "latex": extreme_latex(solved["maximum"][1], solved["maximum"][0])},\r
+            {"label": "Minimum value", "latex": extreme_latex(solved["minimum"][1], solved["minimum"][0])},\r
+        ]\r
+    report("Checking the answer numerically…")\r
+    checks = []\r
+    if candidates:\r
+        checks.append(\r
+            {\r
+                "label": "Candidates",\r
+                "check": lagrange_points_check(function, constraint, level, variables, candidates),\r
+            }\r
+        )\r
+    if solved["maximum"] is not None:\r
+        checks.append({"label": "Maximum and minimum", "check": extremes_check(function, variables, level, solved)})\r
+    return {\r
+        "ok": True,\r
+        "operation": "optimize",\r
+        "kind": "lagrange",\r
+        "functionLatex": rf"f({names}) = {to_latex(function)}, \\text{{ subject to }} {to_latex(constraint)} = {to_latex(level)}",\r
+        "results": results,\r
+        "checks": checks,\r
+        "steps": solved["steps"],\r
+        "graph": lagrange_graph(function, constraint, level, candidates, values, solved) if len(variables) == 2 else None,\r
+    }\r
+\r
+\r
+def contour_grid(function, center, half_width):\r
+    """f on a square grid, as rows (one per y), for drawing level curves."""\r
+    as_float = float_function(function, (X, Y))\r
+    xs = [round(center[0] - half_width + 2 * half_width * i / (CONTOUR_GRID - 1), 6) for i in range(CONTOUR_GRID)]\r
+    ys = [round(center[1] - half_width + 2 * half_width * j / (CONTOUR_GRID - 1), 6) for j in range(CONTOUR_GRID)]\r
+    rows = []\r
+    for y in ys:\r
+        row = []\r
+        for x in xs:\r
+            try:\r
+                value = as_float(x, y)\r
+                row.append(round(value, 6) if isinstance(value, float) and math.isfinite(value) else None)\r
+            except (ValueError, ZeroDivisionError, OverflowError, TypeError):\r
+                row.append(None)\r
+        rows.append(row)\r
+    return xs, ys, rows\r
+\r
+\r
+def lagrange_graph(function, constraint, level, candidates, values, solved):\r
+    """The Solver's picture for f(x, y) on g = k: f and g on a grid (the page\r
+    draws level curves from them), and the candidates."""\r
+    center, half_width = picture_window(candidates, 2.0)\r
+    xs, ys, f_rows = contour_grid(function, center, half_width)\r
+    _, _, g_rows = contour_grid(constraint, center, half_width)\r
+    maximum = solved["maximum"][1] if solved["maximum"] else []\r
+    minimum = solved["minimum"][1] if solved["minimum"] else []\r
+    return {\r
+        "kind": "lagrange",\r
+        "x": xs,\r
+        "y": ys,\r
+        "f": f_rows,\r
+        "g": g_rows,\r
+        "level": float(sympy.N(level)),\r
+        "candidates": [\r
+            {\r
+                "point": [float(sympy.N(value)) for value in point],\r
+                "value": float(sympy.N(values[point])),\r
+                "kind": "maximum" if point in maximum else "minimum" if point in minimum else "candidate",\r
+            }\r
+            for point in candidates\r
+        ],\r
+    }\r
+\r
+\r
+def optimize(function, kind, constraint=None, level_text=None):\r
+    if kind == "critical":\r
+        return critical_points(function)\r
+    if kind == "lagrange":\r
+        return lagrange(function, constraint, level_text)\r
+    raise InputError("Choose critical points of f(x, y), or extreme values on a constraint g = k.")\r
+\r
+\r
+# The lesson picture\r
+\r
+\r
+def constraint_picture(function, constraint, x_of_t, y_of_t, interval, divisions):\r
+    """The lesson picture: f(x, y) on a fixed square (the page draws level\r
+    curves from it), the constraint curve, and at each slider position the\r
+    point, f, ∇f, and ∇g there."""\r
+    t = T\r
+    lower, upper = interval\r
+    xs, ys, rows = contour_grid(function, (0, 0), 2.5)\r
+    position = sympy.lambdify(t, (x_of_t, y_of_t), modules="math")\r
+    f_float = float_function(function, (X, Y))\r
+    gradients = [\r
+        [float_function(sympy.diff(expression, variable), (X, Y)) for variable in (X, Y)]\r
+        for expression in (function, constraint)\r
+    ]\r
+    low, high = float(sympy.N(lower)), float(sympy.N(upper))\r
+    curve_points = [position(low + (high - low) * index / 240) for index in range(241)]\r
+    positions = []\r
+    for index in range(divisions + 1):\r
+        # Exact parameter values, so 45° lands exactly on (1, 1).\r
+        value = lower + (upper - lower) * sympy.Rational(index, divisions)\r
+        x = float(sympy.N(x_of_t.subs(t, value)))\r
+        y = float(sympy.N(y_of_t.subs(t, value)))\r
+        positions.append(\r
+            {\r
+                "point": [round(x, 6), round(y, 6)],\r
+                "value": round(f_float(x, y), 6),\r
+                "gradF": [round(partial(x, y), 6) for partial in gradients[0]],\r
+                "gradG": [round(partial(x, y), 6) for partial in gradients[1]],\r
+            }\r
+        )\r
+    return {\r
+        "ok": True,\r
+        "operation": "constraintPicture",\r
+        "x": xs,\r
+        "y": ys,\r
+        "f": rows,\r
+        "curve": {"x": [round(p[0], 6) for p in curve_points], "y": [round(p[1], 6) for p in curve_points]},\r
+        "positions": positions,\r
+    }\r
+`,"./python/mathlab/parsing.py":`"""Reading the student's input: translate textbook notation, then parse safely.\r
+\r
+Students write math many ways: x², √x, |x|, π, 2·x, log_2(x), sin⁻¹... All of\r
+it is translated to plain text first. Only then is the text checked against a\r
+short list of safe characters, because SymPy's parse_expr runs its input as\r
+Python. Letters other than the variables are constants, like a, b, c in\r
+a x^2 + b x + c.\r
+"""\r
+\r
+import math\r
+import re\r
+import string\r
+\r
+import sympy\r
+from sympy.parsing.sympy_parser import (\r
+    _token_splittable,\r
+    convert_xor,\r
+    function_exponentiation,\r
+    implicit_application,\r
+    implicit_multiplication,\r
+    parse_expr,\r
+    split_symbols_custom,\r
+    standard_transformations,\r
+)\r
+\r
+from mathlab.expressions import X, InputError\r
+\r
+MAX_INPUT_LENGTH = 200\r
+# Exact numbers with more digits than this are refused; SymPy would take\r
+# minutes or hours to build them.\r
+MAX_EXACT_DIGITS = 100_000\r
+\r
+# After translation, only these characters may remain. Without quotes,\r
+# brackets, underscores, or = signs, input cannot reach anything in Python\r
+# except SymPy's math functions.\r
+ALLOWED_CHARACTERS = re.compile(r"[A-Za-z0-9\\s+\\-*/^().,!]*")\r
+\r
+GREEK_LETTERS = {\r
+    "α": "alpha",\r
+    "θ": "theta",\r
+    "φ": "phi",\r
+    "ϕ": "phi",\r
+    "ω": "omega",\r
+    "λ": "lamda",  # SymPy's spelling, since lambda is a Python keyword.\r
+    "μ": "mu",\r
+    "σ": "sigma",\r
+    "τ": "tau",\r
+    "ρ": "rho",\r
+    "δ": "delta",\r
+    "ε": "epsilon",\r
+    "ψ": "psi",\r
+    "ξ": "xi",\r
+    "η": "eta",\r
+    "κ": "kappa",\r
+    "ν": "nu",\r
+}\r
+\r
+# Symbols to plain text. Spaces keep names apart: 2π becomes 2 pi.\r
+SYMBOL_TRANSLATIONS = {\r
+    "π": " pi ",\r
+    "∞": " oo ",\r
+    "√": " sqrt ",\r
+    "∛": " cbrt ",\r
+    "Γ": " gamma ",\r
+    "·": "*",\r
+    "⋅": "*",\r
+    "×": "*",\r
+    "∗": "*",\r
+    "÷": "/",\r
+    "∕": "/",\r
+    "−": "-",\r
+    "–": "-",\r
+    "—": "-",\r
+    "[": "(",\r
+    "]": ")",\r
+    "{": "(",\r
+    "}": ")",\r
+    **{letter: f" {name} " for letter, name in GREEK_LETTERS.items()},\r
+}\r
+\r
+SUPERSCRIPTS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺", "0123456789-+")\r
+SUPERSCRIPT_RUN = re.compile("[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]+")\r
+\r
+\r
+def log_base(base):\r
+    return lambda argument: sympy.log(argument, base)\r
+\r
+\r
+# Names students use that SymPy spells differently. Everything else, such as\r
+# sec, sinh, sqrt, cbrt, exp, floor, erf, and gamma, comes from SymPy itself.\r
+FUNCTION_ALIASES = {\r
+    "ln": sympy.log,\r
+    "log10": log_base(10),\r
+    "log2": log_base(2),\r
+    "arcsin": sympy.asin,\r
+    "arccos": sympy.acos,\r
+    "arctan": sympy.atan,\r
+    "arcsec": sympy.asec,\r
+    "arccsc": sympy.acsc,\r
+    "arccot": sympy.acot,\r
+    "arcsinh": sympy.asinh,\r
+    "arccosh": sympy.acosh,\r
+    "arctanh": sympy.atanh,\r
+    "abs": sympy.Abs,\r
+    "sgn": sympy.sign,\r
+    "ceil": sympy.ceiling,\r
+}\r
+\r
+# Every function name a student might type, for spotting typos like sinx.\r
+FUNCTION_NAMES = sorted(\r
+    {\r
+        *FUNCTION_ALIASES,\r
+        *"sin cos tan sec csc cot sinh cosh tanh sech csch coth".split(),\r
+        *"asin acos atan asec acsc acot asinh acosh atanh log exp sqrt cbrt".split(),\r
+        *"floor ceiling sign erf gamma factorial".split(),\r
+    },\r
+    key=len,\r
+    reverse=True,\r
+)\r
+\r
+# Letters stand for constants (every letter except e, which is Euler's number).\r
+CONSTANT_NAMES = [letter for letter in string.ascii_letters if letter not in "eE"] + sorted(\r
+    set(GREEK_LETTERS.values())\r
+)\r
+\r
+NAMES = {\r
+    "e": sympy.E,\r
+    "E": sympy.E,\r
+    "pi": sympy.pi,\r
+    **FUNCTION_ALIASES,\r
+    **{name: sympy.Symbol(name, real=True) for name in CONSTANT_NAMES},\r
+}\r
+\r
+\r
+def splittable(name):\r
+    """Whether to split a run of letters like xy into x*y. Runs that start with a\r
+    function name, like sinx, are kept whole so they can be reported as typos."""\r
+    if any(name.startswith(function) for function in FUNCTION_NAMES):\r
+        return False\r
+    return _token_splittable(name)\r
+\r
+\r
+TRANSFORMATIONS = standard_transformations + (\r
+    split_symbols_custom(splittable),\r
+    implicit_multiplication,\r
+    implicit_application,\r
+    function_exponentiation,\r
+    convert_xor,\r
+)\r
+\r
+# Textbook notation like sin^2(x), which means (sin(x))^2.\r
+FUNCTION_POWER = re.compile(r"\\b(sin|cos|tan|sec|csc|cot|sinh|cosh|tanh|ln|log)\\^(\\d+)\\s*\\(")\r
+# log_2(x) or log_b(x): a logarithm with a base.\r
+LOG_WITH_BASE = re.compile(r"\\blog_([0-9]+|[A-Za-z])\\s*\\(")\r
+\r
+\r
+def find_closing_parenthesis(text, open_index):\r
+    depth = 0\r
+    for index in range(open_index, len(text)):\r
+        if text[index] == "(":\r
+            depth += 1\r
+        elif text[index] == ")":\r
+            depth -= 1\r
+            if depth == 0:\r
+                return index\r
+    return None\r
+\r
+\r
+def rewrite_function_powers(text):\r
+    """Rewrite sin^2(x) as (sin(x))^2, which SymPy can parse."""\r
+    while match := FUNCTION_POWER.search(text):\r
+        open_index = match.end() - 1\r
+        close_index = find_closing_parenthesis(text, open_index)\r
+        if close_index is None:\r
+            break  # Unbalanced parentheses; the parser reports the error.\r
+        name, power = match.group(1), match.group(2)\r
+        argument = text[open_index : close_index + 1]\r
+        text = f"{text[: match.start()]}({name}{argument})^{power}{text[close_index + 1 :]}"\r
+    return text\r
+\r
+\r
+def rewrite_log_bases(text):\r
+    """Rewrite log_2(x) as log(x, 2)."""\r
+    while match := LOG_WITH_BASE.search(text):\r
+        open_index = match.end() - 1\r
+        close_index = find_closing_parenthesis(text, open_index)\r
+        if close_index is None:\r
+            break\r
+        argument = text[open_index + 1 : close_index]\r
+        text = f"{text[: match.start()]}log({argument}, {match.group(1)}){text[close_index + 1 :]}"\r
+    return text\r
+\r
+\r
+def rewrite_absolute_bars(text):\r
+    """Rewrite |x| as abs(x). A bar opens a new absolute value at the start, after\r
+    an operator or another bar; otherwise it closes the innermost one."""\r
+    result = []\r
+    depth = 0\r
+    for index, character in enumerate(text):\r
+        if character != "|":\r
+            result.append(character)\r
+            continue\r
+        previous = text[:index].rstrip()[-1:]\r
+        if depth == 0 or previous in ("", "(", "+", "-", "*", "/", "^", ",", "|"):\r
+            result.append("abs(")\r
+            depth += 1\r
+        else:\r
+            result.append(")")\r
+            depth -= 1\r
+    if depth != 0:\r
+        raise InputError("The absolute value bars | | don't pair up.")\r
+    return "".join(result)\r
+\r
+\r
+# √ or ∛ directly before one number or letter applies to just that, as in\r
+# √x · sin(x). Before a parenthesis it applies to the whole parenthesis.\r
+ROOT_OF_ONE_SYMBOL = re.compile(r"([√∛])\\s*(\\d+(?:\\.\\d+)?|[A-Za-zπα-ω])")\r
+\r
+\r
+def translate_notation(text):\r
+    """Turn textbook notation into text the parser reads."""\r
+    text = ROOT_OF_ONE_SYMBOL.sub(lambda match: f"{match.group(1)}({match.group(2)})", text)\r
+    for symbol, replacement in SYMBOL_TRANSLATIONS.items():\r
+        text = text.replace(symbol, replacement)\r
+    text = SUPERSCRIPT_RUN.sub(lambda run: f"^({run.group().translate(SUPERSCRIPTS)})", text)\r
+    text = rewrite_absolute_bars(text)\r
+    text = rewrite_log_bases(text)\r
+    return rewrite_function_powers(text)\r
+\r
+\r
+def has_enormous_number(expression):\r
+    """True if computing expression exactly would build a gigantic number, like\r
+    9^9^9^9, which would freeze SymPy. expression must be unevaluated."""\r
+    if any(has_enormous_number(argument) for argument in expression.args):\r
+        return True\r
+    if not isinstance(expression, sympy.Pow) or expression.free_symbols:\r
+        return False\r
+    base, exponent = expression.args\r
+    try:\r
+        # Inner powers were checked above, so these are safe to approximate.\r
+        base_size = abs(float(base.evalf(15)))\r
+        exponent_size = abs(float(exponent.evalf(15)))\r
+    except (TypeError, ValueError):  # Not a real number, such as a complex power.\r
+        return False\r
+    if base_size in (0.0, 1.0):\r
+        return False\r
+    digits = exponent_size * abs(math.log10(base_size))\r
+    return digits > MAX_EXACT_DIGITS\r
+\r
+\r
+def typo_suggestion(name):\r
+    """For a run of letters like sinx, suggest sin(x)."""\r
+    for function in FUNCTION_NAMES:\r
+        if name.startswith(function) and len(name) > len(function):\r
+            return f" Did you mean {function}({name[len(function):]})?"\r
+    return " Use one letter per constant, or put * between letters."\r
+\r
+\r
+def parse_function(text, variables=(X,)):\r
+    """Parse the student's function. Letters other than the variables are constants."""\r
+    description, example = {\r
+        2: ("x and y", "x^2 y + sin(x y)"),\r
+        3: ("x, y, and z", "x y z^2"),\r
+    }.get(len(variables), ("x", "x^2 sin(x)"))\r
+    text = text.strip()\r
+    if not text:\r
+        raise InputError(f"Type a function of {description}, such as {example}.")\r
+    if len(text) > MAX_INPUT_LENGTH:\r
+        raise InputError(f"That expression is too long (the limit is {MAX_INPUT_LENGTH} characters).")\r
+    text = translate_notation(text)\r
+    unknown_characters = sorted({character for character in text if not ALLOWED_CHARACTERS.fullmatch(character)})\r
+    if unknown_characters:\r
+        raise InputError(f"These characters can't be used here: {' '.join(unknown_characters)}")\r
+    local_names = {**NAMES, **{variable.name: variable for variable in variables}}\r
+    try:\r
+        # Read it first without computing anything, to catch enormous numbers.\r
+        unevaluated = parse_expr(text, local_dict=local_names, transformations=TRANSFORMATIONS, evaluate=False)\r
+        if has_enormous_number(unevaluated):\r
+            raise InputError("That contains a number too large to compute exactly, such as 9^9^9.")\r
+        function = parse_expr(text, local_dict=local_names, transformations=TRANSFORMATIONS)\r
+    except InputError:\r
+        raise\r
+    except Exception as error:  # The parser raises many error types for bad syntax.\r
+        raise InputError("Couldn't read that expression. Check the parentheses and operators.") from error\r
+    if not isinstance(function, sympy.Expr):\r
+        raise InputError(f"That isn't a function. Try something like {example}.")\r
+    for symbol in function.free_symbols:\r
+        if symbol.name not in local_names:\r
+            raise InputError(f"I don't know \\"{symbol.name}\\".{typo_suggestion(symbol.name)}")\r
+    if function.has(sympy.zoo, sympy.nan, sympy.oo, -sympy.oo):\r
+        raise InputError("That expression is undefined, for example because it divides by zero.")\r
+    return function\r
+\r
+\r
+def constants_in(function, variables):\r
+    """The letters in function other than its variables, sorted by name."""\r
+    return sorted(function.free_symbols - set(variables), key=lambda symbol: symbol.name)\r
 `,"./python/mathlab/planes.py":`"""Lines and planes in space: the plane through three points, from a normal\r
 vector made by the cross product, and the line through two of them."""\r
 \r
@@ -7636,7 +7788,8 @@ def tidy(coefficients):\r
     if all(value.is_rational for value in coefficients):\r
         denominators = sympy.ilcm(*[sympy.fraction(value)[1] for value in coefficients])\r
         whole = [value * denominators for value in coefficients]\r
-        common = sympy.igcd(*[int(value) for value in whole if value != 0])\r
+        # The 0 lets a plane with one nonzero number, like 4z = 0, have a gcd too.\r
+        common = sympy.igcd(0, *[int(value) for value in whole if value != 0])\r
         divisor = sympy.Rational(common, denominators)\r
     leading = next(value for value in coefficients[:3] if value != 0)\r
     if leading.could_extract_minus_sign():\r
@@ -7958,13 +8111,21 @@ from mathlab.divergence_theorem import triple_side\r
 from mathlab.derivative_steps import Differentiation, derivative_with_steps\r
 from mathlab.directional import solve_directional\r
 from mathlab.double import iterated_integral\r
-from mathlab.expressions import PHI, THETA, R, T, U, V, X, Y, Z, InputError, to_latex\r
+from mathlab.equation_answers import (\r
+    parse_line_answer,\r
+    parse_plane_answer,\r
+    plane_latex,\r
+    same_line,\r
+    same_plane,\r
+)\r
+from mathlab.expressions import PHI, THETA, R, T, U, V, X, Y, Z, InputError, factor_latex, to_latex\r
 from mathlab.green import make_region, solve_green\r
 from mathlab.latex_input import latex_to_text\r
 from mathlab.line_integrals import solve_line_integral\r
 from mathlab.optimize import solve_critical, solve_lagrange\r
 from mathlab.parsing import parse_function\r
 from mathlab.planes import (\r
+    line_coordinates,\r
     line_step,\r
     normal_step,\r
     plane_equation_latex,\r
@@ -7996,11 +8157,21 @@ DECIMAL_TOLERANCE = 5e-4\r
 \r
 \r
 class Problem:\r
-    def __init__(self, prompt, expected, variables, steps):\r
+    def __init__(self, prompt, expected, variables, steps, kind="value"):\r
         self.prompt = prompt  # Text with inline LaTeX between $ signs.\r
-        self.expected = expected  # The exact answer, as a SymPy expression.\r
+        # The exact answer: a SymPy expression, or for a "line" its (point,\r
+        # direction), or for a "plane" its (normal, d).\r
+        self.expected = expected\r
         self.variables = variables  # Variables the answer may contain.\r
         self.steps = steps  # How to get the answer.\r
+        self.kind = kind\r
+        # For multiple choice: each choice as LaTeX, and which one is right.\r
+        self.choices = None\r
+        self.correct_choice = None\r
+\r
+\r
+# What the answer box says before it, for answers that aren't one number.\r
+ANSWER_LABELS = {"line": "The line is:", "plane": "The plane is:"}\r
 \r
 \r
 def nonzero_vector(rng):\r
@@ -8688,13 +8859,12 @@ def small_point(rng):\r
     return sympy.Matrix([rng.randint(-4, 4) for _ in range(3)])\r
 \r
 \r
-def lines_and_planes_problem(rng):\r
+def lines_and_planes_basics(rng):\r
     """The constant d of the plane through three points, or where the line\r
     through two points crosses the xy-plane."""\r
     p, q = small_point(rng), small_point(rng)\r
     while q == p:\r
         q = small_point(rng)\r
-    named = lambda name, point: rf"{name}{point_latex(point)}"  # noqa: E731\r
     if rng.choice(["plane", "line"]) == "plane":\r
         pq = q - p\r
         r = small_point(rng)\r
@@ -8704,7 +8874,7 @@ def lines_and_planes_problem(rng):\r
         (a, b, c, d), equation_steps = point_normal_steps(normal, p)\r
         left = plane_equation_latex(a, b, c, 0).removesuffix(" = 0")\r
         return Problem(\r
-            rf"The plane through \${named('P', p)}$, \${named('Q', q)}$, and \${named('R', r)}$ has an "\r
+            rf"The plane through \${named_point('P', p)}$, \${named_point('Q', q)}$, and \${named_point('R', r)}$ has an "\r
             rf"equation of the form \${left} = d$. Find $d$.",\r
             d,\r
             (),\r
@@ -8718,7 +8888,7 @@ def lines_and_planes_problem(rng):\r
     t_value = -p[2] / pq[2]\r
     crossing = p + t_value * pq\r
     return Problem(\r
-        rf"Where does the line through \${named('P', p)}$ and \${named('Q', q)}$ cross the $xy$-plane "\r
+        rf"Where does the line through \${named_point('P', p)}$ and \${named_point('Q', q)}$ cross the $xy$-plane "\r
         r"($z = 0$)? Find the $x$-coordinate of that point.",\r
         crossing[0],\r
         (),\r
@@ -8737,6 +8907,565 @@ def lines_and_planes_problem(rng):\r
             ),\r
         ],\r
     )\r
+\r
+\r
+def small_normal(rng):\r
+    while True:\r
+        normal = sympy.Matrix([rng.randint(-3, 3) for _ in range(3)])\r
+        if normal != sympy.zeros(3, 1):\r
+            return normal\r
+\r
+\r
+def named_point(name, point):\r
+    return rf"{name}{point_latex(point)}"\r
+\r
+\r
+def normal_from_equation_step(normal):\r
+    return make_step(\r
+        "Normal vector from the equation",\r
+        r"The coefficients of $x$, $y$, and $z$ in $ax + by + cz = d$ form a normal vector.",\r
+        [rf"\\mathbf{{n}} = {vector_latex(normal)}"],\r
+    )\r
+\r
+\r
+def distance_to_plane_step(point, normal, d):\r
+    """The lesson's formula, |a x0 + b y0 + c z0 - d| / |n|, with the numbers in."""\r
+    top = sympy.Abs(normal.dot(point) - d)\r
+    distance = sympy.radsimp(top / length(normal))\r
+    products = " + ".join(rf"{factor_latex(k)} \\cdot {factor_latex(v)}" for k, v in zip(normal, point))\r
+    squares = " + ".join(f"{factor_latex(k)}^{{2}}" for k in normal)\r
+    step = make_step(\r
+        "Distance from a point to a plane",\r
+        r"Put the point $(x_0, y_0, z_0)$ into $ax + by + cz - d$, take the absolute value, and divide "\r
+        r"by the normal's length: $D = \\frac{|a x_0 + b y_0 + c z_0 - d|}{\\sqrt{a^2 + b^2 + c^2}}$.",\r
+        [\r
+            "D",\r
+            rf"\\frac{{\\left|{products} - {factor_latex(d)}\\right|}}{{\\sqrt{{{squares}}}}}",\r
+            rf"\\frac{{{to_latex(top)}}}{{{to_latex(length(normal))}}}",\r
+            to_latex(distance),\r
+        ],\r
+    )\r
+    return distance, step\r
+\r
+\r
+def point_plane_distance_problem(rng):\r
+    normal, d = small_normal(rng), rng.randint(-6, 6)\r
+    point = small_point(rng)\r
+    while normal.dot(point) == d:\r
+        point = small_point(rng)  # A point on the plane is at distance 0.\r
+    distance, step = distance_to_plane_step(point, normal, d)\r
+    return Problem(\r
+        rf"Find the distance from the point \${named_point('S', point)}$ to the plane "\r
+        rf"\${plane_equation_latex(*normal, d)}$.",\r
+        distance,\r
+        (),\r
+        [normal_from_equation_step(normal), step],\r
+    )\r
+\r
+\r
+def line_meets_plane_problem(rng):\r
+    normal, d = small_normal(rng), rng.randint(-6, 6)\r
+    start, direction = small_point(rng), small_normal(rng)\r
+    # The line must cross the plane once, and not where it starts.\r
+    while normal.dot(direction) == 0 or normal.dot(start) == d:\r
+        start, direction = small_point(rng), small_normal(rng)\r
+    t_value = sympy.Rational(d - normal.dot(start), normal.dot(direction))\r
+    meeting = start + t_value * direction\r
+    x, y, z = line_coordinates(start, direction)\r
+    substituted = signed_sum(\r
+        [(k, rf"\\left({coordinate}\\right)") for k, coordinate in zip(normal, (x, y, z))]\r
+    )\r
+    return Problem(\r
+        rf"Where does the line $\\mathbf{{r}}(t) = {vector_latex(start)} + t\\,{vector_latex(direction)}$ "\r
+        rf"meet the plane \${plane_equation_latex(*normal, d)}$? Find the $x$-coordinate of that point.",\r
+        meeting[0],\r
+        (),\r
+        [\r
+            make_step(\r
+                "Parametric equations of the line",\r
+                r"Write each coordinate of $\\mathbf{r}(t) = \\mathbf{r}_0 + t\\mathbf{v}$ on its own.",\r
+                [rf"x = {x}, \\quad y = {y}, \\quad z = {z}"],\r
+            ),\r
+            make_step(\r
+                "Where the line meets the plane",\r
+                r"Put the line's $x$, $y$, and $z$ into the plane's equation, solve for $t$, and put that "\r
+                r"$t$ into $x$.",\r
+                [\r
+                    separate(\r
+                        rf"{substituted} = {to_latex(d)} \\implies t = {to_latex(t_value)}",\r
+                        rf"x = {to_latex(meeting[0])}",\r
+                    )\r
+                ],\r
+            ),\r
+        ],\r
+    )\r
+\r
+\r
+def distance_to_plane_through_points_problem(rng):\r
+    p, q = small_point(rng), small_point(rng)\r
+    while q == p:\r
+        q = small_point(rng)\r
+    r = small_point(rng)\r
+    while (q - p).cross(r - p) == sympy.zeros(3, 1):\r
+        r = small_point(rng)  # Three points on one line give no single plane.\r
+    normal, normal_part = normal_step(q - p, r - p)\r
+    s = small_point(rng)\r
+    while normal.dot(s - p) == 0:\r
+        s = small_point(rng)  # A point on the plane is at distance 0.\r
+    (a, b, c, d), equation_steps = point_normal_steps(normal, p)\r
+    distance, step = distance_to_plane_step(s, sympy.Matrix([a, b, c]), d)\r
+    return Problem(\r
+        rf"Find the distance from \${named_point('S', s)}$ to the plane through \${named_point('P', p)}$, "\r
+        rf"\${named_point('Q', q)}$, and \${named_point('R', r)}$.",\r
+        distance,\r
+        (),\r
+        [vectors_step(p, q, r), normal_part, *equation_steps, step],\r
+    )\r
+\r
+\r
+def parallel_planes_problem(rng):\r
+    normal, multiple = small_normal(rng), rng.choice([2, 3, -2])\r
+    first_d, second_d = rng.randint(-6, 6), rng.randint(-12, 12)\r
+    while second_d == multiple * first_d:\r
+        second_d = rng.randint(-12, 12)  # The same plane twice.\r
+    second_normal = multiple * normal\r
+    # A point on the first plane: the other two coordinates set to 0.\r
+    index = next(i for i, k in enumerate(normal) if k != 0)\r
+    point = sympy.zeros(3, 1)\r
+    point[index] = sympy.Rational(first_d, normal[index])\r
+    distance, step = distance_to_plane_step(point, second_normal, second_d)\r
+    return Problem(\r
+        rf"Find the distance between the parallel planes \${plane_equation_latex(*normal, first_d)}$ and "\r
+        rf"\${plane_equation_latex(*second_normal, second_d)}$.",\r
+        distance,\r
+        (),\r
+        [\r
+            make_step(\r
+                "Check that the planes are parallel",\r
+                r"Their normal vectors are multiples of each other, so the planes are parallel and stay "\r
+                r"the same distance apart everywhere.",\r
+                [rf"{vector_latex(second_normal)} = {multiple}\\,{vector_latex(normal)}"],\r
+            ),\r
+            make_step(\r
+                "A point on the first plane",\r
+                r"Any point on the first plane will do. Set two coordinates to $0$ and solve for the third.",\r
+                [point_latex(point)],\r
+            ),\r
+            step,\r
+        ],\r
+    )\r
+\r
+\r
+# About one problem in this many is a special case: lines that meet or run\r
+# parallel, a point on the line, or a line parallel to the xy-plane. Exams ask\r
+# about them too, just less often.\r
+SPECIAL_CASE_CHANCE = 0.1\r
+ZERO = sympy.zeros(3, 1)\r
+\r
+\r
+def line_latex(point, direction, name="", parameter="t"):\r
+    return rf"\\mathbf{{r}}{name}({parameter}) = {vector_latex(point)} + {parameter}\\,{vector_latex(direction)}"\r
+\r
+\r
+def nonzero_multiplier(rng):\r
+    return rng.choice([-2, -1, 1, 2])\r
+\r
+\r
+# Half of the line and plane problems are multiple choice, with this many choices.\r
+MULTIPLE_CHOICE_CHANCE = 0.5\r
+CHOICE_COUNT = 4\r
+\r
+\r
+def middle_sign_slip(vector):\r
+    """The vector with its middle component's sign flipped: the usual slip in a\r
+    cross product, whose middle term has the opposite sign."""\r
+    return sympy.Matrix([vector[0], -vector[1], vector[2]])\r
+\r
+\r
+def nudges(kind, expected):\r
+    """Small changes to the right answer, for when the mistakes repeat each\r
+    other or land on the right answer."""\r
+    first, second = expected\r
+    units = [sympy.Matrix([1 if k == i else 0 for k in range(3)]) for i in range(3)]\r
+    if kind == "line":\r
+        return [(first + unit, second) for unit in units] + [(first, second + unit) for unit in units]\r
+    return [(first, second + shift) for shift in (1, -1, 2)] + [(first + unit, second) for unit in units]\r
+\r
+\r
+def offer_choices(rng, problem, mistakes):\r
+    """Half the time, a line or plane problem becomes multiple choice: the\r
+    right answer and wrong ones from common mistakes, in random order."""\r
+    if rng.random() >= MULTIPLE_CHOICE_CHANCE:\r
+        return problem\r
+    is_line = problem.kind == "line"\r
+    same = same_line if is_line else same_plane\r
+    options = [problem.expected]\r
+    for candidate in [*mistakes, *nudges(problem.kind, problem.expected)]:\r
+        # A line needs a direction, and a plane a normal.\r
+        if candidate[1 if is_line else 0] == ZERO:\r
+            continue\r
+        if not any(same(candidate, option) for option in options):\r
+            options.append(candidate)\r
+        if len(options) == CHOICE_COUNT:\r
+            break\r
+    order = list(range(CHOICE_COUNT))\r
+    rng.shuffle(order)\r
+    show = line_latex if is_line else plane_latex\r
+    problem.choices = [show(*options[index]) for index in order]\r
+    problem.correct_choice = order.index(0)\r
+    return problem\r
+\r
+\r
+def point_line_distance_steps(point, start, direction, name="S"):\r
+    """The distance from a point to the line start + t direction, and its steps."""\r
+    gap = point - start\r
+    cross, cross_step = cross_product_step(gap, direction)\r
+    squares_top = " + ".join(f"{factor_latex(k)}^{{2}}" for k in cross)\r
+    squares_bottom = " + ".join(f"{factor_latex(k)}^{{2}}" for k in direction)\r
+    distance = sympy.radsimp(length(cross) / length(direction))\r
+    arrow = rf"\\overrightarrow{{P{name}}}"\r
+    steps = [\r
+        make_step(\r
+            "An arrow from the line to the point",\r
+            rf"Let $P$ be the line's point at $t = 0$. The arrow from $P$ to \${name}$ is \${arrow} = {name} - P$.",\r
+            [rf"{arrow} = {vector_latex(gap)}"],\r
+        ),\r
+        cross_step,\r
+        make_step(\r
+            "Distance from a point to a line",\r
+            rf"$|{arrow} \\times \\mathbf{{v}}|$ is the area of the parallelogram on \${arrow}$ and the line's "\r
+            r"direction $\\mathbf{v}$. Dividing by its base $|\\mathbf{v}|$ gives its height, which is the "\r
+            rf"distance: $D = \\frac{{|{arrow} \\times \\mathbf{{v}}|}}{{|\\mathbf{{v}}|}}$.",\r
+            ["D", rf"\\frac{{\\sqrt{{{squares_top}}}}}{{\\sqrt{{{squares_bottom}}}}}", to_latex(distance)],\r
+        ),\r
+    ]\r
+    if distance == 0:\r
+        steps.append(\r
+            make_step(\r
+                "The point is on the line",\r
+                rf"The cross product is $\\mathbf{{0}}$, so \${arrow}$ runs along the line: \${name}$ is on the "\r
+                "line itself, and its distance from the line is $0$.",\r
+                ["D = 0"],\r
+            )\r
+        )\r
+    return distance, steps\r
+\r
+\r
+def lines_distance_problem(rng):\r
+    """The distance between two lines: usually skew, rarely meeting or parallel.\r
+    The prompt doesn't say which, so telling them apart is part of the problem."""\r
+    case = rng.choice(["meet", "parallel"]) if rng.random() < SPECIAL_CASE_CHANCE else "skew"\r
+    while True:\r
+        p, v = small_point(rng), small_normal(rng)\r
+        if case == "parallel":\r
+            multiplier = nonzero_multiplier(rng)\r
+            w, q = multiplier * v, small_point(rng)\r
+            if v.cross(q - p) != ZERO:  # Q on the first line would make them one line.\r
+                break\r
+        elif case == "meet":\r
+            w = small_normal(rng)\r
+            if v.cross(w) != ZERO:\r
+                meeting = p + nonzero_multiplier(rng) * v\r
+                q = meeting - nonzero_multiplier(rng) * w\r
+                break\r
+        else:\r
+            q, w = small_point(rng), small_normal(rng)\r
+            if v.cross(w) != ZERO and v.cross(w).dot(q - p) != 0:\r
+                break\r
+    prompt = (\r
+        rf"Find the distance between the lines \${line_latex(p, v, '_1')}$ and \${line_latex(q, w, '_2', 's')}$."\r
+    )\r
+    if case == "parallel":\r
+        distance, steps = point_line_distance_steps(q, p, v, "Q")\r
+        parallel_step = make_step(\r
+            "The lines are parallel",\r
+            r"$\\mathbf{v}_2$ is a multiple of $\\mathbf{v}_1$, so the lines run parallel and stay the same distance "\r
+            r"apart everywhere. That distance is the distance from $Q$, the second line's point at $s = 0$, to "\r
+            "the first line.",\r
+            [rf"{vector_latex(w)} = {factor_latex(multiplier)}\\,{vector_latex(v)}"],\r
+        )\r
+        return Problem(prompt, distance, (), [parallel_step, *steps])\r
+    gap = q - p\r
+    common, common_step = cross_product_step(v, w)\r
+    top = sympy.Abs(common.dot(gap))\r
+    distance = sympy.radsimp(top / length(common))\r
+    products = " + ".join(rf"{factor_latex(a)} \\cdot {factor_latex(b)}" for a, b in zip(gap, common))\r
+    squares = " + ".join(f"{factor_latex(k)}^{{2}}" for k in common)\r
+    steps = [\r
+        make_step(\r
+            "A direction perpendicular to both lines",\r
+            r"The directions aren't multiples of each other, so the lines aren't parallel. The shortest "\r
+            r"segment between them is perpendicular to both, so it runs along "\r
+            r"$\\mathbf{n} = \\mathbf{v}_1 \\times \\mathbf{v}_2$.",\r
+            [rf"\\mathbf{{v}}_1 = {vector_latex(v)}, \\quad \\mathbf{{v}}_2 = {vector_latex(w)}"],\r
+        ),\r
+        common_step,\r
+        make_step(\r
+            "An arrow from one line to the other",\r
+            r"Take any point on each line, $P$ on the first and $Q$ on the second ($t = 0$ and $s = 0$), "\r
+            r"and subtract: $\\overrightarrow{PQ} = Q - P$.",\r
+            [rf"\\overrightarrow{{PQ}} = {vector_latex(gap)}"],\r
+        ),\r
+        make_step(\r
+            "Distance between the lines",\r
+            r"The distance is how much of $\\overrightarrow{PQ}$ points along $\\mathbf{n}$: "\r
+            r"$D = \\frac{|\\overrightarrow{PQ} \\cdot \\mathbf{n}|}{|\\mathbf{n}|}$.",\r
+            [\r
+                "D",\r
+                rf"\\frac{{\\left|{products}\\right|}}{{\\sqrt{{{squares}}}}}",\r
+                rf"\\frac{{{to_latex(top)}}}{{{to_latex(length(common))}}}",\r
+                to_latex(distance),\r
+            ],\r
+        ),\r
+    ]\r
+    if distance == 0:\r
+        steps.append(\r
+            make_step(\r
+                "The lines meet",\r
+                r"A distance of $0$ means the lines cross each other, so they aren't skew.",\r
+                ["D = 0"],\r
+            )\r
+        )\r
+    return Problem(prompt, distance, (), steps)\r
+\r
+\r
+def point_to_line_problem(rng):\r
+    """The distance from a point to a line; rarely, the point is on the line."""\r
+    on_line = rng.random() < SPECIAL_CASE_CHANCE\r
+    while True:\r
+        p, v = small_point(rng), small_normal(rng)\r
+        s = p + nonzero_multiplier(rng) * v if on_line else small_point(rng)\r
+        if on_line or (s - p).cross(v) != ZERO:\r
+            break\r
+    distance, steps = point_line_distance_steps(s, p, v)\r
+    return Problem(\r
+        rf"Find the distance from \${named_point('S', s)}$ to the line \${line_latex(p, v)}$.",\r
+        distance,\r
+        (),\r
+        steps,\r
+    )\r
+\r
+\r
+def plane_containing_line_problem(rng):\r
+    """The plane through a line and a point off it, as a whole equation."""\r
+    while True:\r
+        p, q = small_point(rng), small_point(rng)\r
+        v = small_normal(rng)\r
+        # A point on the line lies on many planes through it, not one.\r
+        if v.cross(q - p) != ZERO:\r
+            break\r
+    gap = q - p\r
+    normal, cross_step = cross_product_step(v, gap)\r
+    (a, b, c, d), equation_steps = point_normal_steps(normal, p)\r
+    slipped = middle_sign_slip(sympy.Matrix([a, b, c]))\r
+    mistakes = [\r
+        (slipped, slipped.dot(p)),  # The cross product's middle component with the wrong sign.\r
+        (v, v.dot(p)),  # The line's direction used as the normal.\r
+        (sympy.Matrix([a, b, c]), -d),  # The constant moved across without changing its sign.\r
+    ]\r
+    problem = Problem(\r
+        rf"Find the plane that contains the line \${line_latex(p, v)}$ and the point \${named_point('Q', q)}$.",\r
+        (sympy.Matrix([a, b, c]), d),\r
+        (X, Y, Z),\r
+        [\r
+            make_step(\r
+                "Two vectors in the plane",\r
+                r"The line's direction $\\mathbf{v}$ lies in the plane. So does the arrow from $P$ (the line's "\r
+                r"point at $t = 0$) to $Q$: $\\overrightarrow{PQ} = Q - P$.",\r
+                [rf"\\mathbf{{v}} = {vector_latex(v)}, \\quad \\overrightarrow{{PQ}} = {vector_latex(gap)}"],\r
+            ),\r
+            make_step(\r
+                "Normal vector from the line and the point",\r
+                r"The cross product of those two vectors is perpendicular to both, so it is a normal vector "\r
+                r"$\\mathbf{n} = \\mathbf{v} \\times \\overrightarrow{PQ}$ of the plane.",\r
+                [vector_latex(normal)],\r
+                [cross_step],\r
+            ),\r
+            *equation_steps,\r
+        ],\r
+        kind="plane",\r
+    )\r
+    return offer_choices(rng, problem, mistakes)\r
+\r
+\r
+def line_of_intersection(first, d1, second, d2):\r
+    """Where the planes first · r = d1 and second · r = d2 meet: a point on the\r
+    line, its direction, and which coordinate was set to 0 to find the point."""\r
+    direction = first.cross(second)\r
+    # z = 0 when the line crosses the xy-plane, as textbooks usually do.\r
+    index = next(i for i in (2, 0, 1) if direction[i] != 0)\r
+    i, j = (k for k in range(3) if k != index)\r
+    # Solving the two equations for the other coordinates: the determinant is\r
+    # ± direction[index], which isn't 0.\r
+    determinant = first[i] * second[j] - second[i] * first[j]\r
+    point = sympy.zeros(3, 1)\r
+    point[i] = sympy.Rational(d1 * second[j] - d2 * first[j], determinant)\r
+    point[j] = sympy.Rational(first[i] * d2 - second[i] * d1, determinant)\r
+    return point, direction, index\r
+\r
+\r
+def planes_line_problem(rng):\r
+    """The whole line where two planes meet; rarely, it runs parallel to the\r
+    xy-plane, so the usual z = 0 doesn't give a point."""\r
+    flat = rng.random() < SPECIAL_CASE_CHANCE\r
+    while True:\r
+        first, second = small_normal(rng), small_normal(rng)\r
+        direction = first.cross(second)\r
+        if direction != ZERO and (direction[2] == 0) == flat:\r
+            break\r
+    d1, d2 = rng.randint(-6, 6), rng.randint(-6, 6)\r
+    point, direction, index = line_of_intersection(first, d1, second, d2)\r
+    _, cross_step = cross_product_step(first, second)\r
+    name = "xyz"[index]\r
+    i, j = (k for k in range(3) if k != index)\r
+\r
+    def with_zero(normal, d):\r
+        return rf"{signed_sum([(normal[i], 'xyz'[i]), (normal[j], 'xyz'[j])])} = {to_latex(d)}"\r
+\r
+    mistakes = [\r
+        (point, first),  # The first plane's normal used as the direction.\r
+        (point, middle_sign_slip(direction)),  # The cross product's middle component with the wrong sign.\r
+        (point + first, direction),  # A point on the second plane but not the first.\r
+    ]\r
+    problem = Problem(\r
+        rf"The planes \${plane_equation_latex(*first, d1)}$ and \${plane_equation_latex(*second, d2)}$ meet in a "\r
+        "line. Find that line.",\r
+        (point, direction),\r
+        (T,),\r
+        [\r
+            make_step(\r
+                "Direction of the line",\r
+                r"The line lies in both planes, so it is perpendicular to both normal vectors, and their cross "\r
+                r"product $\\mathbf{n}_1 \\times \\mathbf{n}_2$ points along it.",\r
+                [rf"\\mathbf{{n}}_1 = {vector_latex(first)}, \\quad \\mathbf{{n}}_2 = {vector_latex(second)}"],\r
+            ),\r
+            cross_step,\r
+            make_step(\r
+                "A point on the line",\r
+                rf"Any point on both planes will do. The direction's \${name}$-component isn't $0$, so the line "\r
+                rf"crosses \${name} = 0$: set \${name} = 0$ in both equations and solve for the other two.",\r
+                [separate(with_zero(first, d1), with_zero(second, d2), rf"(x, y, z) = {point_latex(point)}")],\r
+            ),\r
+            make_step(\r
+                "The line",\r
+                r"A line is a point plus multiples of its direction: $\\mathbf{r}(t) = \\mathbf{r}_0 + t\\mathbf{v}$.",\r
+                [line_latex(point, direction)],\r
+            ),\r
+        ],\r
+        kind="line",\r
+    )\r
+    return offer_choices(rng, problem, mistakes)\r
+\r
+\r
+def perpendicular_line_problem(rng):\r
+    """The line through a point, perpendicular to the plane through three others."""\r
+    p, q = small_point(rng), small_point(rng)\r
+    while q == p:\r
+        q = small_point(rng)\r
+    r = small_point(rng)\r
+    while (q - p).cross(r - p) == ZERO:\r
+        r = small_point(rng)  # Three points on one line give no single plane.\r
+    s = small_point(rng)\r
+    normal, normal_part = normal_step(q - p, r - p)\r
+    mistakes = [\r
+        (s, q - p),  # An arrow in the plane used as the direction.\r
+        (p, normal),  # The line started at P instead of S.\r
+        (s, middle_sign_slip(normal)),  # The cross product's middle component with the wrong sign.\r
+    ]\r
+    problem = Problem(\r
+        rf"Find the line through \${named_point('S', s)}$ that is perpendicular to the plane through "\r
+        rf"\${named_point('P', p)}$, \${named_point('Q', q)}$, and \${named_point('R', r)}$.",\r
+        (s, normal),\r
+        (T,),\r
+        [\r
+            vectors_step(p, q, r),\r
+            normal_part,\r
+            make_step(\r
+                "The perpendicular line",\r
+                r"A line perpendicular to the plane runs along its normal vector. Start it at $S$: "\r
+                r"$\\mathbf{r}(t) = S + t\\mathbf{n}$.",\r
+                [line_latex(s, normal)],\r
+            ),\r
+        ],\r
+        kind="line",\r
+    )\r
+    return offer_choices(rng, problem, mistakes)\r
+\r
+\r
+def planes_intersection_problem(rng):\r
+    """Where the line in which two planes meet crosses the xy-plane."""\r
+    while True:\r
+        first, second = small_normal(rng), small_normal(rng)\r
+        # A zero here makes the planes parallel, or the line parallel to the xy-plane.\r
+        if first[0] * second[1] - first[1] * second[0] != 0:\r
+            break\r
+    d1, d2 = rng.randint(-6, 6), rng.randint(-6, 6)\r
+    determinant = first[0] * second[1] - second[0] * first[1]\r
+    x_value = sympy.Rational(d1 * second[1] - d2 * first[1], determinant)\r
+    y_value = sympy.Rational(first[0] * d2 - second[0] * d1, determinant)\r
+    return Problem(\r
+        rf"The planes \${plane_equation_latex(*first, d1)}$ and \${plane_equation_latex(*second, d2)}$ meet in a "\r
+        r"line. Where does that line cross the $xy$-plane? Find the $x$-coordinate of that point.",\r
+        x_value,\r
+        (),\r
+        [\r
+            make_step(\r
+                "Both equations hold on the line",\r
+                r"Every point of the line is on both planes. The line crosses the $xy$-plane where $z = 0$, so "\r
+                r"set $z = 0$ in both equations.",\r
+                [\r
+                    separate(\r
+                        rf"{signed_sum([(first[0], 'x'), (first[1], 'y')])} = {to_latex(d1)}",\r
+                        rf"{signed_sum([(second[0], 'x'), (second[1], 'y')])} = {to_latex(d2)}",\r
+                    )\r
+                ],\r
+            ),\r
+            make_step(\r
+                "Solve for x and y",\r
+                r"Eliminate $y$: multiply the first equation by the second's $y$-coefficient and the second by "\r
+                r"the first's, then subtract. For $a_1 x + b_1 y = d_1$ and $a_2 x + b_2 y = d_2$ this gives "\r
+                r"$x = \\frac{d_1 b_2 - d_2 b_1}{a_1 b_2 - a_2 b_1}$, and then $y$ follows.",\r
+                [\r
+                    "x",\r
+                    rf"\\frac{{{factor_latex(d1)} \\cdot {factor_latex(second[1])} - {factor_latex(d2)} \\cdot "\r
+                    rf"{factor_latex(first[1])}}}{{{factor_latex(first[0])} \\cdot {factor_latex(second[1])} - "\r
+                    rf"{factor_latex(second[0])} \\cdot {factor_latex(first[1])}}}",\r
+                    to_latex(x_value),\r
+                ],\r
+            ),\r
+            make_step(\r
+                "The point where the line crosses",\r
+                r"Putting $x$ back into either equation gives $y$, and $z$ is $0$ there.",\r
+                [rf"(x, y, z) = {point_latex(sympy.Matrix([x_value, y_value, 0]))}"],\r
+            ),\r
+        ],\r
+    )\r
+\r
+\r
+# Level 1 is the basics, level 2 is a formula or two at a time like Stewart's\r
+# exercises, and level 3 combines ideas the way exam problems do, with some\r
+# answers that are a whole line or plane.\r
+LINES_AND_PLANES_LEVELS = {\r
+    1: [lines_and_planes_basics],\r
+    2: [\r
+        point_plane_distance_problem,\r
+        line_meets_plane_problem,\r
+        distance_to_plane_through_points_problem,\r
+        parallel_planes_problem,\r
+        planes_intersection_problem,\r
+    ],\r
+    3: [\r
+        lines_distance_problem,\r
+        point_to_line_problem,\r
+        plane_containing_line_problem,\r
+        planes_line_problem,\r
+        perpendicular_line_problem,\r
+    ],\r
+}\r
+\r
+\r
+def lines_and_planes_problem(rng, level):\r
+    return rng.choice(LINES_AND_PLANES_LEVELS[level])(rng)\r
 \r
 \r
 GENERATORS = {\r
@@ -8759,16 +9488,35 @@ GENERATORS = {\r
     "divergence-theorem": divergence_problem,\r
     "stokes-theorem": stokes_problem,\r
     "cross-product": cross_product_problem,\r
+}\r
+\r
+# Lessons whose practice gets harder as the student keeps going, up to the top\r
+# level and never past it. These generators also take the level.\r
+LEVELED_GENERATORS = {\r
     "lines-and-planes": lines_and_planes_problem,\r
 }\r
+TOP_LEVEL = 3\r
+\r
+\r
+def levels_of(lesson):\r
+    return TOP_LEVEL if lesson in LEVELED_GENERATORS else 1\r
+\r
+\r
+def practice_level(request):\r
+    level = request.get("practiceLevel", 1)\r
+    if not isinstance(level, int) or level < 1:\r
+        raise InputError("That practice level doesn't exist.")\r
+    return min(level, levels_of(request.get("lesson")))\r
 \r
 \r
 def build_problem(request):\r
-    generator = GENERATORS.get(request.get("lesson"))\r
-    seed = request.get("seed")\r
-    if generator is None or not isinstance(seed, int):\r
+    lesson, seed = request.get("lesson"), request.get("seed")\r
+    if not isinstance(seed, int) or (lesson not in GENERATORS and lesson not in LEVELED_GENERATORS):\r
         raise InputError("That practice problem doesn't exist.")\r
-    return generator(random.Random(seed))\r
+    rng = random.Random(seed)\r
+    if lesson in LEVELED_GENERATORS:\r
+        return LEVELED_GENERATORS[lesson](rng, practice_level(request))\r
+    return GENERATORS[lesson](rng)\r
 \r
 \r
 def practice(request):\r
@@ -8778,7 +9526,31 @@ def practice(request):\r
         "operation": "practice",\r
         "prompt": problem.prompt,\r
         "variables": [variable.name for variable in problem.variables],\r
+        "level": practice_level(request),\r
+        "levels": levels_of(request.get("lesson")),\r
+        "answerLabel": ANSWER_LABELS.get(problem.kind),\r
+        "choices": problem.choices,\r
     }\r
+\r
+\r
+def expected_latex(problem):\r
+    if problem.kind == "line":\r
+        return line_latex(*problem.expected)\r
+    if problem.kind == "plane":\r
+        return plane_latex(*problem.expected)\r
+    return to_latex(problem.expected)\r
+\r
+\r
+def read_answer(problem, latex):\r
+    """The student's answer, whether it is right, and how to show it."""\r
+    if problem.kind == "line":\r
+        line = parse_line_answer(latex)\r
+        return same_line(line, problem.expected), line_latex(*line)\r
+    if problem.kind == "plane":\r
+        plane = parse_plane_answer(latex)\r
+        return same_plane(plane, problem.expected), plane_latex(*plane)\r
+    answer = parse_function(latex_to_text(latex), problem.variables)\r
+    return is_correct(answer, problem.expected, problem.variables), to_latex(answer)\r
 \r
 \r
 def is_correct(answer, expected, variables):\r
@@ -8795,14 +9567,19 @@ def is_correct(answer, expected, variables):\r
 \r
 def check(request):\r
     problem = build_problem(request)\r
-    answer = parse_function(latex_to_text(request.get("answer", "")), problem.variables)\r
-    correct = is_correct(answer, problem.expected, problem.variables)\r
+    choice = request.get("choice")\r
+    if choice is not None:\r
+        if problem.choices is None or not isinstance(choice, int) or not 0 <= choice < len(problem.choices):\r
+            raise InputError("That choice doesn't exist.")\r
+        correct, your_answer = choice == problem.correct_choice, problem.choices[choice]\r
+    else:\r
+        correct, your_answer = read_answer(problem, request.get("answer", ""))\r
     return {\r
         "ok": True,\r
         "operation": "check",\r
         "correct": correct,\r
-        "answerLatex": to_latex(problem.expected),\r
-        "yourAnswerLatex": to_latex(answer),\r
+        "answerLatex": expected_latex(problem),\r
+        "yourAnswerLatex": your_answer,\r
         "steps": problem.steps,\r
     }\r
 \r
@@ -8814,155 +9591,155 @@ def solution(request):\r
     return {\r
         "ok": True,\r
         "operation": "solution",\r
-        "answerLatex": to_latex(problem.expected),\r
+        "answerLatex": expected_latex(problem),\r
         "steps": problem.steps,\r
     }\r
-`,"./python/mathlab/progress.py":`"""Progress messages for long calculations, shown on the page while it waits.
-
-run_request() sets a listener for the duration of a request; any module can
-call report() to say what it is trying, such as "Trying the textbook rules…".
-"""
-
-_listener = None
-
-
-def listen(listener):
-    """Send reports to listener (a function taking a message), or stop with None."""
-    global _listener
-    _listener = listener
-
-
-def report(message):
-    if _listener is not None:
-        _listener(message)
-`,"./python/mathlab/region.py":`"""Help for iterated integrals over a region: sample points inside it, and
-simplifying a partial result where it is used, inside the region.
-
-An inner integral's result often comes back in a form SymPy can't simplify on
-its own, because SymPy doesn't know the region. Over the unit disk, the middle
-integral of the ball's volume comes back as
-2(1 − x²) arcsin(√(1/(1 − x²)) √(1 − x²)), inside "if −1 < x < 1": the arcsine
-is π/2 everywhere in the region, but SymPy can't assume 1 − x² > 0, and
-integrating the unsimplified form gave a wrong answer. Every rewrite here is
-kept only if it agrees numerically with the original at points inside the
-region, and the final answer is checked independently as well.
-"""
-
-import mpmath
-import sympy
-
-# Where sample points sit inside each variable's interval, as fractions of its
-# width. Rewrites are found with the first set and must also hold on the
-# second, irregular one, so a wave like sin(6πx), which is 0 at every sixth,
-# can't pass for a constant.
-SAMPLE_FRACTIONS = [sympy.Rational(index, 6) for index in range(1, 6)]
-CHECK_FRACTIONS = [sympy.Rational(n, d) for n, d in ((13, 97), (31, 89), (47, 83), (59, 79), (71, 73))]
-AGREEMENT_TOLERANCE = 1e-12
-# A rounding-size imaginary part, as from √(1 − x²) evaluated just outside the
-# region's edge, is dropped when it is at most this fraction of the real part.
-IMAGINARY_TOLERANCE = mpmath.mpf("1e-9")
-
-
-def real_number(value):
-    """value as a real mpf, dropping a rounding-size imaginary part."""
-    if isinstance(value, mpmath.mpc) and abs(value.imag) <= IMAGINARY_TOLERANCE * max(1, abs(value.real)):
-        return value.real
-    return value
-
-
-def sample_points(variables, bounds, fractions):
-    """Exact points inside the region, as substitution dictionaries.
-
-    variables run from the innermost of those sampled outward, and bounds[i]
-    is the (lower, upper) pair of variables[i], which may use the variables
-    after it. The last pair is numbers.
-    """
-    points = [{}]
-    for variable, (low, high) in reversed(list(zip(variables, bounds))):
-        next_points = []
-        for point in points:
-            ends = [sympy.sympify(bound).subs(point) for bound in (low, high)]
-            if not all(end.is_real for end in ends) or ends[0] == ends[1]:
-                continue  # Outside the region, or where it has no width.
-            next_points.extend(
-                {**point, variable: ends[0] + (ends[1] - ends[0]) * fraction} for fraction in fractions
-            )
-        points = next_points
-    return points
-
-
-def numeric_value(expression, point):
-    try:
-        return complex(expression.subs(point).evalf(30))
-    except (TypeError, ValueError):  # Something symbolic remained.
-        return None
-
-
-def agree(first, second, points):
-    for point in points:
-        a, b = numeric_value(first, point), numeric_value(second, point)
-        if a is None or b is None or abs(a - b) > AGREEMENT_TOLERANCE * max(1, abs(a)):
-            return False
-    return True
-
-
-def choose_piece(expression, points):
-    """The piece of a Piecewise that holds at every point, or the expression itself."""
-    chosen = set()
-    for point in points:
-        for index, (_, condition) in enumerate(expression.args):
-            holds = condition.subs(point)
-            if holds is sympy.true:
-                chosen.add(index)
-                break
-            if holds is not sympy.false:
-                return expression  # Can't tell, so keep every piece.
-    if len(chosen) != 1:
-        return expression
-    return expression.args[chosen.pop()][0]
-
-
-def is_constant(expression, points):
-    values = [numeric_value(expression, point) for point in points]
-    if any(value is None for value in values):
-        return False
-    return all(abs(value - values[0]) <= AGREEMENT_TOLERANCE * max(1, abs(values[0])) for value in values)
-
-
-def rewrite(expression, variables, points):
-    """Replace pieces that are constant inside the region with their exact values,
-    and Piecewise expressions with the piece that holds there."""
-    if (
-        not isinstance(expression, sympy.Expr)
-        or expression.is_Atom
-        or not expression.free_symbols & set(variables)
-    ):
-        return expression
-    if isinstance(expression, sympy.Piecewise):
-        piece = choose_piece(expression, points)
-        # A Piecewise whose piece can't be chosen is kept whole.
-        return expression if piece is expression else rewrite(piece, variables, points)
-    if not expression.is_polynomial(*variables) and is_constant(expression, points):
-        return sympy.simplify(expression.subs(points[0]))
-    return expression.func(*(rewrite(argument, variables, points) for argument in expression.args))
-
-
-def simplify_on_region(expression, variables, bounds):
-    """expression, a function of variables, simplified for points inside the
-    region; unchanged if no simpler form agrees with it there."""
-    if not expression.free_symbols & set(variables):
-        return expression
-    points = sample_points(variables, bounds, SAMPLE_FRACTIONS)
-    check_points = sample_points(variables, bounds, CHECK_FRACTIONS)
-    if not points or not check_points:
-        return expression
-    try:
-        simpler = sympy.simplify(rewrite(expression, variables, points))
-    except Exception:  # Simplifying is optional; any failure keeps the original.
-        return expression
-    if simpler == expression or not agree(simpler, expression, points + check_points):
-        return expression
-    return simpler
+`,"./python/mathlab/progress.py":`"""Progress messages for long calculations, shown on the page while it waits.\r
+\r
+run_request() sets a listener for the duration of a request; any module can\r
+call report() to say what it is trying, such as "Trying the textbook rules…".\r
+"""\r
+\r
+_listener = None\r
+\r
+\r
+def listen(listener):\r
+    """Send reports to listener (a function taking a message), or stop with None."""\r
+    global _listener\r
+    _listener = listener\r
+\r
+\r
+def report(message):\r
+    if _listener is not None:\r
+        _listener(message)\r
+`,"./python/mathlab/region.py":`"""Help for iterated integrals over a region: sample points inside it, and\r
+simplifying a partial result where it is used, inside the region.\r
+\r
+An inner integral's result often comes back in a form SymPy can't simplify on\r
+its own, because SymPy doesn't know the region. Over the unit disk, the middle\r
+integral of the ball's volume comes back as\r
+2(1 − x²) arcsin(√(1/(1 − x²)) √(1 − x²)), inside "if −1 < x < 1": the arcsine\r
+is π/2 everywhere in the region, but SymPy can't assume 1 − x² > 0, and\r
+integrating the unsimplified form gave a wrong answer. Every rewrite here is\r
+kept only if it agrees numerically with the original at points inside the\r
+region, and the final answer is checked independently as well.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+# Where sample points sit inside each variable's interval, as fractions of its\r
+# width. Rewrites are found with the first set and must also hold on the\r
+# second, irregular one, so a wave like sin(6πx), which is 0 at every sixth,\r
+# can't pass for a constant.\r
+SAMPLE_FRACTIONS = [sympy.Rational(index, 6) for index in range(1, 6)]\r
+CHECK_FRACTIONS = [sympy.Rational(n, d) for n, d in ((13, 97), (31, 89), (47, 83), (59, 79), (71, 73))]\r
+AGREEMENT_TOLERANCE = 1e-12\r
+# A rounding-size imaginary part, as from √(1 − x²) evaluated just outside the\r
+# region's edge, is dropped when it is at most this fraction of the real part.\r
+IMAGINARY_TOLERANCE = mpmath.mpf("1e-9")\r
+\r
+\r
+def real_number(value):\r
+    """value as a real mpf, dropping a rounding-size imaginary part."""\r
+    if isinstance(value, mpmath.mpc) and abs(value.imag) <= IMAGINARY_TOLERANCE * max(1, abs(value.real)):\r
+        return value.real\r
+    return value\r
+\r
+\r
+def sample_points(variables, bounds, fractions):\r
+    """Exact points inside the region, as substitution dictionaries.\r
+\r
+    variables run from the innermost of those sampled outward, and bounds[i]\r
+    is the (lower, upper) pair of variables[i], which may use the variables\r
+    after it. The last pair is numbers.\r
+    """\r
+    points = [{}]\r
+    for variable, (low, high) in reversed(list(zip(variables, bounds))):\r
+        next_points = []\r
+        for point in points:\r
+            ends = [sympy.sympify(bound).subs(point) for bound in (low, high)]\r
+            if not all(end.is_real for end in ends) or ends[0] == ends[1]:\r
+                continue  # Outside the region, or where it has no width.\r
+            next_points.extend(\r
+                {**point, variable: ends[0] + (ends[1] - ends[0]) * fraction} for fraction in fractions\r
+            )\r
+        points = next_points\r
+    return points\r
+\r
+\r
+def numeric_value(expression, point):\r
+    try:\r
+        return complex(expression.subs(point).evalf(30))\r
+    except (TypeError, ValueError):  # Something symbolic remained.\r
+        return None\r
+\r
+\r
+def agree(first, second, points):\r
+    for point in points:\r
+        a, b = numeric_value(first, point), numeric_value(second, point)\r
+        if a is None or b is None or abs(a - b) > AGREEMENT_TOLERANCE * max(1, abs(a)):\r
+            return False\r
+    return True\r
+\r
+\r
+def choose_piece(expression, points):\r
+    """The piece of a Piecewise that holds at every point, or the expression itself."""\r
+    chosen = set()\r
+    for point in points:\r
+        for index, (_, condition) in enumerate(expression.args):\r
+            holds = condition.subs(point)\r
+            if holds is sympy.true:\r
+                chosen.add(index)\r
+                break\r
+            if holds is not sympy.false:\r
+                return expression  # Can't tell, so keep every piece.\r
+    if len(chosen) != 1:\r
+        return expression\r
+    return expression.args[chosen.pop()][0]\r
+\r
+\r
+def is_constant(expression, points):\r
+    values = [numeric_value(expression, point) for point in points]\r
+    if any(value is None for value in values):\r
+        return False\r
+    return all(abs(value - values[0]) <= AGREEMENT_TOLERANCE * max(1, abs(values[0])) for value in values)\r
+\r
+\r
+def rewrite(expression, variables, points):\r
+    """Replace pieces that are constant inside the region with their exact values,\r
+    and Piecewise expressions with the piece that holds there."""\r
+    if (\r
+        not isinstance(expression, sympy.Expr)\r
+        or expression.is_Atom\r
+        or not expression.free_symbols & set(variables)\r
+    ):\r
+        return expression\r
+    if isinstance(expression, sympy.Piecewise):\r
+        piece = choose_piece(expression, points)\r
+        # A Piecewise whose piece can't be chosen is kept whole.\r
+        return expression if piece is expression else rewrite(piece, variables, points)\r
+    if not expression.is_polynomial(*variables) and is_constant(expression, points):\r
+        return sympy.simplify(expression.subs(points[0]))\r
+    return expression.func(*(rewrite(argument, variables, points) for argument in expression.args))\r
+\r
+\r
+def simplify_on_region(expression, variables, bounds):\r
+    """expression, a function of variables, simplified for points inside the\r
+    region; unchanged if no simpler form agrees with it there."""\r
+    if not expression.free_symbols & set(variables):\r
+        return expression\r
+    points = sample_points(variables, bounds, SAMPLE_FRACTIONS)\r
+    check_points = sample_points(variables, bounds, CHECK_FRACTIONS)\r
+    if not points or not check_points:\r
+        return expression\r
+    try:\r
+        simpler = sympy.simplify(rewrite(expression, variables, points))\r
+    except Exception:  # Simplifying is optional; any failure keeps the original.\r
+        return expression\r
+    if simpler == expression or not agree(simpler, expression, points + check_points):\r
+        return expression\r
+    return simpler\r
 `,"./python/mathlab/reverse_order.py":`"""Reversing the order of a double integral: the same region described the\r
 other way, for when integrating in the given order needs a function with no\r
 elementary antiderivative (like ∫ sin(y²) dy) but the other order doesn't.\r
@@ -9120,100 +9897,100 @@ def reverse_step(function, inside, outside, inner_bounds, outer_bounds, candidat
             to_latex(sympy.Integral(function, (outside, low, high), (inside, c, d))),\r
         ],\r
     )\r
-`,"./python/mathlab/riemann.py":`"""The double-integrals lesson picture: a Riemann sum of boxes under z = f(x, y).
-
-The rectangle [a, b] × [c, d] is cut into m × n small rectangles. Each one
-gets a box whose height is f at a sample point in it, and the boxes' total
-volume approximates the double integral, which SymPy computes exactly.
-"""
-
-import mpmath
-import sympy
-
-from mathlab.checks import numeric_function, plot_value
-from mathlab.definite import parse_bound
-from mathlab.expressions import X, Y, InputError, to_latex
-
-# Where in each small rectangle f is sampled, as fractions of its width and height.
-SAMPLE_POINTS = {"lower-left": (0, 0), "midpoint": (0.5, 0.5), "upper-right": (1, 1)}
-MAX_DIVISIONS = 16
-SURFACE_POINT_COUNT = 31
-
-
-def parse_rectangle(texts):
-    """[a, b, c, d] as LaTeX, for the rectangle a ≤ x ≤ b, c ≤ y ≤ d."""
-    if not (isinstance(texts, list) and len(texts) == 4):
-        raise InputError("Enter the rectangle as four numbers: a, b, c, and d.")
-    names = ("x lower", "x upper", "y lower", "y upper")
-    bounds = [parse_bound(text, name) for text, name in zip(texts, names)]
-    if any(bound.is_infinite for bound in bounds):
-        raise InputError("The rectangle must be finite.")
-    a, b, c, d = bounds
-    if not ((b - a).is_positive and (d - c).is_positive):
-        raise InputError("Each lower bound of the rectangle must be less than its upper bound.")
-    return bounds
-
-
-def parse_divisions(raw):
-    if not (
-        isinstance(raw, list)
-        and len(raw) == 2
-        and all(isinstance(value, int) and not isinstance(value, bool) for value in raw)
-        and all(1 <= value <= MAX_DIVISIONS for value in raw)
-    ):
-        raise InputError(f"Cut each side into 1 to {MAX_DIVISIONS} pieces.")
-    return raw
-
-
-def edges(low, high, count):
-    return [float(low + (high - low) * index / count) for index in range(count + 1)]
-
-
-def riemann_sum(function, rectangle_texts, divisions, sample):
-    if function.free_symbols - {X, Y}:
-        raise InputError("The picture needs numbers, so use only x and y here.")
-    if sample not in SAMPLE_POINTS:
-        raise InputError("Choose where to sample f: lower-left corner, midpoint, or upper-right corner.")
-    a, b, c, d = parse_rectangle(rectangle_texts)
-    m, n = parse_divisions(divisions)
-    as_numeric = numeric_function(function, (X, Y))
-    x_edges, y_edges = edges(a, b, m), edges(c, d, n)
-    s, t = SAMPLE_POINTS[sample]
-    sample_x = [x_edges[i] + s * (x_edges[i + 1] - x_edges[i]) for i in range(m)]
-    sample_y = [y_edges[j] + t * (y_edges[j + 1] - y_edges[j]) for j in range(n)]
-
-    # One row of box heights per strip in y, like the surface rows.
-    heights = [
-        [plot_value(lambda x=x, y=y: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x in sample_x]
-        for y in sample_y
-    ]
-    if any(height is None for row in heights for height in row):
-        raise InputError("f isn't defined at every sample point, so the boxes can't be drawn.")
-    box_area = float((b - a) * (d - c)) / (m * n)
-    total = box_area * sum(sum(row) for row in heights)
-
-    exact = sympy.integrate(function, (X, a, b), (Y, c, d))
-    exact_value = plot_value(lambda: sympy.N(exact, 20))
-    if exact_value is None:
-        raise InputError("The double integral over this rectangle has no finite value.")
-
-    xs, ys = edges(a, b, SURFACE_POINT_COUNT - 1), edges(c, d, SURFACE_POINT_COUNT - 1)
-    surface = [[plot_value(lambda x=x, y=y: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x in xs] for y in ys]
-    return {
-        "ok": True,
-        "operation": "riemann",
-        "sample": sample,
-        "xEdges": x_edges,
-        "yEdges": y_edges,
-        "sampleX": sample_x,
-        "sampleY": sample_y,
-        "heights": heights,
-        "boxArea": box_area,
-        "sum": total,
-        "exact": exact_value,
-        "exactLatex": to_latex(exact),
-        "surface": {"x": xs, "y": ys, "z": surface},
-    }
+`,"./python/mathlab/riemann.py":`"""The double-integrals lesson picture: a Riemann sum of boxes under z = f(x, y).\r
+\r
+The rectangle [a, b] × [c, d] is cut into m × n small rectangles. Each one\r
+gets a box whose height is f at a sample point in it, and the boxes' total\r
+volume approximates the double integral, which SymPy computes exactly.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import numeric_function, plot_value\r
+from mathlab.definite import parse_bound\r
+from mathlab.expressions import X, Y, InputError, to_latex\r
+\r
+# Where in each small rectangle f is sampled, as fractions of its width and height.\r
+SAMPLE_POINTS = {"lower-left": (0, 0), "midpoint": (0.5, 0.5), "upper-right": (1, 1)}\r
+MAX_DIVISIONS = 16\r
+SURFACE_POINT_COUNT = 31\r
+\r
+\r
+def parse_rectangle(texts):\r
+    """[a, b, c, d] as LaTeX, for the rectangle a ≤ x ≤ b, c ≤ y ≤ d."""\r
+    if not (isinstance(texts, list) and len(texts) == 4):\r
+        raise InputError("Enter the rectangle as four numbers: a, b, c, and d.")\r
+    names = ("x lower", "x upper", "y lower", "y upper")\r
+    bounds = [parse_bound(text, name) for text, name in zip(texts, names)]\r
+    if any(bound.is_infinite for bound in bounds):\r
+        raise InputError("The rectangle must be finite.")\r
+    a, b, c, d = bounds\r
+    if not ((b - a).is_positive and (d - c).is_positive):\r
+        raise InputError("Each lower bound of the rectangle must be less than its upper bound.")\r
+    return bounds\r
+\r
+\r
+def parse_divisions(raw):\r
+    if not (\r
+        isinstance(raw, list)\r
+        and len(raw) == 2\r
+        and all(isinstance(value, int) and not isinstance(value, bool) for value in raw)\r
+        and all(1 <= value <= MAX_DIVISIONS for value in raw)\r
+    ):\r
+        raise InputError(f"Cut each side into 1 to {MAX_DIVISIONS} pieces.")\r
+    return raw\r
+\r
+\r
+def edges(low, high, count):\r
+    return [float(low + (high - low) * index / count) for index in range(count + 1)]\r
+\r
+\r
+def riemann_sum(function, rectangle_texts, divisions, sample):\r
+    if function.free_symbols - {X, Y}:\r
+        raise InputError("The picture needs numbers, so use only x and y here.")\r
+    if sample not in SAMPLE_POINTS:\r
+        raise InputError("Choose where to sample f: lower-left corner, midpoint, or upper-right corner.")\r
+    a, b, c, d = parse_rectangle(rectangle_texts)\r
+    m, n = parse_divisions(divisions)\r
+    as_numeric = numeric_function(function, (X, Y))\r
+    x_edges, y_edges = edges(a, b, m), edges(c, d, n)\r
+    s, t = SAMPLE_POINTS[sample]\r
+    sample_x = [x_edges[i] + s * (x_edges[i + 1] - x_edges[i]) for i in range(m)]\r
+    sample_y = [y_edges[j] + t * (y_edges[j + 1] - y_edges[j]) for j in range(n)]\r
+\r
+    # One row of box heights per strip in y, like the surface rows.\r
+    heights = [\r
+        [plot_value(lambda x=x, y=y: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x in sample_x]\r
+        for y in sample_y\r
+    ]\r
+    if any(height is None for row in heights for height in row):\r
+        raise InputError("f isn't defined at every sample point, so the boxes can't be drawn.")\r
+    box_area = float((b - a) * (d - c)) / (m * n)\r
+    total = box_area * sum(sum(row) for row in heights)\r
+\r
+    exact = sympy.integrate(function, (X, a, b), (Y, c, d))\r
+    exact_value = plot_value(lambda: sympy.N(exact, 20))\r
+    if exact_value is None:\r
+        raise InputError("The double integral over this rectangle has no finite value.")\r
+\r
+    xs, ys = edges(a, b, SURFACE_POINT_COUNT - 1), edges(c, d, SURFACE_POINT_COUNT - 1)\r
+    surface = [[plot_value(lambda x=x, y=y: as_numeric(mpmath.mpf(x), mpmath.mpf(y))) for x in xs] for y in ys]\r
+    return {\r
+        "ok": True,\r
+        "operation": "riemann",\r
+        "sample": sample,\r
+        "xEdges": x_edges,\r
+        "yEdges": y_edges,\r
+        "sampleX": sample_x,\r
+        "sampleY": sample_y,\r
+        "heights": heights,\r
+        "boxArea": box_area,\r
+        "sum": total,\r
+        "exact": exact_value,\r
+        "exactLatex": to_latex(exact),\r
+        "surface": {"x": xs, "y": ys, "z": surface},\r
+    }\r
 `,"./python/mathlab/solid.py":`"""The triple-integrals lesson picture: a solid E, a slice of it, and a line\r
 through the slice.\r
 \r
@@ -9398,351 +10175,351 @@ def solid_picture(order, bound_texts):\r
         "volume": volume_value,\r
         "volumeLatex": to_latex(volume),\r
     }\r
-`,"./python/mathlab/space_curves.py":`"""Space curves: vector functions r(t) = ⟨x(t), y(t), z(t)⟩.
-
-The velocity r'(t) points along the curve, and its length is the speed.
-Dividing by the speed gives the unit tangent T; the arc length integrates
-the speed (with the same exact-or-numerical approach as plane curves); and
-the curvature κ = |r' × r''| / |r'|³ measures how fast T turns per unit of
-length. The unit normal N points the way the curve bends.
-"""
-
-import mpmath
-import sympy
-
-from mathlab.checks import numeric_function
-from mathlab.curves import arc_length, latex_value, numerical_integral, parse_curve_function, parse_interval
-from mathlab.definite import parse_bound
-from mathlab.expressions import T, InputError, to_latex
-from mathlab.progress import report
-from mathlab.region import real_number
-from mathlab.steps import make_step, separate
-from mathlab.vectors import vector_latex
-
-GRAPH_POINTS = 401
-TRACE_STEPS = 120
-
-
-def build_space_curve(x, y, z, interval, at=None):
-    velocity = sympy.Matrix([sympy.diff(component, T) for component in (x, y, z)])
-    return {
-        "kind": "space",
-        "parameter": T,
-        "position": sympy.Matrix([x, y, z]),
-        "velocity": velocity,
-        "acceleration": velocity.diff(T),
-        "dxdt": velocity[0],
-        "dydt": velocity[1],
-        "dzdt": velocity[2],
-        "interval": interval,
-        "at": at,
-    }
-
-
-def space_curve_from_request(request):
-    x, y, z = (
-        parse_curve_function(request.get(key), name, T)
-        for key, name in (("xExpression", "x(t)"), ("yExpression", "y(t)"), ("zExpression", "z(t)"))
-    )
-    low, high = parse_interval(request.get("lower"), request.get("upper"), T)
-    at = None
-    at_text = request.get("at")
-    if isinstance(at_text, str) and at_text.strip():
-        at = parse_bound(at_text, "point's t")
-        if at.is_infinite:
-            raise InputError("The point's t must be a number.")
-    return build_space_curve(x, y, z, (low, high), at)
-
-
-# Expressions with more operations than this aren't simplified: on formulas
-# like the curvature of a curve with e^t and sin 2t, SymPy takes many seconds
-# and finds little shorter. Textbook curves give small expressions, which are,
-# and so are plain numbers (values at one point), which simplify quickly.
-SIMPLIFY_LIMIT = 30
-
-
-def tidy(expression):
-    if expression.free_symbols and sympy.count_ops(expression) > SIMPLIFY_LIMIT:
-        return expression
-    return sympy.simplify(expression)
-
-
-def magnitude(vector):
-    return sympy.sqrt(tidy(vector.dot(vector)))
-
-
-def simplified(vector):
-    return vector.applyfunc(tidy)
-
-
-def velocity_steps(curve):
-    """r'(t), r''(t), and the speed |r'(t)|: the steps and the results."""
-    velocity, acceleration = curve["velocity"], curve["acceleration"]
-    speed = tidy(magnitude(velocity))
-    curve["speed"] = speed
-    steps = [
-        make_step(
-            "Velocity",
-            r"Differentiate each component: the derivative of a vector function is the vector of "
-            r"its components' derivatives. It points along the curve, in the direction of motion.",
-            [rf"\\mathbf{{r}}'(t) = {vector_latex(velocity)}"],
-        ),
-        make_step(
-            "Speed",
-            r"The speed is the length of the velocity vector, $|\\mathbf{r}'(t)| = \\sqrt{x'^2 + y'^2 + z'^2}$.",
-            [rf"|\\mathbf{{r}}'(t)| = \\sqrt{{{to_latex(sympy.expand(velocity.dot(velocity)))}}}", to_latex(speed)],
-        ),
-    ]
-    results = [
-        {"label": "Velocity", "latex": rf"\\mathbf{{r}}'(t) = {vector_latex(velocity)}"},
-        {"label": "Speed", "latex": rf"|\\mathbf{{r}}'(t)| = {to_latex(speed)}"},
-        {"label": "Acceleration", "latex": rf"\\mathbf{{r}}''(t) = {vector_latex(acceleration)}"},
-    ]
-    return steps, results
-
-
-def curvature_steps(curve):
-    """The curvature κ(t): its step, its result, and its value as a function of t."""
-    velocity, acceleration, speed = curve["velocity"], curve["acceleration"], curve["speed"]
-    cross = simplified(velocity.cross(acceleration))
-    cross_length = tidy(magnitude(cross))
-    curvature = tidy(cross_length / speed**3)
-    step = make_step(
-        "Curvature",
-        r"Curvature measures how fast the direction turns per unit of length: "
-        r"$\\kappa = \\left|\\frac{d\\mathbf{T}}{ds}\\right|$. In terms of $t$ it is "
-        r"$\\kappa = \\frac{|\\mathbf{r}' \\times \\mathbf{r}''|}{|\\mathbf{r}'|^3}$: the cross product "
-        r"keeps the part of the acceleration that turns the curve and drops the part that only "
-        r"changes the speed.",
-        [
-            separate(
-                rf"\\mathbf{{r}}' \\times \\mathbf{{r}}'' = {vector_latex(cross)}",
-                rf"\\kappa(t) = \\frac{{|\\mathbf{{r}}' \\times \\mathbf{{r}}''|}}{{|\\mathbf{{r}}'|^3}} = "
-                rf"\\frac{{{to_latex(cross_length)}}}{{\\left({to_latex(speed)}\\right)^3}} = "
-                rf"{to_latex(curvature)}",
-            )
-        ],
-    )
-    curve["curvature"] = curvature
-    return step, {"label": "Curvature", "latex": rf"\\kappa(t) = {to_latex(curvature)}"}
-
-
-def point_steps(curve):
-    """At the chosen t: the point, T, κ, and N. Steps and results."""
-    at = curve["at"]
-    at_text = rf"t = {to_latex(at)}"
-    point = simplified(curve["position"].subs(T, at))
-    velocity = simplified(curve["velocity"].subs(T, at))
-    acceleration = simplified(curve["acceleration"].subs(T, at))
-    speed = tidy(magnitude(velocity))
-    curve["point"] = (point, velocity, None)
-    results = [{"label": "Point", "latex": rf"\\mathbf{{r}}({to_latex(at)}) = {vector_latex(point)}"}]
-    if speed == 0:
-        step = make_step(
-            "Unit tangent vector",
-            rf"The velocity is $\\mathbf{{0}}$ at \${at_text}$: the point stops for an instant, so it "
-            r"has no direction there, and $\\mathbf{T}$, $\\kappa$, and $\\mathbf{N}$ aren't defined.",
-            [rf"\\mathbf{{r}}'({to_latex(at)}) = \\mathbf{{0}}"],
-        )
-        results.append({"label": "Unit tangent", "latex": r"\\text{undefined: } \\mathbf{r}' = \\mathbf{0}"})
-        return [step], results
-    tangent = simplified(velocity / speed)
-    steps = [
-        make_step(
-            "Unit tangent vector",
-            r"Divide the velocity by its length, which keeps its direction and makes its length 1: "
-            r"$\\mathbf{T} = \\frac{\\mathbf{r}'}{|\\mathbf{r}'|}$.",
-            [
-                separate(
-                    rf"\\mathbf{{r}}'({to_latex(at)}) = {vector_latex(velocity)}, \\quad |\\mathbf{{r}}'({to_latex(at)})| = {to_latex(speed)}",
-                    rf"\\mathbf{{T}}({to_latex(at)}) = {vector_latex(tangent)}",
-                )
-            ],
-        )
-    ]
-    results.append({"label": "Unit tangent", "latex": rf"\\mathbf{{T}}({to_latex(at)}) = {vector_latex(tangent)}"})
-    curvature = sympy.simplify(curve["curvature"].subs(T, at))
-    steps.append(
-        make_step(
-            "Curvature at a point",
-            rf"Put \${to_latex(at)}$ in for $t$ in $\\kappa(t)$. The circle that fits the curve best "
-            r"here, the osculating circle, has radius $\\frac{1}{\\kappa}$.",
-            [rf"\\kappa({to_latex(at)}) = {latex_value(curvature)}"],
-        )
-    )
-    results.append({"label": "Curvature at the point", "latex": rf"\\kappa({to_latex(at)}) = {latex_value(curvature)}"})
-    # The part of the acceleration across the direction of motion turns the
-    # curve, and it points along N.
-    across = simplified(acceleration - acceleration.dot(tangent) * tangent)
-    across_length = tidy(magnitude(across))
-    if across_length == 0:
-        steps.append(
-            make_step(
-                "Unit normal vector",
-                r"The curvature is $0$ here: the curve is straight for an instant, so it doesn't "
-                r"bend toward any side, and $\\mathbf{N}$ isn't defined.",
-                [],
-            )
-        )
-        results.append({"label": "Unit normal", "latex": r"\\text{undefined: } \\kappa = 0"})
-        return steps, results
-    normal = simplified(across / across_length)
-    curve["point"] = (point, velocity, normal)
-    steps.append(
-        make_step(
-            "Unit normal vector",
-            r"$\\mathbf{N} = \\frac{\\mathbf{T}'}{|\\mathbf{T}'|}$ points the way the curve bends. It is "
-            r"also the direction of the part of the acceleration perpendicular to the motion, "
-            r"$\\mathbf{r}'' - (\\mathbf{r}'' \\cdot \\mathbf{T})\\mathbf{T}$, which is easier to compute "
-            r"at one point.",
-            [
-                separate(
-                    rf"\\mathbf{{r}}'' - (\\mathbf{{r}}'' \\cdot \\mathbf{{T}})\\mathbf{{T}} = {vector_latex(across)}",
-                    rf"\\mathbf{{N}}({to_latex(at)}) = {vector_latex(normal)}",
-                )
-            ],
-        )
-    )
-    results.append({"label": "Unit normal", "latex": rf"\\mathbf{{N}}({to_latex(at)}) = {vector_latex(normal)}"})
-    return steps, results
-
-
-def numeric_value(function, point):
-    try:
-        value = real_number(mpmath.mpmathify(function(mpmath.mpf(point))))
-    except Exception:  # Undefined points raise many error types; all mean "no value".
-        return None
-    if isinstance(value, mpmath.mpc) or not mpmath.isfinite(value):
-        return None
-    return round(float(value), 6)
-
-
-def curve_points(curve, count):
-    """count parameter values across the interval, and the curve's x, y, z there."""
-    low, high = (float(sympy.N(bound)) for bound in curve["interval"])
-    parameters = [low + (high - low) * index / (count - 1) for index in range(count)]
-    functions = [numeric_function(component, (T,)) for component in curve["position"]]
-    return parameters, [[numeric_value(function, t) for t in parameters] for function in functions]
-
-
-def graph_samples(curve):
-    _, (xs, ys, zs) = curve_points(curve, GRAPH_POINTS)
-    graph = {"x": xs, "y": ys, "z": zs, "point": None, "tangent": None, "normal": None}
-    if curve.get("point"):
-        point, velocity, normal = curve["point"]
-        graph["point"] = [float(sympy.N(component)) for component in point]
-        speed = float(sympy.N(magnitude(velocity)))
-        if speed > 0:
-            graph["tangent"] = [float(sympy.N(component)) / speed for component in velocity]
-        if normal is not None:
-            graph["normal"] = [float(sympy.N(component)) for component in normal]
-    return graph
-
-
-def analyze_space_curve(request):
-    curve = space_curve_from_request(request)
-    low, high = curve["interval"]
-    report("Finding the velocity…")
-    steps, results = velocity_steps(curve)
-    report("Finding the curvature…")
-    curvature_step, curvature_result = curvature_steps(curve)
-    steps.append(curvature_step)
-    results.append(curvature_result)
-    if curve["at"] is not None:
-        point_step_list, point_results = point_steps(curve)
-        steps.extend(point_step_list)
-        results.extend(point_results)
-    report("Finding the arc length…")
-    length_step, length_result, length_check, _ = arc_length(curve)
-    steps.append(length_step)
-    results.append(length_result)
-    position = curve["position"]
-    return {
-        "ok": True,
-        "operation": "space",
-        "curveLatex": rf"\\mathbf{{r}}(t) = {vector_latex(position)}, \\quad {to_latex(low)} \\le t \\le {to_latex(high)}",
-        "results": results,
-        "checks": [{"label": "Arc length", "check": length_check}],
-        "steps": steps,
-        "graph": graph_samples(curve),
-    }
-
-
-def space_trace(request):
-    """The lesson picture: for TRACE_STEPS + 1 values of t, the point, T, N,
-    the curvature, and the length so far, all computed numerically."""
-    curve = space_curve_from_request(request)
-    velocity, acceleration = curve["velocity"], curve["acceleration"]
-    velocity_at = [numeric_function(component, (T,)) for component in velocity]
-    acceleration_at = [numeric_function(component, (T,)) for component in acceleration]
-    speed = numeric_function(magnitude(velocity), (T,))
-    parameters, (xs, ys, zs) = curve_points(curve, TRACE_STEPS + 1)
-    samples = []
-    length = 0.0
-    for index, t in enumerate(parameters):
-        if index > 0:
-            length += float(numerical_integral(speed, [parameters[index - 1], t]) or 0)
-        v = [numeric_value(function, t) for function in velocity_at]
-        a = [numeric_value(function, t) for function in acceleration_at]
-        sample = {"t": round(t, 6), "point": [xs[index], ys[index], zs[index]], "length": round(length, 6)}
-        sample.update(frame(v, a))
-        samples.append(sample)
-    _, (cx, cy, cz) = curve_points(curve, GRAPH_POINTS)
-    return {"ok": True, "operation": "spaceTrace", "samples": samples, "curve": {"x": cx, "y": cy, "z": cz}}
-
-
-def frame(v, a):
-    """T, N, and κ from the velocity v and acceleration a at one point, as floats;
-    None where they aren't defined."""
-    empty = {"tangent": None, "normal": None, "curvature": None}
-    if None in v or None in a:
-        return empty
-    speed = sum(c * c for c in v) ** 0.5
-    if speed < 1e-12:
-        return empty
-    tangent = [c / speed for c in v]
-    along = sum(ai * ti for ai, ti in zip(a, tangent))
-    across = [ai - along * ti for ai, ti in zip(a, tangent)]
-    across_length = sum(c * c for c in across) ** 0.5
-    # κ = |v × a| / |v|³, and |v × a| = |v| times the part of a across v.
-    curvature = across_length / speed**2
-    normal = [c / across_length for c in across] if across_length > 1e-12 else None
-    return {"tangent": rounded(tangent), "normal": rounded(normal), "curvature": round(curvature, 6)}
-
-
-def rounded(vector):
-    return None if vector is None else [round(component, 6) for component in vector]
-`,"./python/mathlab/steps.py":`"""The step format shared by derivative and integral explanations.
-
-A step is a dict with the rule's name, a short explanation (text with inline
-LaTeX between $ signs), the math it produces (LaTeX), and the steps it builds on.
-"""
-
-
-def separate(*equations):
-    """Several different equations as one math part, each on its own line.
-    make_step joins its parts with = signs, which is right for one chain of
-    equal things but would make "dx = 1, dz = 2" read as dx = 1 = dz = 2."""
-    return r"\\begin{gathered}" + r" \\\\ ".join(equations) + r"\\end{gathered}"
-
-
-def equation_latex(parts):
-    """Join parts with = signs. Chains of several = signs go one per line,
-    aligned on the = signs, as in a written derivation."""
-    if len(parts) <= 2:
-        return " = ".join(parts)
-    first, second, *rest = parts
-    lines = [f"{first} &= {second}", *(f"&= {part}" for part in rest)]
-    return r"\\begin{aligned}" + r" \\\\ ".join(lines) + r"\\end{aligned}"
-
-
-def make_step(rule, explanation, math_parts, substeps=()):
-    return {
-        "rule": rule,
-        "explanation": explanation,
-        "math": equation_latex(math_parts),
-        "substeps": [substep for substep in substeps if substep is not None],
-    }
+`,"./python/mathlab/space_curves.py":`"""Space curves: vector functions r(t) = ⟨x(t), y(t), z(t)⟩.\r
+\r
+The velocity r'(t) points along the curve, and its length is the speed.\r
+Dividing by the speed gives the unit tangent T; the arc length integrates\r
+the speed (with the same exact-or-numerical approach as plane curves); and\r
+the curvature κ = |r' × r''| / |r'|³ measures how fast T turns per unit of\r
+length. The unit normal N points the way the curve bends.\r
+"""\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import numeric_function\r
+from mathlab.curves import arc_length, latex_value, numerical_integral, parse_curve_function, parse_interval\r
+from mathlab.definite import parse_bound\r
+from mathlab.expressions import T, InputError, to_latex\r
+from mathlab.progress import report\r
+from mathlab.region import real_number\r
+from mathlab.steps import make_step, separate\r
+from mathlab.vectors import vector_latex\r
+\r
+GRAPH_POINTS = 401\r
+TRACE_STEPS = 120\r
+\r
+\r
+def build_space_curve(x, y, z, interval, at=None):\r
+    velocity = sympy.Matrix([sympy.diff(component, T) for component in (x, y, z)])\r
+    return {\r
+        "kind": "space",\r
+        "parameter": T,\r
+        "position": sympy.Matrix([x, y, z]),\r
+        "velocity": velocity,\r
+        "acceleration": velocity.diff(T),\r
+        "dxdt": velocity[0],\r
+        "dydt": velocity[1],\r
+        "dzdt": velocity[2],\r
+        "interval": interval,\r
+        "at": at,\r
+    }\r
+\r
+\r
+def space_curve_from_request(request):\r
+    x, y, z = (\r
+        parse_curve_function(request.get(key), name, T)\r
+        for key, name in (("xExpression", "x(t)"), ("yExpression", "y(t)"), ("zExpression", "z(t)"))\r
+    )\r
+    low, high = parse_interval(request.get("lower"), request.get("upper"), T)\r
+    at = None\r
+    at_text = request.get("at")\r
+    if isinstance(at_text, str) and at_text.strip():\r
+        at = parse_bound(at_text, "point's t")\r
+        if at.is_infinite:\r
+            raise InputError("The point's t must be a number.")\r
+    return build_space_curve(x, y, z, (low, high), at)\r
+\r
+\r
+# Expressions with more operations than this aren't simplified: on formulas\r
+# like the curvature of a curve with e^t and sin 2t, SymPy takes many seconds\r
+# and finds little shorter. Textbook curves give small expressions, which are,\r
+# and so are plain numbers (values at one point), which simplify quickly.\r
+SIMPLIFY_LIMIT = 30\r
+\r
+\r
+def tidy(expression):\r
+    if expression.free_symbols and sympy.count_ops(expression) > SIMPLIFY_LIMIT:\r
+        return expression\r
+    return sympy.simplify(expression)\r
+\r
+\r
+def magnitude(vector):\r
+    return sympy.sqrt(tidy(vector.dot(vector)))\r
+\r
+\r
+def simplified(vector):\r
+    return vector.applyfunc(tidy)\r
+\r
+\r
+def velocity_steps(curve):\r
+    """r'(t), r''(t), and the speed |r'(t)|: the steps and the results."""\r
+    velocity, acceleration = curve["velocity"], curve["acceleration"]\r
+    speed = tidy(magnitude(velocity))\r
+    curve["speed"] = speed\r
+    steps = [\r
+        make_step(\r
+            "Velocity",\r
+            r"Differentiate each component: the derivative of a vector function is the vector of "\r
+            r"its components' derivatives. It points along the curve, in the direction of motion.",\r
+            [rf"\\mathbf{{r}}'(t) = {vector_latex(velocity)}"],\r
+        ),\r
+        make_step(\r
+            "Speed",\r
+            r"The speed is the length of the velocity vector, $|\\mathbf{r}'(t)| = \\sqrt{x'^2 + y'^2 + z'^2}$.",\r
+            [rf"|\\mathbf{{r}}'(t)| = \\sqrt{{{to_latex(sympy.expand(velocity.dot(velocity)))}}}", to_latex(speed)],\r
+        ),\r
+    ]\r
+    results = [\r
+        {"label": "Velocity", "latex": rf"\\mathbf{{r}}'(t) = {vector_latex(velocity)}"},\r
+        {"label": "Speed", "latex": rf"|\\mathbf{{r}}'(t)| = {to_latex(speed)}"},\r
+        {"label": "Acceleration", "latex": rf"\\mathbf{{r}}''(t) = {vector_latex(acceleration)}"},\r
+    ]\r
+    return steps, results\r
+\r
+\r
+def curvature_steps(curve):\r
+    """The curvature κ(t): its step, its result, and its value as a function of t."""\r
+    velocity, acceleration, speed = curve["velocity"], curve["acceleration"], curve["speed"]\r
+    cross = simplified(velocity.cross(acceleration))\r
+    cross_length = tidy(magnitude(cross))\r
+    curvature = tidy(cross_length / speed**3)\r
+    step = make_step(\r
+        "Curvature",\r
+        r"Curvature measures how fast the direction turns per unit of length: "\r
+        r"$\\kappa = \\left|\\frac{d\\mathbf{T}}{ds}\\right|$. In terms of $t$ it is "\r
+        r"$\\kappa = \\frac{|\\mathbf{r}' \\times \\mathbf{r}''|}{|\\mathbf{r}'|^3}$: the cross product "\r
+        r"keeps the part of the acceleration that turns the curve and drops the part that only "\r
+        r"changes the speed.",\r
+        [\r
+            separate(\r
+                rf"\\mathbf{{r}}' \\times \\mathbf{{r}}'' = {vector_latex(cross)}",\r
+                rf"\\kappa(t) = \\frac{{|\\mathbf{{r}}' \\times \\mathbf{{r}}''|}}{{|\\mathbf{{r}}'|^3}} = "\r
+                rf"\\frac{{{to_latex(cross_length)}}}{{\\left({to_latex(speed)}\\right)^3}} = "\r
+                rf"{to_latex(curvature)}",\r
+            )\r
+        ],\r
+    )\r
+    curve["curvature"] = curvature\r
+    return step, {"label": "Curvature", "latex": rf"\\kappa(t) = {to_latex(curvature)}"}\r
+\r
+\r
+def point_steps(curve):\r
+    """At the chosen t: the point, T, κ, and N. Steps and results."""\r
+    at = curve["at"]\r
+    at_text = rf"t = {to_latex(at)}"\r
+    point = simplified(curve["position"].subs(T, at))\r
+    velocity = simplified(curve["velocity"].subs(T, at))\r
+    acceleration = simplified(curve["acceleration"].subs(T, at))\r
+    speed = tidy(magnitude(velocity))\r
+    curve["point"] = (point, velocity, None)\r
+    results = [{"label": "Point", "latex": rf"\\mathbf{{r}}({to_latex(at)}) = {vector_latex(point)}"}]\r
+    if speed == 0:\r
+        step = make_step(\r
+            "Unit tangent vector",\r
+            rf"The velocity is $\\mathbf{{0}}$ at \${at_text}$: the point stops for an instant, so it "\r
+            r"has no direction there, and $\\mathbf{T}$, $\\kappa$, and $\\mathbf{N}$ aren't defined.",\r
+            [rf"\\mathbf{{r}}'({to_latex(at)}) = \\mathbf{{0}}"],\r
+        )\r
+        results.append({"label": "Unit tangent", "latex": r"\\text{undefined: } \\mathbf{r}' = \\mathbf{0}"})\r
+        return [step], results\r
+    tangent = simplified(velocity / speed)\r
+    steps = [\r
+        make_step(\r
+            "Unit tangent vector",\r
+            r"Divide the velocity by its length, which keeps its direction and makes its length 1: "\r
+            r"$\\mathbf{T} = \\frac{\\mathbf{r}'}{|\\mathbf{r}'|}$.",\r
+            [\r
+                separate(\r
+                    rf"\\mathbf{{r}}'({to_latex(at)}) = {vector_latex(velocity)}, \\quad |\\mathbf{{r}}'({to_latex(at)})| = {to_latex(speed)}",\r
+                    rf"\\mathbf{{T}}({to_latex(at)}) = {vector_latex(tangent)}",\r
+                )\r
+            ],\r
+        )\r
+    ]\r
+    results.append({"label": "Unit tangent", "latex": rf"\\mathbf{{T}}({to_latex(at)}) = {vector_latex(tangent)}"})\r
+    curvature = sympy.simplify(curve["curvature"].subs(T, at))\r
+    steps.append(\r
+        make_step(\r
+            "Curvature at a point",\r
+            rf"Put \${to_latex(at)}$ in for $t$ in $\\kappa(t)$. The circle that fits the curve best "\r
+            r"here, the osculating circle, has radius $\\frac{1}{\\kappa}$.",\r
+            [rf"\\kappa({to_latex(at)}) = {latex_value(curvature)}"],\r
+        )\r
+    )\r
+    results.append({"label": "Curvature at the point", "latex": rf"\\kappa({to_latex(at)}) = {latex_value(curvature)}"})\r
+    # The part of the acceleration across the direction of motion turns the\r
+    # curve, and it points along N.\r
+    across = simplified(acceleration - acceleration.dot(tangent) * tangent)\r
+    across_length = tidy(magnitude(across))\r
+    if across_length == 0:\r
+        steps.append(\r
+            make_step(\r
+                "Unit normal vector",\r
+                r"The curvature is $0$ here: the curve is straight for an instant, so it doesn't "\r
+                r"bend toward any side, and $\\mathbf{N}$ isn't defined.",\r
+                [],\r
+            )\r
+        )\r
+        results.append({"label": "Unit normal", "latex": r"\\text{undefined: } \\kappa = 0"})\r
+        return steps, results\r
+    normal = simplified(across / across_length)\r
+    curve["point"] = (point, velocity, normal)\r
+    steps.append(\r
+        make_step(\r
+            "Unit normal vector",\r
+            r"$\\mathbf{N} = \\frac{\\mathbf{T}'}{|\\mathbf{T}'|}$ points the way the curve bends. It is "\r
+            r"also the direction of the part of the acceleration perpendicular to the motion, "\r
+            r"$\\mathbf{r}'' - (\\mathbf{r}'' \\cdot \\mathbf{T})\\mathbf{T}$, which is easier to compute "\r
+            r"at one point.",\r
+            [\r
+                separate(\r
+                    rf"\\mathbf{{r}}'' - (\\mathbf{{r}}'' \\cdot \\mathbf{{T}})\\mathbf{{T}} = {vector_latex(across)}",\r
+                    rf"\\mathbf{{N}}({to_latex(at)}) = {vector_latex(normal)}",\r
+                )\r
+            ],\r
+        )\r
+    )\r
+    results.append({"label": "Unit normal", "latex": rf"\\mathbf{{N}}({to_latex(at)}) = {vector_latex(normal)}"})\r
+    return steps, results\r
+\r
+\r
+def numeric_value(function, point):\r
+    try:\r
+        value = real_number(mpmath.mpmathify(function(mpmath.mpf(point))))\r
+    except Exception:  # Undefined points raise many error types; all mean "no value".\r
+        return None\r
+    if isinstance(value, mpmath.mpc) or not mpmath.isfinite(value):\r
+        return None\r
+    return round(float(value), 6)\r
+\r
+\r
+def curve_points(curve, count):\r
+    """count parameter values across the interval, and the curve's x, y, z there."""\r
+    low, high = (float(sympy.N(bound)) for bound in curve["interval"])\r
+    parameters = [low + (high - low) * index / (count - 1) for index in range(count)]\r
+    functions = [numeric_function(component, (T,)) for component in curve["position"]]\r
+    return parameters, [[numeric_value(function, t) for t in parameters] for function in functions]\r
+\r
+\r
+def graph_samples(curve):\r
+    _, (xs, ys, zs) = curve_points(curve, GRAPH_POINTS)\r
+    graph = {"x": xs, "y": ys, "z": zs, "point": None, "tangent": None, "normal": None}\r
+    if curve.get("point"):\r
+        point, velocity, normal = curve["point"]\r
+        graph["point"] = [float(sympy.N(component)) for component in point]\r
+        speed = float(sympy.N(magnitude(velocity)))\r
+        if speed > 0:\r
+            graph["tangent"] = [float(sympy.N(component)) / speed for component in velocity]\r
+        if normal is not None:\r
+            graph["normal"] = [float(sympy.N(component)) for component in normal]\r
+    return graph\r
+\r
+\r
+def analyze_space_curve(request):\r
+    curve = space_curve_from_request(request)\r
+    low, high = curve["interval"]\r
+    report("Finding the velocity…")\r
+    steps, results = velocity_steps(curve)\r
+    report("Finding the curvature…")\r
+    curvature_step, curvature_result = curvature_steps(curve)\r
+    steps.append(curvature_step)\r
+    results.append(curvature_result)\r
+    if curve["at"] is not None:\r
+        point_step_list, point_results = point_steps(curve)\r
+        steps.extend(point_step_list)\r
+        results.extend(point_results)\r
+    report("Finding the arc length…")\r
+    length_step, length_result, length_check, _ = arc_length(curve)\r
+    steps.append(length_step)\r
+    results.append(length_result)\r
+    position = curve["position"]\r
+    return {\r
+        "ok": True,\r
+        "operation": "space",\r
+        "curveLatex": rf"\\mathbf{{r}}(t) = {vector_latex(position)}, \\quad {to_latex(low)} \\le t \\le {to_latex(high)}",\r
+        "results": results,\r
+        "checks": [{"label": "Arc length", "check": length_check}],\r
+        "steps": steps,\r
+        "graph": graph_samples(curve),\r
+    }\r
+\r
+\r
+def space_trace(request):\r
+    """The lesson picture: for TRACE_STEPS + 1 values of t, the point, T, N,\r
+    the curvature, and the length so far, all computed numerically."""\r
+    curve = space_curve_from_request(request)\r
+    velocity, acceleration = curve["velocity"], curve["acceleration"]\r
+    velocity_at = [numeric_function(component, (T,)) for component in velocity]\r
+    acceleration_at = [numeric_function(component, (T,)) for component in acceleration]\r
+    speed = numeric_function(magnitude(velocity), (T,))\r
+    parameters, (xs, ys, zs) = curve_points(curve, TRACE_STEPS + 1)\r
+    samples = []\r
+    length = 0.0\r
+    for index, t in enumerate(parameters):\r
+        if index > 0:\r
+            length += float(numerical_integral(speed, [parameters[index - 1], t]) or 0)\r
+        v = [numeric_value(function, t) for function in velocity_at]\r
+        a = [numeric_value(function, t) for function in acceleration_at]\r
+        sample = {"t": round(t, 6), "point": [xs[index], ys[index], zs[index]], "length": round(length, 6)}\r
+        sample.update(frame(v, a))\r
+        samples.append(sample)\r
+    _, (cx, cy, cz) = curve_points(curve, GRAPH_POINTS)\r
+    return {"ok": True, "operation": "spaceTrace", "samples": samples, "curve": {"x": cx, "y": cy, "z": cz}}\r
+\r
+\r
+def frame(v, a):\r
+    """T, N, and κ from the velocity v and acceleration a at one point, as floats;\r
+    None where they aren't defined."""\r
+    empty = {"tangent": None, "normal": None, "curvature": None}\r
+    if None in v or None in a:\r
+        return empty\r
+    speed = sum(c * c for c in v) ** 0.5\r
+    if speed < 1e-12:\r
+        return empty\r
+    tangent = [c / speed for c in v]\r
+    along = sum(ai * ti for ai, ti in zip(a, tangent))\r
+    across = [ai - along * ti for ai, ti in zip(a, tangent)]\r
+    across_length = sum(c * c for c in across) ** 0.5\r
+    # κ = |v × a| / |v|³, and |v × a| = |v| times the part of a across v.\r
+    curvature = across_length / speed**2\r
+    normal = [c / across_length for c in across] if across_length > 1e-12 else None\r
+    return {"tangent": rounded(tangent), "normal": rounded(normal), "curvature": round(curvature, 6)}\r
+\r
+\r
+def rounded(vector):\r
+    return None if vector is None else [round(component, 6) for component in vector]\r
+`,"./python/mathlab/steps.py":`"""The step format shared by derivative and integral explanations.\r
+\r
+A step is a dict with the rule's name, a short explanation (text with inline\r
+LaTeX between $ signs), the math it produces (LaTeX), and the steps it builds on.\r
+"""\r
+\r
+\r
+def separate(*equations):\r
+    """Several different equations as one math part, each on its own line.\r
+    make_step joins its parts with = signs, which is right for one chain of\r
+    equal things but would make "dx = 1, dz = 2" read as dx = 1 = dz = 2."""\r
+    return r"\\begin{gathered}" + r" \\\\ ".join(equations) + r"\\end{gathered}"\r
+\r
+\r
+def equation_latex(parts):\r
+    """Join parts with = signs. Chains of several = signs go one per line,\r
+    aligned on the = signs, as in a written derivation."""\r
+    if len(parts) <= 2:\r
+        return " = ".join(parts)\r
+    first, second, *rest = parts\r
+    lines = [f"{first} &= {second}", *(f"&= {part}" for part in rest)]\r
+    return r"\\begin{aligned}" + r" \\\\ ".join(lines) + r"\\end{aligned}"\r
+\r
+\r
+def make_step(rule, explanation, math_parts, substeps=()):\r
+    return {\r
+        "rule": rule,\r
+        "explanation": explanation,\r
+        "math": equation_latex(math_parts),\r
+        "substeps": [substep for substep in substeps if substep is not None],\r
+    }\r
 `,"./python/mathlab/stokes.py":`"""Stokes' theorem: the circulation of F around the boundary curve C of a\r
 surface S equals the flux of its curl through S,\r
 \r
@@ -10582,396 +11359,396 @@ def surface_picture(request):\r
         "positions": positions,\r
         "steps": [round((b - a) / PICTURE_STEPS, 6), round((d - c) / PICTURE_STEPS, 6)],\r
     }\r
-`,"./python/mathlab/tangent.py":`"""Tangent planes and linear approximation.
-
-For a graph z = f(x, y), the tangent plane at (a, b) is
-z = f(a, b) + f_x(a, b)(x - a) + f_y(a, b)(y - b); as a function, it is the
-linearization L(x, y), which approximates f near (a, b). For a level surface
-F(x, y, z) = k, the gradient ∇F at a point is perpendicular to the surface,
-so the tangent plane is ∇F(P) · ⟨x - a, y - b, z - c⟩ = 0.
-"""
-
-from decimal import Decimal
-
-import mpmath
-import sympy
-
-from mathlab.checks import numeric_function
-from mathlab.directional import gradient_steps, latex_value, number, numerical_rate
-from mathlab.expressions import X, Y, Z, InputError, factor_latex, to_latex
-from mathlab.multivariable import sample_square, sample_surface
-from mathlab.parsing import constants_in
-from mathlab.progress import report
-from mathlab.steps import make_step, separate
-from mathlab.vectors import vector_latex
-
-CHECK_DIGITS = 30
-CHECK_TOLERANCE = mpmath.mpf("1e-12")
-# The lesson picture: a fixed square, and the points the slider can reach.
-PICTURE_HALF_WIDTH = 1.5
-PICTURE_STEP = sympy.Rational(1, 4)
-
-
-def terminating_decimal(value):
-    """A fraction whose decimal ends, like 41/20 = 2.05, written as that exact
-    decimal (as it was typed); None for anything else, like 1/3."""
-    if not (isinstance(value, sympy.Rational) and not value.is_Integer):
-        return None
-    denominator = value.q
-    for factor in (2, 5):
-        while denominator % factor == 0:
-            denominator //= factor
-    if denominator != 1:
-        return None
-    # Exact: the denominator is a product of 2s and 5s, so it divides a power of 10.
-    return str(Decimal(value.p) / Decimal(value.q))
-
-
-def show(value):
-    """A value in LaTeX: a terminating decimal as a decimal, otherwise exact with
-    a decimal approximation."""
-    return terminating_decimal(value) or latex_value(value)
-
-
-def as_factor(value):
-    """show(value), in parentheses when it is negative, for a product."""
-    text = show(value)
-    return rf"\\left({text}\\right)" if value.could_extract_minus_sign() else text
-
-
-def point_latex(point):
-    return rf"\\left({', '.join(terminating_decimal(value) or to_latex(value) for value in point)}\\right)"
-
-
-def parse_point(texts, names):
-    texts = [text if isinstance(text, str) else "" for text in (texts or [])]
-    texts += [""] * (len(names) - len(texts))
-    return tuple(number(text, f"point's {name}") for text, name in zip(texts, names))
-
-
-def only_variables(function, variables, kind):
-    constants = constants_in(function, variables)
-    if constants:
-        names = ", ".join(str(variable) for variable in variables)
-        raise InputError(
-            f"{kind} must use only {names}, so the answers are numbers. "
-            f"Remove {', '.join(str(constant) for constant in constants)}."
-        )
-
-
-def partials_check(function, variables, point, partials):
-    """The partial derivatives at the point, compared with numerical differentiation."""
-    axes = [sympy.Matrix([1 if i == j else 0 for j in range(len(variables))]) for i in range(len(variables))]
-    with mpmath.workdps(CHECK_DIGITS):
-        worst = mpmath.mpf(0)
-        for axis, exact in zip(axes, partials):
-            numeric = numerical_rate(function, variables, point, axis)
-            if numeric is None or isinstance(numeric, mpmath.mpc):
-                return {"status": "unchecked", "detail": "The slopes couldn't be checked numerically."}
-            expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))
-            worst = max(worst, abs(numeric - expected) / max(1, abs(expected)))
-        if worst <= CHECK_TOLERANCE:
-            return {
-                "status": "verified",
-                "detail": "Numerical differentiation at the point gives the same partial derivatives, "
-                "so the plane has the surface's slopes there.",
-            }
-    return {
-        "status": "failed",
-        "detail": "Numerical differentiation at the point gives different partial derivatives. "
-        "Treat this answer with caution.",
-    }
-
-
-def value_check(function, point, exact):
-    """f at a point, evaluated straight from the typed expression to 30 digits,
-    compared with SymPy's exact value."""
-    as_numeric = numeric_function(function, (X, Y))
-    with mpmath.workdps(CHECK_DIGITS):
-        try:
-            numeric = as_numeric(*(mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in point))
-        except Exception:  # Evaluation fails in many ways; all mean "unchecked".
-            numeric = None
-        if numeric is None or isinstance(numeric, mpmath.mpc):
-            return {"status": "unchecked", "detail": "The exact value couldn't be checked numerically."}
-        expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))
-        shown = mpmath.nstr(numeric, 10)
-        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):
-            return {
-                "status": "verified",
-                "detail": f"Evaluating f directly to 30 digits gives \${shown}$, matching the exact value.",
-            }
-    return {
-        "status": "failed",
-        "detail": f"Evaluating f directly gives \${shown}$, which doesn't match. Treat this answer with caution.",
-    }
-
-
-def plane_patch(surface, value, slopes, point):
-    """The tangent plane over the middle half of the surface's square, for drawing."""
-    xs, ys = surface["x"], surface["y"]
-    a, b = (float(sympy.N(coordinate)) for coordinate in point)
-    z0 = float(sympy.N(value))
-    fx, fy = (float(sympy.N(slope)) for slope in slopes)
-    quarter = len(xs) // 4
-    px, py = xs[quarter:-quarter], ys[quarter:-quarter]
-    return {
-        "x": px,
-        "y": py,
-        "z": [[round(z0 + fx * (x - a) + fy * (y - b), 6) for x in px] for y in py],
-    }
-
-
-def solve_graph(function, point, near=None):
-    """The tangent plane to z = f(x, y) at the point, the linearization, and if
-    near is given, the approximation there. Returns the steps and the values."""
-    a, b = point
-    at = point_latex(point)
-    value = sympy.simplify(function.subs({X: a, Y: b}))
-    if not value.is_finite:
-        raise InputError(f"f isn't defined at \${at}$. Choose another point.")
-    gradient_step, gradient = gradient_steps(function, (X, Y))
-    fx, fy = (sympy.simplify(partial.subs({X: a, Y: b})) for partial in gradient)
-    if not (fx.is_finite and fy.is_finite):
-        raise InputError(f"A partial derivative of f isn't defined at \${at}$, so there is no tangent plane there.")
-    plane = sympy.expand(value + fx * (X - a) + fy * (Y - b))
-    steps = [
-        gradient_step,
-        make_step(
-            "Value and slopes at the point",
-            rf"Put \${at}$ into $f$, $f_x$, and $f_y$: the height of the surface there and its slopes "
-            r"in the $x$ and $y$ directions.",
-            [
-                rf"f{at} = {to_latex(value)}, \\quad f_x{at} = {to_latex(fx)}, \\quad f_y{at} = {to_latex(fy)}",
-            ],
-        ),
-        make_step(
-            "Tangent plane",
-            r"The tangent plane passes through the point on the surface and has the same slopes "
-            r"there: $z - z_0 = f_x(a, b)(x - a) + f_y(a, b)(y - b)$.",
-            # One part: two different equations, joined by an arrow, not by =.
-            [
-                rf"z - {factor_latex(value)} = {factor_latex(fx)}\\left({to_latex(X - a)}\\right) + "
-                rf"{factor_latex(fy)}\\left({to_latex(Y - b)}\\right) \\quad\\Longrightarrow\\quad "
-                rf"z = {to_latex(plane)}"
-            ],
-        ),
-        make_step(
-            "Linearization",
-            r"The tangent plane, read as a function, is the linearization $L(x, y)$. Near the "
-            r"point the surface and the plane are close, so $f(x, y) \\approx L(x, y)$ there.",
-            [rf"L(x, y) = {to_latex(plane)}"],
-        ),
-    ]
-    solved = {"steps": steps, "value": value, "slopes": (fx, fy), "plane": plane}
-    if near is not None:
-        x1, y1 = near
-        approximate = sympy.simplify(plane.subs({X: x1, Y: y1}))
-        actual = sympy.simplify(function.subs({X: x1, Y: y1}))
-        if not actual.is_finite:
-            raise InputError(f"f isn't defined at \${point_latex(near)}$, so there is nothing to approximate.")
-        dx, dy = x1 - a, y1 - b
-        differential = sympy.simplify(fx * dx + fy * dy)
-        change = sympy.simplify(actual - value)
-        steps.append(
-            make_step(
-                "Linear approximation",
-                rf"Use $L$ in place of $f$ at the nearby point \${point_latex(near)}$, and compare "
-                r"with the exact value.",
-                [
-                    separate(
-                        rf"f{point_latex(near)} \\approx L{point_latex(near)} = {show(approximate)}",
-                        rf"f{point_latex(near)} = {show(actual)}",
-                    )
-                ],
-            )
-        )
-        steps.append(
-            make_step(
-                "Differential",
-                r"The differential $dz = f_x\\,dx + f_y\\,dy$ estimates the change in $z$ along the "
-                r"tangent plane; $\\Delta z$ is the actual change along the surface.",
-                [
-                    separate(
-                        rf"dx = {show(dx)}, \\quad dy = {show(dy)}",
-                        rf"dz = {factor_latex(fx)} \\cdot {as_factor(dx)} + {factor_latex(fy)} \\cdot "
-                        rf"{as_factor(dy)} = {show(differential)}",
-                        rf"\\Delta z = f{point_latex(near)} - f{at} = {show(change)}",
-                    )
-                ],
-            )
-        )
-        solved.update(approximate=approximate, actual=actual, differential=differential, change=change)
-    return solved
-
-
-def tangent_to_graph(function, point_texts, near_texts):
-    if function.has(Z):
-        raise InputError(
-            "A graph z = f(x, y) uses only x and y. For an equation with z, choose a level surface."
-        )
-    only_variables(function, (X, Y), "f")
-    point = parse_point(point_texts, ("x", "y"))
-    near = None
-    if near_texts and any(isinstance(text, str) and text.strip() for text in near_texts):
-        near = parse_point(near_texts, ("x", "y"))
-    report("Finding the tangent plane…")
-    solved = solve_graph(function, point, near)
-    at = point_latex(point)
-    results = [
-        {"label": "Tangent plane", "latex": rf"z = {to_latex(solved['plane'])}"},
-        {"label": "Linearization", "latex": rf"L(x, y) = {to_latex(solved['plane'])}"},
-    ]
-    checks = [{"label": "Tangent plane", "check": partials_check(function, (X, Y), point, solved["slopes"])}]
-    if near is not None:
-        there = point_latex(near)
-        results += [
-            {"label": "Approximation", "latex": rf"f{there} \\approx L{there} = {show(solved['approximate'])}"},
-            {"label": "Exact value", "latex": rf"f{there} = {show(solved['actual'])}"},
-            {
-                "label": "dz and Δz",
-                "latex": rf"dz = {show(solved['differential'])}, \\quad \\Delta z = {show(solved['change'])}",
-            },
-        ]
-        checks.append({"label": "Exact value", "check": value_check(function, near, solved["actual"])})
-    surface = sample_surface(function, point)
-    return {
-        "ok": True,
-        "operation": "tangent",
-        "kind": "graph",
-        "functionLatex": rf"z = f(x, y) = {to_latex(function)}, \\text{{ at }} {at}",
-        "results": results,
-        "checks": checks,
-        "steps": solved["steps"],
-        "graph": {"surface": surface, "plane": plane_patch(surface, solved["value"], solved["slopes"], point)},
-    }
-
-
-def standard_plane(expression):
-    """a x + b y + c z + d = 0 with whole-number coefficients and no common
-    factor, the first one positive, when the coefficients are rational."""
-    numerator, _ = sympy.fraction(sympy.together(sympy.expand(expression)))
-    numerator = sympy.expand(numerator)
-    try:
-        polynomial = sympy.Poly(numerator, X, Y, Z)
-    except sympy.PolynomialError:
-        return numerator
-    if all(coefficient.is_Rational for coefficient in polynomial.coeffs()):
-        _, polynomial = polynomial.primitive()
-        numerator = polynomial.as_expr()
-    leading = next((numerator.coeff(variable) for variable in (X, Y, Z) if numerator.coeff(variable) != 0), 1)
-    return sympy.expand(-numerator) if leading.could_extract_minus_sign() else numerator
-
-
-def tangent_to_level_surface(function, point_texts):
-    only_variables(function, (X, Y, Z), "F")
-    point = parse_point(point_texts, ("x", "y", "z"))
-    a, b, c = point
-    at = point_latex(point)
-    substitutions = {X: a, Y: b, Z: c}
-    level = sympy.simplify(function.subs(substitutions))
-    if not level.is_finite:
-        raise InputError(f"F isn't defined at \${at}$. Choose another point.")
-    report("Finding the gradient…")
-    gradient_step, gradient = gradient_steps(function, (X, Y, Z))
-    normal = gradient.subs(substitutions).applyfunc(sympy.simplify)
-    if not all(component.is_finite for component in normal):
-        raise InputError(f"A partial derivative of F isn't defined at \${at}$, so there is no tangent plane there.")
-    if all(component == 0 for component in normal):
-        raise InputError(
-            f"$\\\\nabla F{at} = \\\\mathbf{{0}}$, so it gives no normal direction, and the surface "
-            "may not have a tangent plane there."
-        )
-    offset = sympy.Matrix([X - a, Y - b, Z - c])
-    plane = standard_plane(normal.dot(offset))
-    t = sympy.Symbol("t", real=True)
-    line = [sympy.expand(coordinate + component * t) for coordinate, component in zip(point, normal)]
-    steps = [
-        make_step(
-            "The level surface through the point",
-            rf"$F{at} = {to_latex(level)}$, so the point lies on the level surface "
-            rf"$F(x, y, z) = {to_latex(level)}$.",
-            [rf"{to_latex(function)} = {to_latex(level)}"],
-        ),
-        gradient_step,
-        make_step(
-            "Normal vector",
-            r"The gradient is perpendicular to the level surface through the point, so "
-            rf"$\\nabla F{at}$ is a normal vector for the tangent plane.",
-            [rf"\\nabla F{at} = {vector_latex(normal)}"],
-        ),
-        make_step(
-            "Tangent plane to a level surface",
-            r"The tangent plane is every point $(x, y, z)$ whose offset from the point is "
-            r"perpendicular to the normal: $\\nabla F \\cdot \\langle x - a, y - b, z - c \\rangle = 0$. "
-            r"Expand it and clear fractions.",
-            [
-                rf"{vector_latex(normal)} \\cdot {vector_latex(offset)} = 0 \\quad\\Longrightarrow\\quad "
-                rf"{to_latex(plane)} = 0"
-            ],
-        ),
-        make_step(
-            "Normal line",
-            r"The normal line goes through the point in the direction of $\\nabla F$.",
-            [rf"x = {to_latex(line[0])}, \\quad y = {to_latex(line[1])}, \\quad z = {to_latex(line[2])}"],
-        ),
-    ]
-    return {
-        "ok": True,
-        "operation": "tangent",
-        "kind": "level",
-        "functionLatex": rf"F(x, y, z) = {to_latex(function)} = {to_latex(level)}, \\text{{ at }} {at}",
-        "results": [
-            {"label": "Tangent plane", "latex": rf"{to_latex(plane)} = 0"},
-            {"label": "Normal vector", "latex": rf"\\nabla F{at} = {vector_latex(normal)}"},
-            {
-                "label": "Normal line",
-                "latex": rf"x = {to_latex(line[0])}, \\quad y = {to_latex(line[1])}, \\quad z = {to_latex(line[2])}",
-            },
-        ],
-        "checks": [{"label": "Normal vector", "check": partials_check(function, (X, Y, Z), point, list(normal))}],
-        "steps": steps,
-        # An implicit surface isn't drawn.
-        "graph": None,
-    }
-
-
-def tangent_plane(function, kind, point_texts, near_texts=None):
-    if kind == "level":
-        return tangent_to_level_surface(function, point_texts)
-    if kind == "graph":
-        return tangent_to_graph(function, point_texts, near_texts)
-    raise InputError("Choose a graph z = f(x, y) or a level surface F(x, y, z) = k.")
-
-
-def tangent_picture(function):
-    """The lesson picture: the surface over a fixed square around the origin,
-    and f, f_x, f_y at every point the sliders can reach."""
-    only_variables(function, (X, Y), "f")
-    partials = [sympy.diff(function, variable) for variable in (X, Y)]
-    as_numeric = [numeric_function(expression, (X, Y)) for expression in (function, *partials)]
-    xs, ys, z = sample_square(as_numeric[0], (0, 0), PICTURE_HALF_WIDTH)
-    steps = int(2 * PICTURE_HALF_WIDTH / PICTURE_STEP)
-    values = [float(-PICTURE_HALF_WIDTH + index * PICTURE_STEP) for index in range(steps + 1)]
-    points = []
-    for b in values:
-        row = []
-        for a in values:
-            with mpmath.workdps(15):
-                try:
-                    numbers = [float(f(mpmath.mpf(a), mpmath.mpf(b))) for f in as_numeric]
-                except Exception:  # Undefined points raise many error types; all mean "no value".
-                    numbers = None
-            row.append(None if numbers is None else [round(number, 6) for number in numbers])
-        points.append(row)
-    return {
-        "ok": True,
-        "operation": "tangentPicture",
-        "surface": {"x": xs, "y": ys, "z": z, "point": [0, 0, None]},
-        "values": values,
-        # points[j][i] is [f, f_x, f_y] at (values[i], values[j]), or null.
-        "points": points,
-    }
+`,"./python/mathlab/tangent.py":`"""Tangent planes and linear approximation.\r
+\r
+For a graph z = f(x, y), the tangent plane at (a, b) is\r
+z = f(a, b) + f_x(a, b)(x - a) + f_y(a, b)(y - b); as a function, it is the\r
+linearization L(x, y), which approximates f near (a, b). For a level surface\r
+F(x, y, z) = k, the gradient ∇F at a point is perpendicular to the surface,\r
+so the tangent plane is ∇F(P) · ⟨x - a, y - b, z - c⟩ = 0.\r
+"""\r
+\r
+from decimal import Decimal\r
+\r
+import mpmath\r
+import sympy\r
+\r
+from mathlab.checks import numeric_function\r
+from mathlab.directional import gradient_steps, latex_value, number, numerical_rate\r
+from mathlab.expressions import X, Y, Z, InputError, factor_latex, to_latex\r
+from mathlab.multivariable import sample_square, sample_surface\r
+from mathlab.parsing import constants_in\r
+from mathlab.progress import report\r
+from mathlab.steps import make_step, separate\r
+from mathlab.vectors import vector_latex\r
+\r
+CHECK_DIGITS = 30\r
+CHECK_TOLERANCE = mpmath.mpf("1e-12")\r
+# The lesson picture: a fixed square, and the points the slider can reach.\r
+PICTURE_HALF_WIDTH = 1.5\r
+PICTURE_STEP = sympy.Rational(1, 4)\r
+\r
+\r
+def terminating_decimal(value):\r
+    """A fraction whose decimal ends, like 41/20 = 2.05, written as that exact\r
+    decimal (as it was typed); None for anything else, like 1/3."""\r
+    if not (isinstance(value, sympy.Rational) and not value.is_Integer):\r
+        return None\r
+    denominator = value.q\r
+    for factor in (2, 5):\r
+        while denominator % factor == 0:\r
+            denominator //= factor\r
+    if denominator != 1:\r
+        return None\r
+    # Exact: the denominator is a product of 2s and 5s, so it divides a power of 10.\r
+    return str(Decimal(value.p) / Decimal(value.q))\r
+\r
+\r
+def show(value):\r
+    """A value in LaTeX: a terminating decimal as a decimal, otherwise exact with\r
+    a decimal approximation."""\r
+    return terminating_decimal(value) or latex_value(value)\r
+\r
+\r
+def as_factor(value):\r
+    """show(value), in parentheses when it is negative, for a product."""\r
+    text = show(value)\r
+    return rf"\\left({text}\\right)" if value.could_extract_minus_sign() else text\r
+\r
+\r
+def point_latex(point):\r
+    return rf"\\left({', '.join(terminating_decimal(value) or to_latex(value) for value in point)}\\right)"\r
+\r
+\r
+def parse_point(texts, names):\r
+    texts = [text if isinstance(text, str) else "" for text in (texts or [])]\r
+    texts += [""] * (len(names) - len(texts))\r
+    return tuple(number(text, f"point's {name}") for text, name in zip(texts, names))\r
+\r
+\r
+def only_variables(function, variables, kind):\r
+    constants = constants_in(function, variables)\r
+    if constants:\r
+        names = ", ".join(str(variable) for variable in variables)\r
+        raise InputError(\r
+            f"{kind} must use only {names}, so the answers are numbers. "\r
+            f"Remove {', '.join(str(constant) for constant in constants)}."\r
+        )\r
+\r
+\r
+def partials_check(function, variables, point, partials):\r
+    """The partial derivatives at the point, compared with numerical differentiation."""\r
+    axes = [sympy.Matrix([1 if i == j else 0 for j in range(len(variables))]) for i in range(len(variables))]\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        worst = mpmath.mpf(0)\r
+        for axis, exact in zip(axes, partials):\r
+            numeric = numerical_rate(function, variables, point, axis)\r
+            if numeric is None or isinstance(numeric, mpmath.mpc):\r
+                return {"status": "unchecked", "detail": "The slopes couldn't be checked numerically."}\r
+            expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))\r
+            worst = max(worst, abs(numeric - expected) / max(1, abs(expected)))\r
+        if worst <= CHECK_TOLERANCE:\r
+            return {\r
+                "status": "verified",\r
+                "detail": "Numerical differentiation at the point gives the same partial derivatives, "\r
+                "so the plane has the surface's slopes there.",\r
+            }\r
+    return {\r
+        "status": "failed",\r
+        "detail": "Numerical differentiation at the point gives different partial derivatives. "\r
+        "Treat this answer with caution.",\r
+    }\r
+\r
+\r
+def value_check(function, point, exact):\r
+    """f at a point, evaluated straight from the typed expression to 30 digits,\r
+    compared with SymPy's exact value."""\r
+    as_numeric = numeric_function(function, (X, Y))\r
+    with mpmath.workdps(CHECK_DIGITS):\r
+        try:\r
+            numeric = as_numeric(*(mpmath.mpf(str(sympy.N(value, CHECK_DIGITS))) for value in point))\r
+        except Exception:  # Evaluation fails in many ways; all mean "unchecked".\r
+            numeric = None\r
+        if numeric is None or isinstance(numeric, mpmath.mpc):\r
+            return {"status": "unchecked", "detail": "The exact value couldn't be checked numerically."}\r
+        expected = mpmath.mpf(str(sympy.N(exact, CHECK_DIGITS)))\r
+        shown = mpmath.nstr(numeric, 10)\r
+        if abs(numeric - expected) <= CHECK_TOLERANCE * max(1, abs(expected)):\r
+            return {\r
+                "status": "verified",\r
+                "detail": f"Evaluating f directly to 30 digits gives \${shown}$, matching the exact value.",\r
+            }\r
+    return {\r
+        "status": "failed",\r
+        "detail": f"Evaluating f directly gives \${shown}$, which doesn't match. Treat this answer with caution.",\r
+    }\r
+\r
+\r
+def plane_patch(surface, value, slopes, point):\r
+    """The tangent plane over the middle half of the surface's square, for drawing."""\r
+    xs, ys = surface["x"], surface["y"]\r
+    a, b = (float(sympy.N(coordinate)) for coordinate in point)\r
+    z0 = float(sympy.N(value))\r
+    fx, fy = (float(sympy.N(slope)) for slope in slopes)\r
+    quarter = len(xs) // 4\r
+    px, py = xs[quarter:-quarter], ys[quarter:-quarter]\r
+    return {\r
+        "x": px,\r
+        "y": py,\r
+        "z": [[round(z0 + fx * (x - a) + fy * (y - b), 6) for x in px] for y in py],\r
+    }\r
+\r
+\r
+def solve_graph(function, point, near=None):\r
+    """The tangent plane to z = f(x, y) at the point, the linearization, and if\r
+    near is given, the approximation there. Returns the steps and the values."""\r
+    a, b = point\r
+    at = point_latex(point)\r
+    value = sympy.simplify(function.subs({X: a, Y: b}))\r
+    if not value.is_finite:\r
+        raise InputError(f"f isn't defined at \${at}$. Choose another point.")\r
+    gradient_step, gradient = gradient_steps(function, (X, Y))\r
+    fx, fy = (sympy.simplify(partial.subs({X: a, Y: b})) for partial in gradient)\r
+    if not (fx.is_finite and fy.is_finite):\r
+        raise InputError(f"A partial derivative of f isn't defined at \${at}$, so there is no tangent plane there.")\r
+    plane = sympy.expand(value + fx * (X - a) + fy * (Y - b))\r
+    steps = [\r
+        gradient_step,\r
+        make_step(\r
+            "Value and slopes at the point",\r
+            rf"Put \${at}$ into $f$, $f_x$, and $f_y$: the height of the surface there and its slopes "\r
+            r"in the $x$ and $y$ directions.",\r
+            [\r
+                rf"f{at} = {to_latex(value)}, \\quad f_x{at} = {to_latex(fx)}, \\quad f_y{at} = {to_latex(fy)}",\r
+            ],\r
+        ),\r
+        make_step(\r
+            "Tangent plane",\r
+            r"The tangent plane passes through the point on the surface and has the same slopes "\r
+            r"there: $z - z_0 = f_x(a, b)(x - a) + f_y(a, b)(y - b)$.",\r
+            # One part: two different equations, joined by an arrow, not by =.\r
+            [\r
+                rf"z - {factor_latex(value)} = {factor_latex(fx)}\\left({to_latex(X - a)}\\right) + "\r
+                rf"{factor_latex(fy)}\\left({to_latex(Y - b)}\\right) \\quad\\Longrightarrow\\quad "\r
+                rf"z = {to_latex(plane)}"\r
+            ],\r
+        ),\r
+        make_step(\r
+            "Linearization",\r
+            r"The tangent plane, read as a function, is the linearization $L(x, y)$. Near the "\r
+            r"point the surface and the plane are close, so $f(x, y) \\approx L(x, y)$ there.",\r
+            [rf"L(x, y) = {to_latex(plane)}"],\r
+        ),\r
+    ]\r
+    solved = {"steps": steps, "value": value, "slopes": (fx, fy), "plane": plane}\r
+    if near is not None:\r
+        x1, y1 = near\r
+        approximate = sympy.simplify(plane.subs({X: x1, Y: y1}))\r
+        actual = sympy.simplify(function.subs({X: x1, Y: y1}))\r
+        if not actual.is_finite:\r
+            raise InputError(f"f isn't defined at \${point_latex(near)}$, so there is nothing to approximate.")\r
+        dx, dy = x1 - a, y1 - b\r
+        differential = sympy.simplify(fx * dx + fy * dy)\r
+        change = sympy.simplify(actual - value)\r
+        steps.append(\r
+            make_step(\r
+                "Linear approximation",\r
+                rf"Use $L$ in place of $f$ at the nearby point \${point_latex(near)}$, and compare "\r
+                r"with the exact value.",\r
+                [\r
+                    separate(\r
+                        rf"f{point_latex(near)} \\approx L{point_latex(near)} = {show(approximate)}",\r
+                        rf"f{point_latex(near)} = {show(actual)}",\r
+                    )\r
+                ],\r
+            )\r
+        )\r
+        steps.append(\r
+            make_step(\r
+                "Differential",\r
+                r"The differential $dz = f_x\\,dx + f_y\\,dy$ estimates the change in $z$ along the "\r
+                r"tangent plane; $\\Delta z$ is the actual change along the surface.",\r
+                [\r
+                    separate(\r
+                        rf"dx = {show(dx)}, \\quad dy = {show(dy)}",\r
+                        rf"dz = {factor_latex(fx)} \\cdot {as_factor(dx)} + {factor_latex(fy)} \\cdot "\r
+                        rf"{as_factor(dy)} = {show(differential)}",\r
+                        rf"\\Delta z = f{point_latex(near)} - f{at} = {show(change)}",\r
+                    )\r
+                ],\r
+            )\r
+        )\r
+        solved.update(approximate=approximate, actual=actual, differential=differential, change=change)\r
+    return solved\r
+\r
+\r
+def tangent_to_graph(function, point_texts, near_texts):\r
+    if function.has(Z):\r
+        raise InputError(\r
+            "A graph z = f(x, y) uses only x and y. For an equation with z, choose a level surface."\r
+        )\r
+    only_variables(function, (X, Y), "f")\r
+    point = parse_point(point_texts, ("x", "y"))\r
+    near = None\r
+    if near_texts and any(isinstance(text, str) and text.strip() for text in near_texts):\r
+        near = parse_point(near_texts, ("x", "y"))\r
+    report("Finding the tangent plane…")\r
+    solved = solve_graph(function, point, near)\r
+    at = point_latex(point)\r
+    results = [\r
+        {"label": "Tangent plane", "latex": rf"z = {to_latex(solved['plane'])}"},\r
+        {"label": "Linearization", "latex": rf"L(x, y) = {to_latex(solved['plane'])}"},\r
+    ]\r
+    checks = [{"label": "Tangent plane", "check": partials_check(function, (X, Y), point, solved["slopes"])}]\r
+    if near is not None:\r
+        there = point_latex(near)\r
+        results += [\r
+            {"label": "Approximation", "latex": rf"f{there} \\approx L{there} = {show(solved['approximate'])}"},\r
+            {"label": "Exact value", "latex": rf"f{there} = {show(solved['actual'])}"},\r
+            {\r
+                "label": "dz and Δz",\r
+                "latex": rf"dz = {show(solved['differential'])}, \\quad \\Delta z = {show(solved['change'])}",\r
+            },\r
+        ]\r
+        checks.append({"label": "Exact value", "check": value_check(function, near, solved["actual"])})\r
+    surface = sample_surface(function, point)\r
+    return {\r
+        "ok": True,\r
+        "operation": "tangent",\r
+        "kind": "graph",\r
+        "functionLatex": rf"z = f(x, y) = {to_latex(function)}, \\text{{ at }} {at}",\r
+        "results": results,\r
+        "checks": checks,\r
+        "steps": solved["steps"],\r
+        "graph": {"surface": surface, "plane": plane_patch(surface, solved["value"], solved["slopes"], point)},\r
+    }\r
+\r
+\r
+def standard_plane(expression):\r
+    """a x + b y + c z + d = 0 with whole-number coefficients and no common\r
+    factor, the first one positive, when the coefficients are rational."""\r
+    numerator, _ = sympy.fraction(sympy.together(sympy.expand(expression)))\r
+    numerator = sympy.expand(numerator)\r
+    try:\r
+        polynomial = sympy.Poly(numerator, X, Y, Z)\r
+    except sympy.PolynomialError:\r
+        return numerator\r
+    if all(coefficient.is_Rational for coefficient in polynomial.coeffs()):\r
+        _, polynomial = polynomial.primitive()\r
+        numerator = polynomial.as_expr()\r
+    leading = next((numerator.coeff(variable) for variable in (X, Y, Z) if numerator.coeff(variable) != 0), 1)\r
+    return sympy.expand(-numerator) if leading.could_extract_minus_sign() else numerator\r
+\r
+\r
+def tangent_to_level_surface(function, point_texts):\r
+    only_variables(function, (X, Y, Z), "F")\r
+    point = parse_point(point_texts, ("x", "y", "z"))\r
+    a, b, c = point\r
+    at = point_latex(point)\r
+    substitutions = {X: a, Y: b, Z: c}\r
+    level = sympy.simplify(function.subs(substitutions))\r
+    if not level.is_finite:\r
+        raise InputError(f"F isn't defined at \${at}$. Choose another point.")\r
+    report("Finding the gradient…")\r
+    gradient_step, gradient = gradient_steps(function, (X, Y, Z))\r
+    normal = gradient.subs(substitutions).applyfunc(sympy.simplify)\r
+    if not all(component.is_finite for component in normal):\r
+        raise InputError(f"A partial derivative of F isn't defined at \${at}$, so there is no tangent plane there.")\r
+    if all(component == 0 for component in normal):\r
+        raise InputError(\r
+            f"$\\\\nabla F{at} = \\\\mathbf{{0}}$, so it gives no normal direction, and the surface "\r
+            "may not have a tangent plane there."\r
+        )\r
+    offset = sympy.Matrix([X - a, Y - b, Z - c])\r
+    plane = standard_plane(normal.dot(offset))\r
+    t = sympy.Symbol("t", real=True)\r
+    line = [sympy.expand(coordinate + component * t) for coordinate, component in zip(point, normal)]\r
+    steps = [\r
+        make_step(\r
+            "The level surface through the point",\r
+            rf"$F{at} = {to_latex(level)}$, so the point lies on the level surface "\r
+            rf"$F(x, y, z) = {to_latex(level)}$.",\r
+            [rf"{to_latex(function)} = {to_latex(level)}"],\r
+        ),\r
+        gradient_step,\r
+        make_step(\r
+            "Normal vector",\r
+            r"The gradient is perpendicular to the level surface through the point, so "\r
+            rf"$\\nabla F{at}$ is a normal vector for the tangent plane.",\r
+            [rf"\\nabla F{at} = {vector_latex(normal)}"],\r
+        ),\r
+        make_step(\r
+            "Tangent plane to a level surface",\r
+            r"The tangent plane is every point $(x, y, z)$ whose offset from the point is "\r
+            r"perpendicular to the normal: $\\nabla F \\cdot \\langle x - a, y - b, z - c \\rangle = 0$. "\r
+            r"Expand it and clear fractions.",\r
+            [\r
+                rf"{vector_latex(normal)} \\cdot {vector_latex(offset)} = 0 \\quad\\Longrightarrow\\quad "\r
+                rf"{to_latex(plane)} = 0"\r
+            ],\r
+        ),\r
+        make_step(\r
+            "Normal line",\r
+            r"The normal line goes through the point in the direction of $\\nabla F$.",\r
+            [rf"x = {to_latex(line[0])}, \\quad y = {to_latex(line[1])}, \\quad z = {to_latex(line[2])}"],\r
+        ),\r
+    ]\r
+    return {\r
+        "ok": True,\r
+        "operation": "tangent",\r
+        "kind": "level",\r
+        "functionLatex": rf"F(x, y, z) = {to_latex(function)} = {to_latex(level)}, \\text{{ at }} {at}",\r
+        "results": [\r
+            {"label": "Tangent plane", "latex": rf"{to_latex(plane)} = 0"},\r
+            {"label": "Normal vector", "latex": rf"\\nabla F{at} = {vector_latex(normal)}"},\r
+            {\r
+                "label": "Normal line",\r
+                "latex": rf"x = {to_latex(line[0])}, \\quad y = {to_latex(line[1])}, \\quad z = {to_latex(line[2])}",\r
+            },\r
+        ],\r
+        "checks": [{"label": "Normal vector", "check": partials_check(function, (X, Y, Z), point, list(normal))}],\r
+        "steps": steps,\r
+        # An implicit surface isn't drawn.\r
+        "graph": None,\r
+    }\r
+\r
+\r
+def tangent_plane(function, kind, point_texts, near_texts=None):\r
+    if kind == "level":\r
+        return tangent_to_level_surface(function, point_texts)\r
+    if kind == "graph":\r
+        return tangent_to_graph(function, point_texts, near_texts)\r
+    raise InputError("Choose a graph z = f(x, y) or a level surface F(x, y, z) = k.")\r
+\r
+\r
+def tangent_picture(function):\r
+    """The lesson picture: the surface over a fixed square around the origin,\r
+    and f, f_x, f_y at every point the sliders can reach."""\r
+    only_variables(function, (X, Y), "f")\r
+    partials = [sympy.diff(function, variable) for variable in (X, Y)]\r
+    as_numeric = [numeric_function(expression, (X, Y)) for expression in (function, *partials)]\r
+    xs, ys, z = sample_square(as_numeric[0], (0, 0), PICTURE_HALF_WIDTH)\r
+    steps = int(2 * PICTURE_HALF_WIDTH / PICTURE_STEP)\r
+    values = [float(-PICTURE_HALF_WIDTH + index * PICTURE_STEP) for index in range(steps + 1)]\r
+    points = []\r
+    for b in values:\r
+        row = []\r
+        for a in values:\r
+            with mpmath.workdps(15):\r
+                try:\r
+                    numbers = [float(f(mpmath.mpf(a), mpmath.mpf(b))) for f in as_numeric]\r
+                except Exception:  # Undefined points raise many error types; all mean "no value".\r
+                    numbers = None\r
+            row.append(None if numbers is None else [round(number, 6) for number in numbers])\r
+        points.append(row)\r
+    return {\r
+        "ok": True,\r
+        "operation": "tangentPicture",\r
+        "surface": {"x": xs, "y": ys, "z": z, "point": [0, 0, None]},\r
+        "values": values,\r
+        # points[j][i] is [f, f_x, f_y] at (values[i], values[j]), or null.\r
+        "points": points,\r
+    }\r
 `,"./python/mathlab/trig_substitution.py":`"""Trigonometric substitution as it is taught: x = a sin θ for √(a² − x²),\r
 x = a tan θ for √(a² + x²), and x = a sec θ for √(x² − a²).\r
 \r
